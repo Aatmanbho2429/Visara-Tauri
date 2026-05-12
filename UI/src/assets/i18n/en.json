@@ -117,16 +117,20 @@
     "title":           "Visual Similarity Search",
     "subtitle":        "Drop a reference image, select a folder — Visara finds the rest",
     "imagePick":       "Reference Image",
-    "imageHint":       "Click to browse or drop here",
+    "imageHint":       "Click to browse",
     "imageChange":     "Click to change",
     "folderPick":      "Target Folder",
     "folderHint":      "Select folder to search in",
     "findBtn":         "Find Similar Images",
-    "poweredBy":       "Powered by CLIP Vision AI",
+    "poweredBy":       "Seeing Beyond Pixels with VISARA AI",
     "scanning":        "Scanning for similar images",
     "matches":         "matches",
     "newSearch":       "New Search",
-    "openInExplorer":  "Open in Explorer"
+    "openInExplorer":  "Open in Explorer",
+    "errors":          "errors",
+    "failedFiles":     "images could not be processed",
+    "noResults":       "No similar images found",
+    "maxResults":      "Max results"
   },
 
   "activity": {

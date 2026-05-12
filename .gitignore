@@ -19,7 +19,9 @@ python/**/__pycache__/
 *.pyd
 python/.venv/
 python/venv/
-
+*.onnx.enc
+index.faiss
+meta.db
 # OS
 .DS_Store
 Thumbs.db

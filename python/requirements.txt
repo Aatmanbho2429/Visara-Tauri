@@ -2,3 +2,9 @@ fastapi
 uvicorn[standard]
 pydantic[email]
 requests
+numpy
+Pillow
+psd-tools
+onnxruntime
+faiss-cpu
+cryptography

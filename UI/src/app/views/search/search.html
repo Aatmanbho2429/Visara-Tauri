@@ -9,51 +9,59 @@
         <p class="search-hero__sub">{{ 'search.subtitle' | translate }}</p>
       </div>
 
+      @if (state.searchError) {
+        <div class="search-fatal-error">
+          <i class="pi pi-exclamation-triangle"></i>
+          <span>{{ state.searchError }}</span>
+        </div>
+      }
+
       <div class="search-hero__row">
 
-        <!-- Image pick -->
-        <div class="pick-card" [class.pick-card--set]="imageName" (click)="pickImage()">
+        <div class="pick-card" [class.pick-card--set]="state.imageName" (click)="pickImage()">
           <div class="pick-card__glow pick-card__glow--violet"></div>
-          @if (!imageName) {
-            <div class="pick-card__icon-wrap">
-              <i class="pi pi-image"></i>
-            </div>
+          @if (!state.imageName) {
+            <div class="pick-card__icon-wrap"><i class="pi pi-image"></i></div>
             <span class="pick-card__title">{{ 'search.imagePick' | translate }}</span>
             <span class="pick-card__hint">{{ 'search.imageHint' | translate }}</span>
           } @else {
-            <div class="pick-card__icon-wrap pick-card__icon-wrap--done">
-              <i class="pi pi-check"></i>
-            </div>
-            <span class="pick-card__title">{{ imageName }}</span>
+            <div class="pick-card__icon-wrap pick-card__icon-wrap--done"><i class="pi pi-check"></i></div>
+            <span class="pick-card__title">{{ state.imageName }}</span>
             <span class="pick-card__hint">{{ 'search.imageChange' | translate }}</span>
           }
         </div>
 
-        <!-- Divider -->
         <div class="pick-divider">
           <div class="pick-divider__line"></div>
           <div class="pick-divider__chip"><i class="pi pi-arrow-right"></i></div>
           <div class="pick-divider__line"></div>
         </div>
 
-        <!-- Folder pick -->
-        <div class="pick-card pick-card--folder" [class.pick-card--set]="folderPath" (click)="pickFolder()">
+        <div class="pick-card pick-card--folder" [class.pick-card--set]="state.folderPath" (click)="pickFolder()">
           <div class="pick-card__glow pick-card__glow--cyan"></div>
-          @if (!folderPath) {
-            <div class="pick-card__icon-wrap pick-card__icon-wrap--cyan">
-              <i class="pi pi-folder-open"></i>
-            </div>
+          @if (!state.folderPath) {
+            <div class="pick-card__icon-wrap pick-card__icon-wrap--cyan"><i class="pi pi-folder-open"></i></div>
             <span class="pick-card__title">{{ 'search.folderPick' | translate }}</span>
             <span class="pick-card__hint">{{ 'search.folderHint' | translate }}</span>
           } @else {
-            <div class="pick-card__icon-wrap pick-card__icon-wrap--cyan pick-card__icon-wrap--done">
-              <i class="pi pi-folder"></i>
-            </div>
-            <span class="pick-card__title">{{ folderPath.split('\\').pop() }}</span>
-            <span class="pick-card__hint pick-card__hint--mono">{{ folderPath }}</span>
+            <div class="pick-card__icon-wrap pick-card__icon-wrap--cyan pick-card__icon-wrap--done"><i class="pi pi-folder"></i></div>
+            <span class="pick-card__title">{{ state.folderPath.split('\\').pop() }}</span>
+            <span class="pick-card__hint pick-card__hint--mono">{{ state.folderPath }}</span>
           }
         </div>
 
+      </div>
+
+      <!-- Top-K selector -->
+      <div class="topk-row">
+        <span class="topk-row__label">{{ 'search.maxResults' | translate }}</span>
+        <div class="topk-row__options">
+          @for (opt of topKOptions; track opt) {
+            <button class="topk-btn" [class.topk-btn--active]="state.topK === opt" (click)="state.topK = opt">
+              {{ opt }}
+            </button>
+          }
+        </div>
       </div>
 
       <button class="search-trigger" [class.search-trigger--ready]="canSearch"
@@ -80,8 +88,26 @@
         <div class="scan-ring scan-ring--3"></div>
         <div class="scan-core"><i class="pi pi-search"></i></div>
       </div>
-      <p class="scan-label">{{ 'search.scanning' | translate }}</p>
-      <p class="scan-path">{{ folderPath }}</p>
+
+      <div class="scan-progress">
+        <div class="scan-progress__phase">{{ state.progress.phase || ('search.scanning' | translate) }}</div>
+        <div class="scan-progress__track">
+          <div class="scan-progress__fill" [style.width.%]="state.progress.percent"></div>
+        </div>
+        <div class="scan-progress__meta">
+          <span class="scan-progress__file">{{ state.progress.current }}</span>
+          <span class="scan-progress__stats">
+            @if (state.progress.total > 0) { {{ state.progress.done }}/{{ state.progress.total }} }
+            @if (state.progress.eta_sec > 0) { &nbsp;•&nbsp; ~{{ state.progress.eta_sec }}s }
+            @if (state.progress.errors > 0) {
+              &nbsp;•&nbsp;
+              <span class="scan-progress__errors">{{ state.progress.errors }} {{ 'search.errors' | translate }}</span>
+            }
+          </span>
+        </div>
+      </div>
+
+      <p class="scan-path">{{ state.folderPath }}</p>
     </div>
   }
 
@@ -90,41 +116,79 @@
     <div class="results-wrap">
 
       <div class="results-bar">
-        <div class="results-bar__thumb">
-          <i class="pi pi-image"></i>
-        </div>
+        <div class="results-bar__thumb"><i class="pi pi-image"></i></div>
         <div class="results-bar__meta">
-          <span class="results-bar__name">{{ imageName }}</span>
-          <span class="results-bar__path">{{ folderPath }}</span>
+          <span class="results-bar__name">{{ state.imageName }}</span>
+          <span class="results-bar__path">{{ state.folderPath }}</span>
         </div>
-        <span class="results-bar__count">{{ results.length }} {{ 'search.matches' | translate }}</span>
+        <span class="results-bar__count">{{ state.results.length }} {{ 'search.matches' | translate }}</span>
         <button class="results-bar__btn" (click)="newSearch()">
-          <i class="pi pi-refresh"></i>
-          {{ 'search.newSearch' | translate }}
+          <i class="pi pi-refresh"></i> {{ 'search.newSearch' | translate }}
         </button>
       </div>
 
-      <div class="results-grid">
-        @for (item of results; track item.id) {
-          <div class="r-card" (click)="openFile(item.path)">
-            <div class="r-card__img" [style.background]="item.gradient">
-              <div class="r-card__overlay">
-                <div class="r-card__cta">
-                  <i class="pi pi-external-link"></i>
-                  <span>{{ 'search.openInExplorer' | translate }}</span>
-                </div>
-                <span class="r-card__fpath">{{ item.path }}</span>
+      @if (state.failedFiles.length > 0) {
+        <div class="failed-notice">
+          <span><i class="pi pi-exclamation-circle"></i> {{ state.failedFiles.length }} {{ 'search.failedFiles' | translate }}</span>
+          <div class="failed-notice__list">
+            @for (f of state.failedFiles; track f.file) {
+              <div class="failed-notice__item">
+                <span class="failed-notice__name">{{ f.file.split('\\').pop() }}</span>
+                <span class="failed-notice__reason">{{ f.reason }}</span>
               </div>
-            </div>
-            <div class="r-card__foot">
-              <span class="r-card__name">{{ item.name }}</span>
-              <span class="r-card__badge r-card__badge--{{ similarityClass(item.similarity) }}">
-                {{ item.similarity }}%
-              </span>
-            </div>
+            }
           </div>
-        }
-      </div>
+        </div>
+      }
+
+      @if (state.results.length === 0) {
+        <div class="no-results">
+          <i class="pi pi-search"></i>
+          <p>{{ 'search.noResults' | translate }}</p>
+        </div>
+      }
+
+      @if (state.results.length > 0) {
+        <div class="masonry-grid" #masonryGrid (scroll)="onGridScroll($event)">
+          @for (col of masonryColumns; track $index) {
+            <div class="masonry-col">
+              @for (item of col; track item.rank) {
+                <div class="pin-card" (click)="openFile(item.path)">
+                  <div class="pin-card__img-wrap">
+                    @if (!item.imgError) {
+                      <img [src]="item.thumbnailUrl" [alt]="item.name"
+                           class="pin-card__img" loading="lazy"
+                           (error)="onImgError(item)" />
+                    } @else {
+                      <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
+                        <i class="pi pi-image"></i>
+                      </div>
+                    }
+                    <div class="pin-card__overlay">
+                      <span class="pin-card__open">
+                        <i class="pi pi-external-link"></i>
+                        {{ 'search.openInExplorer' | translate }}
+                      </span>
+                    </div>
+                  </div>
+                  <div class="pin-card__foot">
+                    <span class="pin-card__name" [title]="item.path">{{ item.name }}</span>
+                    <span class="pin-card__badge pin-card__badge--{{ similarityClass(item.similarity) }}">
+                      {{ item.similarity }}%
+                    </span>
+                  </div>
+                </div>
+              }
+            </div>
+          }
+        </div>
+      }
+
+      @if (state.showScrollTop) {
+        <button class="scroll-top-btn" (click)="scrollToTop()">
+          <i class="pi pi-chevron-up"></i>
+        </button>
+      }
 
     </div>
   }
