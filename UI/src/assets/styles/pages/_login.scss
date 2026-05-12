@@ -70,13 +70,13 @@
   background: rgba(30, 30, 42, 0.82);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(124, 58, 237, 0.18);
+  border: 1px solid rgba(217, 70, 239, 0.18);
   border-radius: $border-radius-lg;
   padding: $space-10;
   width: 100%;
   max-width: 44rem;
   box-shadow:
-    0 0 0 1px rgba(124, 58, 237, 0.06),
+    0 0 0 1px rgba(217, 70, 239, 0.06),
     0 24px 64px rgba(0, 0, 0, 0.55);
   transition: border-color 0.4s ease;
 
@@ -98,7 +98,7 @@
     align-items: center;
     justify-content: center;
     margin: 0 auto $space-4;
-    box-shadow: 0 8px 28px rgba(124, 58, 237, 0.4);
+    box-shadow: 0 8px 28px rgba(217, 70, 239, 0.4);
 
     i {
       font-size: $font-size-xl;
@@ -145,7 +145,7 @@
   max-height: 92vh;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: rgba(124, 58, 237, 0.3) transparent;
+  scrollbar-color: rgba(217, 70, 239, 0.3) transparent;
 }
 
 // ── Form field ────────────────────────────────────────────────
@@ -315,6 +315,86 @@
 .text-yellow { color: #f59e0b; }
 .text-green  { color: #34d399; }
 
+// ── Device lock notice ────────────────────────────────────────
+.device-lock-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: $space-3;
+  padding: $space-3 $space-4;
+  background: rgba(251, 146, 60, 0.06);
+  border: 1px solid rgba(251, 146, 60, 0.2);
+  border-radius: $border-radius-sm;
+  margin-bottom: $space-5;
+
+  i {
+    color: $tertiary-500;
+    font-size: $font-size-md;
+    margin-top: 2px;
+    flex-shrink: 0;
+  }
+
+  div { display: flex; flex-direction: column; gap: $space-1; }
+
+  &__title {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: $tertiary-400;
+  }
+
+  &__desc {
+    font-size: $font-size-xs;
+    color: $surface-300;
+    line-height: $line-height-relaxed;
+  }
+}
+
+// ── Toast override ────────────────────────────────────────────
+.p-toast {
+  .p-toast-message {
+    background: rgba(30, 30, 42, 0.95);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(217, 70, 239, 0.2);
+    border-radius: $border-radius-md;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+    font-family: $font-primary;
+
+    &.p-toast-message-warn {
+      border-left: 4px solid $tertiary-500;
+
+      .p-toast-message-icon { color: $tertiary-500; }
+    }
+
+    &.p-toast-message-error {
+      border-left: 4px solid $color-invalid;
+
+      .p-toast-message-icon { color: $color-invalid; }
+    }
+
+    &.p-toast-message-success {
+      border-left: 4px solid #34d399;
+
+      .p-toast-message-icon { color: #34d399; }
+    }
+
+    .p-toast-summary {
+      color: $surface-50;
+      font-weight: $font-weight-semibold;
+      font-size: $font-size-base;
+    }
+
+    .p-toast-detail {
+      color: $surface-300;
+      font-size: $font-size-sm;
+      margin-top: $space-1;
+    }
+
+    .p-toast-icon-close {
+      color: $surface-400;
+      &:hover { color: $surface-50; }
+    }
+  }
+}
+
 // ── PrimeNG overrides scoped to login ─────────────────────────
 .login-overlay {
 
@@ -334,7 +414,7 @@
 
     &:focus {
       border-color: $primary-500;
-      box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.15);
+      box-shadow: 0 0 0 3px rgba(217, 70, 239, 0.15);
       outline: none;
     }
 
@@ -373,7 +453,7 @@
     font-weight: $font-weight-semibold;
     font-family: $font-primary;
     padding: $space-4 $space-6;
-    box-shadow: 0 4px 18px rgba(124, 58, 237, 0.35);
+    box-shadow: 0 4px 18px rgba(217, 70, 239, 0.35);
     transition: opacity 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
     letter-spacing: 0.02em;
 
@@ -381,7 +461,7 @@
       background: linear-gradient(135deg, $primary-600, $secondary-600);
       opacity: 0.9;
       transform: translateY(-1px);
-      box-shadow: 0 8px 28px rgba(124, 58, 237, 0.45);
+      box-shadow: 0 8px 28px rgba(217, 70, 239, 0.45);
     }
 
     &:active:not(:disabled) {

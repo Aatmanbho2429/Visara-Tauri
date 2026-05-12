@@ -1,1 +1,35 @@
-<p>master works!</p>
+<div class="app-shell">
+
+  <!-- Floating nav pill -->
+  <nav class="nav-pill">
+
+    <div class="nav-pill__logo">
+      <i class="pi pi-th-large"></i>
+    </div>
+
+    <div class="nav-pill__sep"></div>
+
+    <a routerLink="search" routerLinkActive="nav-item--active" class="nav-item">
+      <i class="pi pi-search"></i>
+      <span class="nav-item__tip">{{ 'nav.search' | translate }}</span>
+    </a>
+
+    <a routerLink="activity-log" routerLinkActive="nav-item--active" class="nav-item">
+      <i class="pi pi-list-check"></i>
+      <span class="nav-item__tip">{{ 'nav.activity' | translate }}</span>
+    </a>
+
+    <div class="nav-pill__sep"></div>
+
+    <button class="nav-item nav-item--logout">
+      <i class="pi pi-sign-out"></i>
+      <span class="nav-item__tip">{{ 'nav.signOut' | translate }}</span>
+    </button>
+
+  </nav>
+
+  <main class="shell-main">
+    <router-outlet />
+  </main>
+
+</div>

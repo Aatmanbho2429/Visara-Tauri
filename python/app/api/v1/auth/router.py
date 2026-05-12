@@ -10,6 +10,11 @@ async def login(req: LoginRequest):
     return auth_service.login(req.email, req.password)
 
 
+@router.get("/validate-token")
+async def validate_token():
+    return auth_service.validate_saved_token()
+
+
 @router.post("/request-access")
 async def request_access(req: RegisterRequest):
     return auth_service.register_request(

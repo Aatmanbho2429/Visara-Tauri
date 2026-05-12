@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
-import { ApiService } from './api.service';
+import { TauriService } from './tauri.service';
 import { BaseResponse } from '../models/base-response.model';
 import { LoginData, ValidateTokenData } from '../models/auth.model';
 
@@ -15,26 +15,30 @@ export interface RegisterPayload {
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
-  constructor(private api: ApiService) {}
+  constructor(private tauri: TauriService) {}
 
   login(payload: LoginPayload): Observable<BaseResponse<LoginData>> {
-    return this.api.post<LoginData>('/auth/login', payload).pipe(
+    return this.tauri.invoke<LoginData>('auth_login', {
+      email: payload.email,
+      password: payload.password
+    }).pipe(
       tap(res => { if (res.success && res.data?.token) this.saveToken(res.data.token); })
     );
   }
 
   validateToken(): Observable<BaseResponse<ValidateTokenData>> {
-    return this.api.get<ValidateTokenData>('/auth/validate-token', this.getToken() ?? undefined);
+    return this.tauri.invoke<ValidateTokenData>('auth_validate_token');
   }
 
   requestAccess(payload: RegisterPayload): Observable<BaseResponse<null>> {
-    return this.api.post<null>('/auth/request-access', payload);
-  }
-
-  logout(): Observable<BaseResponse<null>> {
-    return this.api.post<null>('/auth/logout', {}, this.getToken() ?? undefined).pipe(
-      tap(() => this.clearToken())
-    );
+    return this.tauri.invoke<null>('auth_request_access', {
+      firstName:   payload.first_name,
+      lastName:    payload.last_name,
+      email:       payload.email,
+      password:    payload.password,
+      phoneNumber: payload.phone_number ?? null,
+      companyName: payload.company_name ?? null,
+    });
   }
 
   getToken(): string | null { return localStorage.getItem(TOKEN_KEY); }

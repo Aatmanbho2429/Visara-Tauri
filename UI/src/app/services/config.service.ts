@@ -11,7 +11,7 @@ interface AppConfig {
 @Injectable({ providedIn: 'root' })
 export class ConfigService {
   private config: AppConfig = {
-    apiBaseUrl: 'http://127.0.0.1:8765',
+    apiBaseUrl: 'http://127.0.0.1:8765/api/v1', 
     isMaintenance: false,
     setTimeMinutes: 11
   };

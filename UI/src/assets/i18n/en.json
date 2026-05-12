@@ -107,6 +107,36 @@
     }
   },
 
+  "nav": {
+    "search":   "Search",
+    "activity": "Activity",
+    "signOut":  "Sign Out"
+  },
+
+  "search": {
+    "title":           "Visual Similarity Search",
+    "subtitle":        "Drop a reference image, select a folder — Visara finds the rest",
+    "imagePick":       "Reference Image",
+    "imageHint":       "Click to browse or drop here",
+    "imageChange":     "Click to change",
+    "folderPick":      "Target Folder",
+    "folderHint":      "Select folder to search in",
+    "findBtn":         "Find Similar Images",
+    "poweredBy":       "Powered by CLIP Vision AI",
+    "scanning":        "Scanning for similar images",
+    "matches":         "matches",
+    "newSearch":       "New Search",
+    "openInExplorer":  "Open in Explorer"
+  },
+
+  "activity": {
+    "title":    "Activity Log",
+    "subtitle": "Your recent image searches",
+    "searches": "searches",
+    "matches":  "matches",
+    "noMatch":  "No matches"
+  },
+
   "register": {
     "title": "Request Access",
     "subtitle": "Fill your details — we'll activate your account",
@@ -132,6 +162,8 @@
     "requestSentTitle": "Request Sent!",
     "requestSentMessage": "Thank you for registering. Your account will be activated soon. We'll reach out at",
     "backToSignIn": "Back to Sign In",
+    "deviceLockTitle": "Device-Locked Account",
+    "deviceLockDesc": "Your licence will be bound to this PC. Visara will not work on any other machine unless you request a device reset.",
     "validation": {
       "firstNameRequired": "First name is required",
       "firstNameMin": "First name must be at least 2 characters",

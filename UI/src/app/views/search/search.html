@@ -1,1 +1,132 @@
-<p>search works!</p>
+<div class="search-page">
+
+  <!-- ══ IDLE ══════════════════════════════════════════════════ -->
+  @if (isIdle) {
+    <div class="search-hero">
+
+      <div class="search-hero__header">
+        <h1 class="search-hero__title">{{ 'search.title' | translate }}</h1>
+        <p class="search-hero__sub">{{ 'search.subtitle' | translate }}</p>
+      </div>
+
+      <div class="search-hero__row">
+
+        <!-- Image pick -->
+        <div class="pick-card" [class.pick-card--set]="imageName" (click)="pickImage()">
+          <div class="pick-card__glow pick-card__glow--violet"></div>
+          @if (!imageName) {
+            <div class="pick-card__icon-wrap">
+              <i class="pi pi-image"></i>
+            </div>
+            <span class="pick-card__title">{{ 'search.imagePick' | translate }}</span>
+            <span class="pick-card__hint">{{ 'search.imageHint' | translate }}</span>
+          } @else {
+            <div class="pick-card__icon-wrap pick-card__icon-wrap--done">
+              <i class="pi pi-check"></i>
+            </div>
+            <span class="pick-card__title">{{ imageName }}</span>
+            <span class="pick-card__hint">{{ 'search.imageChange' | translate }}</span>
+          }
+        </div>
+
+        <!-- Divider -->
+        <div class="pick-divider">
+          <div class="pick-divider__line"></div>
+          <div class="pick-divider__chip"><i class="pi pi-arrow-right"></i></div>
+          <div class="pick-divider__line"></div>
+        </div>
+
+        <!-- Folder pick -->
+        <div class="pick-card pick-card--folder" [class.pick-card--set]="folderPath" (click)="pickFolder()">
+          <div class="pick-card__glow pick-card__glow--cyan"></div>
+          @if (!folderPath) {
+            <div class="pick-card__icon-wrap pick-card__icon-wrap--cyan">
+              <i class="pi pi-folder-open"></i>
+            </div>
+            <span class="pick-card__title">{{ 'search.folderPick' | translate }}</span>
+            <span class="pick-card__hint">{{ 'search.folderHint' | translate }}</span>
+          } @else {
+            <div class="pick-card__icon-wrap pick-card__icon-wrap--cyan pick-card__icon-wrap--done">
+              <i class="pi pi-folder"></i>
+            </div>
+            <span class="pick-card__title">{{ folderPath.split('\\').pop() }}</span>
+            <span class="pick-card__hint pick-card__hint--mono">{{ folderPath }}</span>
+          }
+        </div>
+
+      </div>
+
+      <button class="search-trigger" [class.search-trigger--ready]="canSearch"
+              [disabled]="!canSearch" (click)="doSearch()">
+        <span class="search-trigger__glow"></span>
+        <i class="pi pi-sparkles"></i>
+        <span>{{ 'search.findBtn' | translate }}</span>
+      </button>
+
+      <p class="search-hero__badge">
+        <i class="pi pi-microchip-ai"></i>
+        {{ 'search.poweredBy' | translate }}
+      </p>
+
+    </div>
+  }
+
+  <!-- ══ SEARCHING ════════════════════════════════════════════ -->
+  @if (isSearching) {
+    <div class="scan-view">
+      <div class="scan-rings">
+        <div class="scan-ring scan-ring--1"></div>
+        <div class="scan-ring scan-ring--2"></div>
+        <div class="scan-ring scan-ring--3"></div>
+        <div class="scan-core"><i class="pi pi-search"></i></div>
+      </div>
+      <p class="scan-label">{{ 'search.scanning' | translate }}</p>
+      <p class="scan-path">{{ folderPath }}</p>
+    </div>
+  }
+
+  <!-- ══ RESULTS ══════════════════════════════════════════════ -->
+  @if (hasResults) {
+    <div class="results-wrap">
+
+      <div class="results-bar">
+        <div class="results-bar__thumb">
+          <i class="pi pi-image"></i>
+        </div>
+        <div class="results-bar__meta">
+          <span class="results-bar__name">{{ imageName }}</span>
+          <span class="results-bar__path">{{ folderPath }}</span>
+        </div>
+        <span class="results-bar__count">{{ results.length }} {{ 'search.matches' | translate }}</span>
+        <button class="results-bar__btn" (click)="newSearch()">
+          <i class="pi pi-refresh"></i>
+          {{ 'search.newSearch' | translate }}
+        </button>
+      </div>
+
+      <div class="results-grid">
+        @for (item of results; track item.id) {
+          <div class="r-card" (click)="openFile(item.path)">
+            <div class="r-card__img" [style.background]="item.gradient">
+              <div class="r-card__overlay">
+                <div class="r-card__cta">
+                  <i class="pi pi-external-link"></i>
+                  <span>{{ 'search.openInExplorer' | translate }}</span>
+                </div>
+                <span class="r-card__fpath">{{ item.path }}</span>
+              </div>
+            </div>
+            <div class="r-card__foot">
+              <span class="r-card__name">{{ item.name }}</span>
+              <span class="r-card__badge r-card__badge--{{ similarityClass(item.similarity) }}">
+                {{ item.similarity }}%
+              </span>
+            </div>
+          </div>
+        }
+      </div>
+
+    </div>
+  }
+
+</div>

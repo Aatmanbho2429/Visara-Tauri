@@ -1,4 +1,5 @@
-import { Component } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
+import { BaseComponent } from '../../core/base.component';
 import { CommonModule } from '@angular/common';
 import {
   ReactiveFormsModule,
@@ -10,14 +11,12 @@ import {
 } from '@angular/forms';
 import { Router } from '@angular/router';
 import { TranslateModule } from '@ngx-translate/core';
-import { InputTextModule } from 'primeng/inputtext';
-import { PasswordModule } from 'primeng/password';
-import { ButtonModule } from 'primeng/button';
+import { MessageService } from 'primeng/api';
 import { PrimengComponentsModule } from '../../shared/primeng-components-module';
 import { AuthService } from '../../services/auth.service';
 
 function passwordMatchValidator(group: AbstractControl): ValidationErrors | null {
-  const pw = group.get('password')?.value;
+  const pw      = group.get('password')?.value;
   const confirm = group.get('confirm_password')?.value;
   if (confirm && pw !== confirm) {
     group.get('confirm_password')?.setErrors({ passwordMismatch: true });
@@ -42,34 +41,37 @@ function phoneValidator(control: AbstractControl): ValidationErrors | null {
 @Component({
   selector: 'app-login',
   imports: [CommonModule, ReactiveFormsModule, TranslateModule, PrimengComponentsModule],
+  providers: [MessageService],
   templateUrl: './login.html',
   styleUrl: './login.scss'
 })
-export class Login {
-  showRegister = false;
-  loginSuccess = false;
+export class Login extends BaseComponent implements OnInit {
+  showRegister   = false;
+  loginSuccess   = false;
   loginFirstName = '';
-  loginError = '';
-  loginLoading = false;
+  loginError     = '';
+  loginLoading   = false;
 
   registerSuccess = false;
-  registerEmail = '';
-  registerError = '';
+  registerEmail   = '';
+  registerError   = '';
   registerLoading = false;
 
+  private redirectMessage = '';
+
   loginForm = new FormGroup({
-    email: new FormControl('', [Validators.required, Validators.email]),
+    email:    new FormControl('', [Validators.required, Validators.email]),
     password: new FormControl('', [Validators.required, Validators.minLength(8)])
   });
 
   registerForm = new FormGroup(
     {
-      first_name: new FormControl('', [Validators.required, Validators.minLength(2)]),
-      last_name: new FormControl('', [Validators.required, Validators.minLength(2)]),
-      email: new FormControl('', [Validators.required, Validators.email]),
-      phone_number: new FormControl('', [phoneValidator]),
-      company_name: new FormControl(''),
-      password: new FormControl('', [Validators.required, Validators.minLength(8)]),
+      first_name:       new FormControl('', [Validators.required, Validators.minLength(2)]),
+      last_name:        new FormControl('', [Validators.required, Validators.minLength(2)]),
+      email:            new FormControl('', [Validators.required, Validators.email]),
+      phone_number:     new FormControl('', [phoneValidator]),
+      company_name:     new FormControl(''),
+      password:         new FormControl('', [Validators.required, Validators.minLength(8)]),
       confirm_password: new FormControl('', [Validators.required])
     },
     { validators: passwordMatchValidator }
@@ -84,7 +86,26 @@ export class Login {
     return 'weak';
   }
 
-  constructor(private router: Router, private authService: AuthService) {}
+  constructor(
+    private router:         Router,
+    private authService:    AuthService,
+    private messageService: MessageService
+  ) {
+    super();
+    this.redirectMessage = sessionStorage.getItem('auth_redirect_msg') ?? '';
+    sessionStorage.removeItem('auth_redirect_msg');
+  }
+
+  ngOnInit(): void {
+    if (this.redirectMessage) {
+      this.messageService.add({
+        severity: 'warn',
+        summary:  'Session Ended',
+        detail:   this.redirectMessage,
+        life:     6000
+      });
+    }
+  }
 
   submitLogin(): void {
     if (this.loginForm.invalid) {
@@ -92,22 +113,16 @@ export class Login {
       return;
     }
     this.loginLoading = true;
-    this.loginError = '';
+    this.loginError   = '';
     const { email, password } = this.loginForm.value;
-    this.authService.login({ email: email!, password: password! }).subscribe({
-      next: res => {
-        this.loginLoading = false;
-        if (res.success && res.data) {
-          this.loginSuccess = true;
-          this.loginFirstName = res.data.user.first_name;
-          setTimeout(() => this.router.navigate(['/master']), 1500);
-        } else {
-          this.loginError = res.message;
-        }
-      },
-      error: () => {
-        this.loginLoading = false;
-        this.loginError = 'Unable to reach the server. Please try again.';
+    this.handle(this.authService.login({ email: email!, password: password! }), res => {
+      this.loginLoading = false;
+      if (res.success && res.data) {
+        this.loginSuccess   = true;
+        this.loginFirstName = res.data.user.first_name;
+        setTimeout(() => this.router.navigate(['/master']), 1500);
+      } else {
+        this.loginError = res.message;
       }
     });
   }
@@ -118,44 +133,38 @@ export class Login {
       return;
     }
     this.registerLoading = true;
-    this.registerError = '';
+    this.registerError   = '';
     const v = this.registerForm.value;
-    this.authService.requestAccess({
+    this.handle(this.authService.requestAccess({
       first_name:   v.first_name!,
       last_name:    v.last_name!,
       email:        v.email!,
       password:     v.password!,
       phone_number: v.phone_number ?? undefined,
       company_name: v.company_name ?? undefined
-    }).subscribe({
-      next: res => {
-        this.registerLoading = false;
-        if (res.success) {
-          this.registerSuccess = true;
-          this.registerEmail = v.email!;
-        } else {
-          this.registerError = res.message;
-        }
-      },
-      error: () => {
-        this.registerLoading = false;
-        this.registerError = 'Unable to reach the server. Please try again.';
+    }), res => {
+      this.registerLoading = false;
+      if (res.success) {
+        this.registerSuccess = true;
+        this.registerEmail   = v.email!;
+      } else {
+        this.registerError = res.message;
       }
     });
   }
 
   openRegister(): void {
-    this.showRegister = true;
+    this.showRegister    = true;
     this.registerForm.reset();
     this.registerSuccess = false;
-    this.registerError = '';
+    this.registerError   = '';
   }
 
   closeRegister(): void {
     this.showRegister = false;
     this.loginForm.reset();
     this.loginSuccess = false;
-    this.loginError = '';
+    this.loginError   = '';
   }
 
   isInvalid(form: FormGroup, field: string): boolean {

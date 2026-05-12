@@ -1,3 +1,5 @@
+<p-toast position="top-right" key="auth" />
+
 <!-- ══ LOGIN OVERLAY ══ -->
 <div class="login-overlay" *ngIf="!showRegister">
   <div class="login-bg">
@@ -279,6 +281,14 @@
           <span class="field-error-msg" *ngIf="registerForm.get('confirm_password')?.value && hasError(registerForm, 'confirm_password', 'passwordMismatch')">
             {{ 'register.validation.passwordMismatch' | translate }}
           </span>
+        </div>
+
+        <div class="device-lock-notice">
+          <i class="pi pi-desktop"></i>
+          <div>
+            <span class="device-lock-notice__title">{{ 'register.deviceLockTitle' | translate }}</span>
+            <span class="device-lock-notice__desc">{{ 'register.deviceLockDesc' | translate }}</span>
+          </div>
         </div>
 
         <div class="login-error" *ngIf="registerError">

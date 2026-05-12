@@ -1,1 +1,42 @@
-<p>activity-log works!</p>
+<div class="activity-page">
+
+  <div class="activity-header">
+    <div>
+      <h2 class="activity-header__title">{{ 'activity.title' | translate }}</h2>
+      <p class="activity-header__sub">{{ 'activity.subtitle' | translate }}</p>
+    </div>
+    <span class="activity-header__count">{{ logs.length }} {{ 'activity.searches' | translate }}</span>
+  </div>
+
+  <div class="activity-list">
+    @for (log of logs; track log.id) {
+      <div class="log-row">
+
+        <div class="log-row__timeline">
+          <div class="log-row__dot" [class.log-row__dot--empty]="log.results === 0"></div>
+          @if (!$last) { <div class="log-row__line"></div> }
+        </div>
+
+        <div class="log-card" [class.log-card--empty]="log.results === 0">
+          <div class="log-card__thumb" [style.background]="log.gradient">
+            <i class="pi pi-image"></i>
+          </div>
+          <div class="log-card__body">
+            <span class="log-card__name">{{ log.image }}</span>
+            <span class="log-card__path">{{ log.folder }}</span>
+          </div>
+          <div class="log-card__right">
+            @if (log.results > 0) {
+              <span class="log-card__badge">{{ log.results }} {{ 'activity.matches' | translate }}</span>
+            } @else {
+              <span class="log-card__badge log-card__badge--empty">{{ 'activity.noMatch' | translate }}</span>
+            }
+            <span class="log-card__time">{{ log.time }}</span>
+          </div>
+        </div>
+
+      </div>
+    }
+  </div>
+
+</div>
