@@ -1,0 +1,401 @@
+// ============================================================
+// LOGIN / REGISTER PAGE
+// ============================================================
+
+// ── Overlay ──────────────────────────────────────────────────
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: $surface-950;
+  z-index: 100;
+  overflow: hidden;
+  padding: $space-4;
+}
+
+// ── Animated background blobs ─────────────────────────────────
+.login-bg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+
+  &__circle {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: 0.12;
+    animation: login-blob 10s ease-in-out infinite;
+
+    &--1 {
+      width: 45rem;
+      height: 45rem;
+      background: $primary-500;
+      top: -12rem;
+      left: -10rem;
+      animation-delay: 0s;
+    }
+
+    &--2 {
+      width: 38rem;
+      height: 38rem;
+      background: $secondary-500;
+      bottom: -10rem;
+      right: -8rem;
+      animation-delay: -4s;
+    }
+
+    &--3 {
+      width: 28rem;
+      height: 28rem;
+      background: $tertiary-500;
+      top: 40%;
+      left: 45%;
+      animation-delay: -7s;
+    }
+  }
+}
+
+@keyframes login-blob {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50%       { transform: translateY(-2.4rem) scale(1.06); }
+}
+
+// ── Card ──────────────────────────────────────────────────────
+.login-card {
+  position: relative;
+  z-index: 10;
+  background: rgba(30, 30, 42, 0.82);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(124, 58, 237, 0.18);
+  border-radius: $border-radius-lg;
+  padding: $space-10;
+  width: 100%;
+  max-width: 44rem;
+  box-shadow:
+    0 0 0 1px rgba(124, 58, 237, 0.06),
+    0 24px 64px rgba(0, 0, 0, 0.55);
+  transition: border-color 0.4s ease;
+
+  &--success {
+    border-color: rgba($tertiary-500, 0.3);
+  }
+
+  &__brand {
+    text-align: center;
+    margin-bottom: $space-8;
+  }
+
+  &__icon {
+    width: 5.6rem;
+    height: 5.6rem;
+    border-radius: $border-radius-md;
+    background: linear-gradient(135deg, $primary-600, $secondary-500);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto $space-4;
+    box-shadow: 0 8px 28px rgba(124, 58, 237, 0.4);
+
+    i {
+      font-size: $font-size-xl;
+      color: #fff;
+    }
+  }
+
+  &__title {
+    font-size: $font-size-2xl;
+    font-weight: $font-weight-bold;
+    background: linear-gradient(135deg, $surface-0 30%, $secondary-400);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: $space-1;
+    line-height: $line-height-tight;
+    font-family: $font-primary;
+  }
+
+  &__subtitle {
+    font-size: $font-size-base;
+    color: $surface-300;
+  }
+
+  &__footer {
+    text-align: center;
+    margin-top: $space-6;
+    font-size: $font-size-sm;
+    color: $surface-300;
+
+    a {
+      color: $secondary-400;
+      text-decoration: none;
+      font-weight: $font-weight-medium;
+      margin-left: $space-1;
+      &:hover { text-decoration: underline; }
+    }
+  }
+}
+
+// ── Register card variant ─────────────────────────────────────
+.register-card {
+  max-width: 54rem;
+  max-height: 92vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 58, 237, 0.3) transparent;
+}
+
+// ── Form field ────────────────────────────────────────────────
+.login-field {
+  margin-bottom: $space-5;
+
+  &__label {
+    display: block;
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    color: $surface-200;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: $space-2;
+    font-family: $font-primary;
+
+    .req {
+      color: $primary-400;
+      margin-left: 2px;
+    }
+  }
+
+  &__wrap {
+    position: relative;
+  }
+
+  &__icon {
+    position: absolute;
+    left: $space-4;
+    top: 50%;
+    transform: translateY(-50%);
+    color: $surface-300;
+    font-size: $font-size-base;
+    pointer-events: none;
+    z-index: 1;
+  }
+}
+
+.field-error-msg {
+  display: block;
+  font-size: $font-size-xs;
+  color: $color-invalid;
+  margin-top: $space-1;
+}
+
+// ── Error banner ──────────────────────────────────────────────
+.login-error {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  padding: $space-3 $space-4;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.2);
+  border-radius: $border-radius-sm;
+  color: $color-invalid;
+  font-size: $font-size-sm;
+  margin-bottom: $space-5;
+}
+
+// ── Success state ─────────────────────────────────────────────
+.login-success {
+  text-align: center;
+  padding: $space-8 0;
+
+  &__icon {
+    width: 6.4rem;
+    height: 6.4rem;
+    border-radius: 50%;
+    background: rgba($tertiary-500, 0.12);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto $space-6;
+    animation: success-pulse 1.8s ease-in-out infinite;
+
+    i {
+      font-size: $font-size-2xl;
+      color: $tertiary-500;
+    }
+
+    &--sent {
+      background: rgba($primary-500, 0.12);
+      animation: none;
+
+      i { color: $secondary-400; }
+    }
+  }
+
+  &__heading {
+    font-size: $font-size-xl;
+    font-weight: $font-weight-bold;
+    color: $surface-50;
+    margin-bottom: $space-2;
+    font-family: $font-primary;
+  }
+
+  &__message {
+    font-size: $font-size-base;
+    color: $surface-300;
+    margin-bottom: $space-8;
+  }
+
+  &__bar {
+    height: 3px;
+    background: rgba($surface-400, 0.2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  &__bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, $primary-500, $tertiary-500);
+    animation: login-progress 1.5s ease-in-out forwards;
+    width: 0%;
+  }
+}
+
+@keyframes success-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba($tertiary-500, 0.3); }
+  50%       { box-shadow: 0 0 0 1.2rem rgba($tertiary-500, 0); }
+}
+
+@keyframes login-progress {
+  to { width: 100%; }
+}
+
+// ── Register layout ───────────────────────────────────────────
+.register-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $grid-gap;
+}
+
+// ── Password strength ─────────────────────────────────────────
+.password-hint {
+  display: flex;
+  align-items: center;
+  gap: $space-3;
+  margin-top: $space-2;
+}
+
+.password-strength {
+  flex: 1;
+  height: 4px;
+  background: rgba($surface-400, 0.2);
+  border-radius: 2px;
+  overflow: hidden;
+
+  &__bar {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.35s ease, background-color 0.35s ease;
+
+    &--weak   { width: 33%; background: $color-invalid; }
+    &--medium { width: 66%; background: #f59e0b; }
+    &--strong { width: 100%; background: #34d399; }
+  }
+
+  &__label {
+    font-size: $font-size-xs;
+    font-weight: $font-weight-medium;
+    min-width: 4rem;
+  }
+}
+
+.text-red    { color: $color-invalid; }
+.text-yellow { color: #f59e0b; }
+.text-green  { color: #34d399; }
+
+// ── PrimeNG overrides scoped to login ─────────────────────────
+.login-overlay {
+
+  // pInputText — dark glass input
+  .p-inputtext {
+    width: 100%;
+    padding: $space-4 $space-4 $space-4 4.2rem;
+    background: rgba(15, 15, 19, 0.55);
+    border: 1px solid rgba(100, 116, 139, 0.25);
+    border-radius: $border-radius-sm;
+    color: $surface-50;
+    font-size: $font-size-base;
+    font-family: $font-primary;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+
+    &::placeholder { color: $surface-400; }
+
+    &:focus {
+      border-color: $primary-500;
+      box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.15);
+      outline: none;
+    }
+
+    &.ng-invalid.ng-touched {
+      border-color: $color-invalid;
+      box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.12);
+    }
+
+    &.input--success {
+      border-color: #34d399;
+    }
+  }
+
+  // p-password — full width wrapper + no padding-left override for the icon slot
+  .p-password {
+    width: 100%;
+
+    .p-inputtext {
+      padding-left: 4.2rem; // keep space for our custom icon
+    }
+
+    .p-password-toggle-mask-icon {
+      color: $surface-300;
+      &:hover { color: $secondary-400; }
+    }
+  }
+
+  // p-button — gradient primary
+  .p-button {
+    width: 100%;
+    justify-content: center;
+    background: linear-gradient(135deg, $primary-600, $secondary-600);
+    border: none;
+    border-radius: $border-radius-sm;
+    font-size: $font-size-md;
+    font-weight: $font-weight-semibold;
+    font-family: $font-primary;
+    padding: $space-4 $space-6;
+    box-shadow: 0 4px 18px rgba(124, 58, 237, 0.35);
+    transition: opacity 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease;
+    letter-spacing: 0.02em;
+
+    &:hover:not(:disabled) {
+      background: linear-gradient(135deg, $primary-600, $secondary-600);
+      opacity: 0.9;
+      transform: translateY(-1px);
+      box-shadow: 0 8px 28px rgba(124, 58, 237, 0.45);
+    }
+
+    &:active:not(:disabled) {
+      transform: translateY(0);
+    }
+
+    &:disabled {
+      opacity: 0.55;
+      transform: none;
+      cursor: not-allowed;
+    }
+
+    &.p-button-loading .p-button-loading-icon {
+      color: #fff;
+    }
+  }
+}

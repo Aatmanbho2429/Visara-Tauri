@@ -1,0 +1,29 @@
+.card {
+    &-background {
+        background-color: $surface-800;
+        padding: 2rem;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4) !important;
+        border-radius: 1rem;
+        border: 1px solid rgba(124, 58, 237, 0.15);
+
+        & .add-btn button {
+            margin-bottom: 2rem;
+            text-align: end;
+        }
+
+
+    }
+
+    &__header {
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 1rem;
+    }
+
+    &__title {
+        font-size: 2rem;
+        font-weight: 600;
+        margin-right: auto;
+        color: $secondary-500;
+    }
+}

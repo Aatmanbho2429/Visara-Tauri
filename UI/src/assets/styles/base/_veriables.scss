@@ -1,0 +1,104 @@
+// ================= PRIMARY (Indigo/Violet) =================
+$primary-50:  #f5f3ff;
+$primary-100: #ede9fe;
+$primary-200: #ddd6fe;
+$primary-300: #c4b5fd;
+$primary-400: #a78bfa;
+$primary-500: #7c3aed;
+$primary-600: #6d28d9;
+$primary-700: #5b21b6;
+$primary-800: #4c1d95;
+$primary-900: #3b1373;
+$primary-950: #2e1065;
+
+// ================= SECONDARY (Soft Violet accent) =================
+$secondary-50:  #f5f3ff;
+$secondary-100: #ede9fe;
+$secondary-200: #ddd6fe;
+$secondary-300: #c4b5fd;
+$secondary-400: #a78bfa;
+$secondary-500: #8b5cf6;
+$secondary-600: #7c3aed;
+$secondary-700: #6d28d9;
+$secondary-800: #5b21b6;
+$secondary-900: #4c1d95;
+$secondary-950: #3b1373;
+
+// ================= TERTIARY (Cyan highlight) =================
+$tertiary-50:  #ecfeff;
+$tertiary-100: #cffafe;
+$tertiary-200: #a5f3fc;
+$tertiary-300: #67e8f9;
+$tertiary-400: #22d3ee;
+$tertiary-500: #06b6d4;
+$tertiary-600: #0891b2;
+$tertiary-700: #0e7490;
+$tertiary-800: #155e75;
+$tertiary-900: #164e63;
+$tertiary-950: #083344;
+
+// ================= SURFACE (Dark Slate scale) =================
+$surface-0:   #ffffff;
+$surface-50:  #e2e8f0;
+$surface-100: #cbd5e1;
+$surface-200: #94a3b8;
+$surface-300: #64748b;
+$surface-400: #475569;
+$surface-500: #334155;
+$surface-600: #2d3748;
+$surface-700: #252535;
+$surface-800: #1e1e2a;
+$surface-900: #18181f;
+$surface-950: #0f0f13;
+
+// ================= SEMANTIC TOKENS =================
+$primary-color:        $primary-500;
+$primary-contrast:     #ffffff;
+$primary-hover:        $primary-600;
+$primary-active:       $primary-700;
+$color-invalid:        #f87171;
+
+$secondary-color:      $secondary-500;
+$tertiary-color:       $tertiary-500;
+
+// ================= TYPOGRAPHY =================
+$font-primary: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+// Base: html is set to 62.5% so 1rem = 10px
+$font-size-xs:         1.0rem;   // 10px — labels, badges, captions
+$font-size-sm:         1.2rem;   // 12px — helper text, table cells
+$font-size-base:       1.4rem;   // 14px — body / paragraph
+$font-size-md:         1.6rem;   // 16px — card body text
+$font-size-lg:         1.8rem;   // 18px — card title
+$font-size-xl:         2.4rem;   // 24px — section title
+$font-size-2xl:        3.2rem;   // 32px — page title
+$font-size-3xl:        4.0rem;   // 40px — hero / display
+
+$font-weight-regular:  400;
+$font-weight-medium:   500;
+$font-weight-semibold: 600;
+$font-weight-bold:     700;
+
+$line-height-tight:    1.2;
+$line-height-base:     1.6;
+$line-height-relaxed:  1.8;
+
+// ================= SPACING =================
+$space-1:   0.4rem;   // 4px
+$space-2:   0.8rem;   // 8px
+$space-3:   1.2rem;   // 12px
+$space-4:   1.6rem;   // 16px
+$space-5:   2.0rem;   // 20px
+$space-6:   2.4rem;   // 24px
+$space-8:   3.2rem;   // 32px
+$space-10:  4.0rem;   // 40px
+$space-12:  4.8rem;   // 48px
+$space-16:  6.4rem;   // 64px
+
+// ================= LAYOUT =================
+$grid-gap:        $space-6;    // 24px — default gap between grid/flex items
+$card-padding:    $space-6;    // 24px — inner padding for cards
+$page-padding:    $space-10;   // 40px — page-level horizontal/vertical padding
+$sidebar-width:   22rem;       // 220px — fixed sidebar width
+$border-radius-sm: 0.6rem;
+$border-radius-md: 1.0rem;
+$border-radius-lg: 1.6rem;

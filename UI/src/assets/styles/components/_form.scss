@@ -1,0 +1,32 @@
+.form{
+    &-card{
+        padding: 1rem;
+        width: 70%;
+        margin: auto;
+    }
+
+    &__group{
+        display: flex;
+        flex-direction: column;
+        margin-bottom: 0.5rem
+    }
+
+    &__btn{
+        margin-top: 0.5rem;
+    }
+
+    &__lbl{
+        text-transform: uppercase;
+    }
+
+    &__input{
+        &.is-invalid{
+            border-color: $color-invalid;
+        }
+    }
+
+    &__invalid-msg{
+        color: $color-invalid;
+        font-size: 1rem;
+    }
+}

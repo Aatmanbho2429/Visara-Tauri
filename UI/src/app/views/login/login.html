@@ -1,0 +1,304 @@
+<!-- ══ LOGIN OVERLAY ══ -->
+<div class="login-overlay" *ngIf="!showRegister">
+  <div class="login-bg">
+    <div class="login-bg__circle login-bg__circle--1"></div>
+    <div class="login-bg__circle login-bg__circle--2"></div>
+    <div class="login-bg__circle login-bg__circle--3"></div>
+  </div>
+
+  <div class="login-card" [class.login-card--success]="loginSuccess">
+
+    <!-- Success State -->
+    <div class="login-success" *ngIf="loginSuccess">
+      <div class="login-success__icon">
+        <i class="pi pi-check"></i>
+      </div>
+      <h3 class="login-success__heading">
+        {{ 'login.successHeading' | translate: { name: loginFirstName } }}
+      </h3>
+      <p class="login-success__message">{{ 'login.successMessage' | translate }}</p>
+      <div class="login-success__bar">
+        <div class="login-success__bar-fill"></div>
+      </div>
+    </div>
+
+    <!-- Login Form -->
+    <ng-container *ngIf="!loginSuccess">
+      <div class="login-card__brand">
+        <div class="login-card__icon">
+          <i class="pi pi-th-large"></i>
+        </div>
+        <h2 class="login-card__title">{{ 'login.title' | translate }}</h2>
+        <p class="login-card__subtitle">{{ 'login.subtitle' | translate }}</p>
+      </div>
+
+      <form [formGroup]="loginForm" (ngSubmit)="submitLogin()" novalidate>
+
+        <div class="login-field">
+          <label class="login-field__label">{{ 'login.emailLabel' | translate }}</label>
+          <div class="login-field__wrap">
+            <i class="pi pi-envelope login-field__icon"></i>
+            <input
+              pInputText
+              type="email"
+              formControlName="email"
+              [placeholder]="'login.emailPlaceholder' | translate"
+              autocomplete="email" />
+          </div>
+          <span class="field-error-msg" *ngIf="isInvalid(loginForm, 'email') && hasError(loginForm, 'email', 'required')">
+            {{ 'login.validation.emailRequired' | translate }}
+          </span>
+          <span class="field-error-msg" *ngIf="isInvalid(loginForm, 'email') && hasError(loginForm, 'email', 'email')">
+            {{ 'login.validation.emailInvalid' | translate }}
+          </span>
+        </div>
+
+        <div class="login-field">
+          <label class="login-field__label">{{ 'login.passwordLabel' | translate }}</label>
+          <div class="login-field__wrap">
+            <i class="pi pi-lock login-field__icon"></i>
+            <p-password
+              formControlName="password"
+              [feedback]="false"
+              [toggleMask]="true"
+              [placeholder]="'login.passwordPlaceholder' | translate"
+              autocomplete="current-password" />
+          </div>
+          <span class="field-error-msg" *ngIf="isInvalid(loginForm, 'password') && hasError(loginForm, 'password', 'required')">
+            {{ 'login.validation.passwordRequired' | translate }}
+          </span>
+          <span class="field-error-msg" *ngIf="isInvalid(loginForm, 'password') && hasError(loginForm, 'password', 'minlength')">
+            {{ 'login.validation.passwordMin' | translate }}
+          </span>
+        </div>
+
+        <div class="login-error" *ngIf="loginError">
+          <i class="pi pi-exclamation-circle"></i>
+          <span>{{ loginError }}</span>
+        </div>
+
+        <p-button
+          type="submit"
+          [label]="loginLoading ? ('login.signingIn' | translate) : ('login.signIn' | translate)"
+          [icon]="loginLoading ? '' : 'pi pi-sign-in'"
+          [loading]="loginLoading"
+          [disabled]="loginLoading" />
+
+      </form>
+
+      <p class="login-card__footer">
+        {{ 'login.newToVisara' | translate }}
+        <a href="javascript:void(0)" (click)="openRegister()">{{ 'login.requestAccess' | translate }}</a>
+      </p>
+    </ng-container>
+  </div>
+</div>
+
+<!-- ══ REGISTER OVERLAY ══ -->
+<div class="login-overlay" *ngIf="showRegister">
+  <div class="login-bg">
+    <div class="login-bg__circle login-bg__circle--1"></div>
+    <div class="login-bg__circle login-bg__circle--2"></div>
+    <div class="login-bg__circle login-bg__circle--3"></div>
+  </div>
+
+  <div class="login-card register-card">
+
+    <!-- Success State -->
+    <div class="login-success" *ngIf="registerSuccess">
+      <div class="login-success__icon login-success__icon--sent">
+        <i class="pi pi-send"></i>
+      </div>
+      <h3 class="login-success__heading">{{ 'register.requestSentTitle' | translate }}</h3>
+      <p class="login-success__message">
+        {{ 'register.requestSentMessage' | translate }}
+        <strong> {{ registerEmail }}</strong>.
+      </p>
+      <p-button
+        [label]="'register.backToSignIn' | translate"
+        icon="pi pi-arrow-left"
+        (onClick)="closeRegister()" />
+    </div>
+
+    <!-- Register Form -->
+    <ng-container *ngIf="!registerSuccess">
+      <div class="login-card__brand">
+        <div class="login-card__icon">
+          <i class="pi pi-user-plus"></i>
+        </div>
+        <h2 class="login-card__title">{{ 'register.title' | translate }}</h2>
+        <p class="login-card__subtitle">{{ 'register.subtitle' | translate }}</p>
+      </div>
+
+      <form [formGroup]="registerForm" (ngSubmit)="submitRegister()" novalidate>
+
+        <div class="register-row">
+          <div class="login-field">
+            <label class="login-field__label">
+              {{ 'register.firstNameLabel' | translate }}
+              <span class="req">{{ 'register.required' | translate }}</span>
+            </label>
+            <div class="login-field__wrap">
+              <i class="pi pi-user login-field__icon"></i>
+              <input
+                pInputText
+                type="text"
+                formControlName="first_name"
+                [placeholder]="'register.firstNamePlaceholder' | translate" />
+            </div>
+            <span class="field-error-msg" *ngIf="isInvalid(registerForm, 'first_name') && hasError(registerForm, 'first_name', 'required')">
+              {{ 'register.validation.firstNameRequired' | translate }}
+            </span>
+            <span class="field-error-msg" *ngIf="isInvalid(registerForm, 'first_name') && hasError(registerForm, 'first_name', 'minlength')">
+              {{ 'register.validation.firstNameMin' | translate }}
+            </span>
+          </div>
+
+          <div class="login-field">
+            <label class="login-field__label">
+              {{ 'register.lastNameLabel' | translate }}
+              <span class="req">{{ 'register.required' | translate }}</span>
+            </label>
+            <div class="login-field__wrap">
+              <i class="pi pi-user login-field__icon"></i>
+              <input
+                pInputText
+                type="text"
+                formControlName="last_name"
+                [placeholder]="'register.lastNamePlaceholder' | translate" />
+            </div>
+            <span class="field-error-msg" *ngIf="isInvalid(registerForm, 'last_name') && hasError(registerForm, 'last_name', 'required')">
+              {{ 'register.validation.lastNameRequired' | translate }}
+            </span>
+            <span class="field-error-msg" *ngIf="isInvalid(registerForm, 'last_name') && hasError(registerForm, 'last_name', 'minlength')">
+              {{ 'register.validation.lastNameMin' | translate }}
+            </span>
+          </div>
+        </div>
+
+        <div class="login-field">
+          <label class="login-field__label">
+            {{ 'register.emailLabel' | translate }}
+            <span class="req">{{ 'register.required' | translate }}</span>
+          </label>
+          <div class="login-field__wrap">
+            <i class="pi pi-envelope login-field__icon"></i>
+            <input
+              pInputText
+              type="email"
+              formControlName="email"
+              [placeholder]="'register.emailPlaceholder' | translate" />
+          </div>
+          <span class="field-error-msg" *ngIf="isInvalid(registerForm, 'email') && hasError(registerForm, 'email', 'required')">
+            {{ 'register.validation.emailRequired' | translate }}
+          </span>
+          <span class="field-error-msg" *ngIf="isInvalid(registerForm, 'email') && hasError(registerForm, 'email', 'email')">
+            {{ 'register.validation.emailInvalid' | translate }}
+          </span>
+        </div>
+
+        <div class="login-field">
+          <label class="login-field__label">{{ 'register.phoneLabel' | translate }}</label>
+          <div class="login-field__wrap">
+            <i class="pi pi-phone login-field__icon"></i>
+            <input
+              pInputText
+              type="tel"
+              formControlName="phone_number"
+              [placeholder]="'register.phonePlaceholder' | translate" />
+          </div>
+          <span class="field-error-msg" *ngIf="isInvalid(registerForm, 'phone_number') && hasError(registerForm, 'phone_number', 'phoneInvalid')">
+            {{ 'register.validation.phoneInvalid' | translate }}
+          </span>
+        </div>
+
+        <div class="login-field">
+          <label class="login-field__label">{{ 'register.companyLabel' | translate }}</label>
+          <div class="login-field__wrap">
+            <i class="pi pi-building login-field__icon"></i>
+            <input
+              pInputText
+              type="text"
+              formControlName="company_name"
+              [placeholder]="'register.companyPlaceholder' | translate" />
+          </div>
+        </div>
+
+        <div class="login-field">
+          <label class="login-field__label">
+            {{ 'register.passwordLabel' | translate }}
+            <span class="req">{{ 'register.required' | translate }}</span>
+          </label>
+          <div class="login-field__wrap">
+            <i class="pi pi-lock login-field__icon"></i>
+            <p-password
+              formControlName="password"
+              [feedback]="false"
+              [toggleMask]="true"
+              [placeholder]="'register.passwordPlaceholder' | translate" />
+          </div>
+          <span class="field-error-msg" *ngIf="isInvalid(registerForm, 'password') && hasError(registerForm, 'password', 'required')">
+            {{ 'register.validation.passwordRequired' | translate }}
+          </span>
+          <span class="field-error-msg" *ngIf="isInvalid(registerForm, 'password') && hasError(registerForm, 'password', 'minlength')">
+            {{ 'register.validation.passwordMin' | translate }}
+          </span>
+          <div class="password-hint" *ngIf="registerForm.get('password')?.value">
+            <div class="password-strength">
+              <div class="password-strength__bar"
+                [class.password-strength__bar--weak]="passwordStrength === 'weak'"
+                [class.password-strength__bar--medium]="passwordStrength === 'medium'"
+                [class.password-strength__bar--strong]="passwordStrength === 'strong'">
+              </div>
+            </div>
+            <span class="password-strength__label"
+              [class.text-red]="passwordStrength === 'weak'"
+              [class.text-yellow]="passwordStrength === 'medium'"
+              [class.text-green]="passwordStrength === 'strong'">
+              {{ passwordStrength | titlecase }}
+            </span>
+          </div>
+        </div>
+
+        <div class="login-field">
+          <label class="login-field__label">
+            {{ 'register.confirmPasswordLabel' | translate }}
+            <span class="req">{{ 'register.required' | translate }}</span>
+          </label>
+          <div class="login-field__wrap">
+            <i class="pi pi-lock login-field__icon"></i>
+            <p-password
+              formControlName="confirm_password"
+              [feedback]="false"
+              [toggleMask]="true"
+              [placeholder]="'register.confirmPasswordPlaceholder' | translate" />
+          </div>
+          <span class="field-error-msg" *ngIf="isInvalid(registerForm, 'confirm_password') && hasError(registerForm, 'confirm_password', 'required')">
+            {{ 'register.validation.confirmPasswordRequired' | translate }}
+          </span>
+          <span class="field-error-msg" *ngIf="registerForm.get('confirm_password')?.value && hasError(registerForm, 'confirm_password', 'passwordMismatch')">
+            {{ 'register.validation.passwordMismatch' | translate }}
+          </span>
+        </div>
+
+        <div class="login-error" *ngIf="registerError">
+          <i class="pi pi-exclamation-circle"></i>
+          <span>{{ registerError }}</span>
+        </div>
+
+        <p-button
+          type="submit"
+          [label]="registerLoading ? ('register.sending' | translate) : ('register.sendRequest' | translate)"
+          [icon]="registerLoading ? '' : 'pi pi-send'"
+          [loading]="registerLoading"
+          [disabled]="registerLoading" />
+
+      </form>
+
+      <p class="login-card__footer">
+        {{ 'register.alreadyHaveAccount' | translate }}
+        <a href="javascript:void(0)" (click)="closeRegister()">{{ 'register.signIn' | translate }}</a>
+      </p>
+    </ng-container>
+  </div>
+</div>

@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <!-- Background gradient -->
+    <radialGradient id="bgGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#0f2a42"/>
+      <stop offset="100%" stop-color="#071525"/>
+    </radialGradient>
+
+    <!-- Teal accent gradient -->
+    <linearGradient id="tealGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0ea5e9"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+
+    <!-- Glow filter -->
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Soft inner glow for eye -->
+    <filter id="eyeGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Clip circle -->
+    <clipPath id="circleClip">
+      <circle cx="200" cy="200" r="170"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="200" cy="200" r="195" fill="url(#bgGrad)"/>
+  <circle cx="200" cy="200" r="195" fill="none" stroke="url(#tealGrad)" stroke-width="1.5" opacity="0.5"/>
+
+  <!-- Subtle grid lines -->
+  <g clip-path="url(#circleClip)" opacity="0.06" stroke="#0ea5e9" stroke-width="1">
+    <line x1="30" y1="140" x2="370" y2="140"/>
+    <line x1="30" y1="170" x2="370" y2="170"/>
+    <line x1="30" y1="200" x2="370" y2="200"/>
+    <line x1="30" y1="230" x2="370" y2="230"/>
+    <line x1="30" y1="260" x2="370" y2="260"/>
+    <line x1="140" y1="30" x2="140" y2="370"/>
+    <line x1="170" y1="30" x2="170" y2="370"/>
+    <line x1="200" y1="30" x2="200" y2="370"/>
+    <line x1="230" y1="30" x2="230" y2="370"/>
+    <line x1="260" y1="30" x2="260" y2="370"/>
+  </g>
+
+  <!-- ── MAIN ICON: Stylised Eye with V shape ────────────────── -->
+
+  <!-- Outer eye shape -->
+  <path
+    d="M 90 200 Q 200 100 310 200 Q 200 300 90 200 Z"
+    fill="none"
+    stroke="url(#tealGrad)"
+    stroke-width="4"
+    filter="url(#glow)"
+    opacity="0.9"
+  />
+
+  <!-- Inner iris ring -->
+  <circle
+    cx="200" cy="200" r="38"
+    fill="none"
+    stroke="url(#tealGrad)"
+    stroke-width="3"
+    filter="url(#eyeGlow)"
+    opacity="0.85"
+  />
+
+  <!-- Iris fill -->
+  <circle
+    cx="200" cy="200" r="34"
+    fill="#0ea5e920"
+  />
+
+  <!-- Pupil -->
+  <circle
+    cx="200" cy="200" r="16"
+    fill="url(#tealGrad)"
+    filter="url(#eyeGlow)"
+  />
+
+  <!-- V letter cutout in pupil (white) -->
+  <polyline
+    points="193,195 200,207 207,195"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="2.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Scan line across eye -->
+  <line
+    x1="108" y1="200"
+    x2="292" y2="200"
+    stroke="url(#tealGrad)"
+    stroke-width="1"
+    opacity="0.3"
+    stroke-dasharray="4 4"
+  />
+
+  <!-- Corner brackets — top left -->
+  <path d="M 108 185 L 108 172 L 121 172" fill="none" stroke="url(#tealGrad)" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
+  <!-- Corner brackets — top right -->
+  <path d="M 292 185 L 292 172 L 279 172" fill="none" stroke="url(#tealGrad)" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
+  <!-- Corner brackets — bottom left -->
+  <path d="M 108 215 L 108 228 L 121 228" fill="none" stroke="url(#tealGrad)" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
+  <!-- Corner brackets — bottom right -->
+  <path d="M 292 215 L 292 228 L 279 228" fill="none" stroke="url(#tealGrad)" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
+
+  <!-- ── WORDMARK ────────────────────────────────────────────── -->
+  <text
+    x="200" y="308"
+    text-anchor="middle"
+    font-family="'Segoe UI', Arial, sans-serif"
+    font-size="42"
+    font-weight="700"
+    letter-spacing="10"
+    fill="url(#tealGrad)"
+    filter="url(#glow)"
+  >VISARA</text>
+
+  <!-- Tagline -->
+  <text
+    x="200" y="334"
+    text-anchor="middle"
+    font-family="'Segoe UI', Arial, sans-serif"
+    font-size="13"
+    font-weight="400"
+    letter-spacing="4"
+    fill="#4a8aaa"
+    opacity="0.8"
+  >VISUAL SEARCH</text>
+
+</svg>
