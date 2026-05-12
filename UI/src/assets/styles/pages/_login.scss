@@ -90,19 +90,17 @@
   }
 
   &__icon {
-    width: 5.6rem;
-    height: 5.6rem;
-    border-radius: $border-radius-md;
-    background: linear-gradient(135deg, $primary-600, $secondary-500);
+    width: 6.4rem;
+    height: 6.4rem;
     display: flex;
     align-items: center;
     justify-content: center;
     margin: 0 auto $space-4;
-    box-shadow: 0 8px 28px rgba(217, 70, 239, 0.4);
 
-    i {
-      font-size: $font-size-xl;
-      color: #fff;
+    img {
+      width: 6.4rem;
+      height: 6.4rem;
+      filter: drop-shadow(0 0 16px rgba(217, 70, 239, 0.55));
     }
   }
 

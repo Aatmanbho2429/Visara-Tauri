@@ -1,0 +1,65 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1a1020"/>
+      <stop offset="1" stop-color="#221830"/>
+    </linearGradient>
+    <linearGradient id="armL" x1="180" y1="180" x2="512" y2="790" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e879f9"/>
+      <stop offset="1" stop-color="#d946ef"/>
+    </linearGradient>
+    <linearGradient id="armR" x1="844" y1="180" x2="512" y2="790" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f472b6"/>
+      <stop offset="1" stop-color="#fb923c"/>
+    </linearGradient>
+    <linearGradient id="dot" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#e879f9"/>
+      <stop offset="1" stop-color="#fb923c"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="18" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="armglow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <radialGradient id="ambient" cx="50%" cy="45%" r="50%">
+      <stop offset="0%" stop-color="#d946ef" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#18121e" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="rounded">
+      <rect width="1024" height="1024" rx="224" ry="224"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+
+  <!-- Ambient glow -->
+  <rect width="1024" height="1024" rx="224" fill="url(#ambient)"/>
+
+  <!-- Left arm -->
+  <line x1="180" y1="200" x2="512" y2="790"
+        stroke="url(#armL)" stroke-width="110" stroke-linecap="round"
+        filter="url(#armglow)"/>
+
+  <!-- Right arm -->
+  <line x1="844" y1="200" x2="512" y2="790"
+        stroke="url(#armR)" stroke-width="110" stroke-linecap="round"
+        filter="url(#armglow)"/>
+
+  <!-- Pulse rings -->
+  <circle cx="512" cy="790" r="130" stroke="#e879f9" stroke-width="6" opacity="0.12"/>
+  <circle cx="512" cy="790" r="90"  stroke="#f472b6" stroke-width="8" opacity="0.22"/>
+  <circle cx="512" cy="790" r="54"  stroke="#fb923c" stroke-width="10" opacity="0.4"/>
+
+  <!-- Core dot -->
+  <circle cx="512" cy="790" r="32" fill="url(#dot)" filter="url(#glow)"/>
+</svg>
