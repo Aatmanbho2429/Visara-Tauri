@@ -85,6 +85,13 @@ export class Search extends BaseComponent {
   }
 
   // ── Search ────────────────────────────────────────────────────
+  private readonly BROWSER_SAFE = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp']);
+
+  private isBrowserSafe(path: string): boolean {
+    const ext = path.split('.').pop()?.toLowerCase() ?? '';
+    return this.BROWSER_SAFE.has(ext);
+  }
+
   doSearch(): void {
     if (!this.canSearch) return;
 
@@ -101,11 +108,14 @@ export class Search extends BaseComponent {
         if (event.type === 'progress') {
           if (event.data?.progress) this.state.progress = event.data.progress;
         } else if (event.type === 'complete') {
-          this.state.results = (event.data?.results ?? []).map((r: any) => ({
-            ...r,
-            thumbnailUrl: convertFileSrc(r.path),
-            imgError:     false,
-          }));
+          this.state.results = (event.data?.results ?? []).map((r: any) => {
+            const safe = this.isBrowserSafe(r.path);
+            return {
+              ...r,
+              thumbnailUrl: safe ? convertFileSrc(r.path) : '',
+              imgError:     !safe,
+            };
+          });
           this.state.failedFiles = event.data?.failed_files ?? [];
           this.state.searchState = 'results';
         } else if (event.type === 'error') {

@@ -65,17 +65,27 @@ def load_image_fast(path: str) -> Image.Image:
 
     if ext.endswith((".tif", ".tiff")):
         img = Image.open(path)
+
+        # Fast path: embedded thumbnail in IFD1 (camera / scanner TIFFs)
         try:
             img.seek(1)
-            if max(img.size) <= 1024:
+            if max(img.size) <= 2048:
                 return img.convert("RGB")
         except Exception:
             pass
         img.seek(0)
-        try:
-            img.draft("RGB", (512, 512))
-        except Exception:
-            pass
+
+        w, h = img.size
+        factor = max(1, max(w, h) // 512)
+
+        # For JPEG-compressed TIFFs, draft() loads a reduced copy directly
+        img.draft("RGB", (w // factor, h // factor))
+
+        if factor > 1:
+            # reduce() skips rows for uncompressed TIFFs (real speedup);
+            # for LZW/ZIP it still decompresses but yields a smaller array
+            return img.reduce(factor).convert("RGB")
+
         return img.convert("RGB")
 
     return Image.open(path).convert("RGB")
