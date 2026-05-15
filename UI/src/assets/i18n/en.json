@@ -109,8 +109,18 @@
 
   "nav": {
     "search":   "Search",
-    "activity": "Activity",
+    "profile":  "Profile",
     "signOut":  "Sign Out"
+  },
+
+  "profile": {
+    "title":        "My Profile",
+    "subscription": "Subscription",
+    "daysLeft":     "days remaining",
+    "trialHint":    "Upgrade anytime to unlock unlimited searches",
+    "renewsOn":     "Renews on",
+    "expiredMsg":   "Your access has ended. Choose a plan to continue.",
+    "viewPlans":    "View Plans"
   },
 
   "search": {

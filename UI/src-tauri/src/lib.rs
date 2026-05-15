@@ -66,6 +66,32 @@ async fn auth_request_access(
     let _ = app.emit("auth_request_access_response", result);
 }
 
+#[tauri::command]
+async fn auth_logout(app: tauri::AppHandle) {
+    let client = Client::new();
+    let result = match client
+        .post(format!("{}/auth/logout", API_BASE))
+        .send().await
+    {
+        Ok(res) => res.json::<Value>().await.unwrap_or_else(|_| error_response("Invalid response from server")),
+        Err(_)  => error_response("Cannot connect to Visara service."),
+    };
+    let _ = app.emit("auth_logout_response", result);
+}
+
+#[tauri::command]
+async fn get_plans(app: tauri::AppHandle) {
+    let client = Client::new();
+    let result = match client
+        .get(format!("{}/subscription/plans", API_BASE))
+        .send().await
+    {
+        Ok(res) => res.json::<Value>().await.unwrap_or_else(|_| error_response("Invalid response from server")),
+        Err(_)  => error_response("Cannot connect to Visara service."),
+    };
+    let _ = app.emit("get_plans_response", result);
+}
+
 // ── Search command ─────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -186,7 +212,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             auth_login,
             auth_validate_token,
+            auth_logout,
             auth_request_access,
+            get_plans,
             start_search,
             open_file_path,
         ])

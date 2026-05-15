@@ -6,7 +6,10 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { PrimengComponentsModule } from '../../shared/primeng-components-module';
 import { BaseComponent } from '../../core/base.component';
 import { TauriService } from '../../services/tauri.service';
+import { AuthService } from '../../services/auth.service';
+import { UserStateService } from '../../services/user-state.service';
 import { SearchStateService } from '../../services/search-state.service';
+import { Plan } from '../../models/auth.model';
 
 export interface SearchResult {
   rank:         number;
@@ -41,12 +44,19 @@ export interface SearchProgress {
 })
 export class Search extends BaseComponent {
 
-  private tauri = inject(TauriService);
-  state         = inject(SearchStateService);
+  private tauri     = inject(TauriService);
+  private auth      = inject(AuthService);
+  private userState = inject(UserStateService);
+  state             = inject(SearchStateService);
 
   @ViewChild('masonryGrid') masonryGridRef!: ElementRef<HTMLElement>;
 
   readonly topKOptions = [10, 20, 50];
+
+  // ── Plans dialog state ────────────────────────────────────────
+  plansVisible  = false;
+  plansLoading  = false;
+  plans: Plan[] = [];
 
   // ── Delegate getters to service ───────────────────────────────
   get canSearch()   { return !!this.state.imagePath && !!this.state.folderPath; }
@@ -84,7 +94,76 @@ export class Search extends BaseComponent {
     }
   }
 
-  // ── Search ────────────────────────────────────────────────────
+  // ── Search — validate subscription first ──────────────────────
+  doSearch(): void {
+    if (!this.canSearch) return;
+
+    this.handle(this.auth.validateToken(), res => {
+      if (!res.success) {
+        this.state.searchError = res.message || 'Session expired. Please login again.';
+        this.cdr.detectChanges();
+        return;
+      }
+
+      if (res.data?.user) this.userState.set(res.data.user);
+
+      const status = res.data?.user?.subscription_status;
+      if (status === 'expired' || status === 'exhausted') {
+        this.openPlansDialog();
+        return;
+      }
+
+      this.runSearch();
+    });
+  }
+
+  private openPlansDialog(): void {
+    this.plansVisible = true;
+    this.plansLoading = true;
+    this.plans        = [];
+
+    this.handle(this.auth.getPlans(), res => {
+      this.plansLoading = false;
+      if (res.success && res.data?.plans) {
+        this.plans = res.data.plans;
+      }
+    });
+  }
+
+  closePlansDialog(): void {
+    this.plansVisible = false;
+  }
+
+  // ── Helpers for plan cards ────────────────────────────────────
+  formatAmount(plan: Plan): string {
+    const symbol = plan.currency === 'INR' ? '₹' : plan.currency;
+    return `${symbol}${Number(plan.amount).toLocaleString('en-IN')}`;
+  }
+
+  durationLabel(plan: Plan): string {
+    if (plan.duration === 7)   return '7 Days';
+    if (plan.duration === 30)  return '1 Month';
+    if (plan.duration === 365) return '1 Year';
+    return `${plan.duration} Days`;
+  }
+
+  isRecommended(plan: Plan): boolean {
+    return plan.duration === 30;
+  }
+
+  planTagline(plan: Plan): string {
+    if (plan.duration <= 7)  return 'No commitment. Full AI power for 7 days — perfect for a quick project.';
+    if (plan.duration <= 30) return `The professional's choice. Search as much as you want, every single day.`;
+    return 'Go all in. A full year of unlimited access and you save 33% vs monthly.';
+  }
+
+  planIcon(plan: Plan): string {
+    if (plan.duration <= 7)  return 'pi-bolt';
+    if (plan.duration <= 30) return 'pi-star';
+    return 'pi-crown';
+  }
+
+  // ── Actual search execution ───────────────────────────────────
   private readonly BROWSER_SAFE = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp']);
 
   private isBrowserSafe(path: string): boolean {
@@ -92,9 +171,7 @@ export class Search extends BaseComponent {
     return this.BROWSER_SAFE.has(ext);
   }
 
-  doSearch(): void {
-    if (!this.canSearch) return;
-
+  private runSearch(): void {
     this.state.searchState   = 'searching';
     this.state.searchError   = '';
     this.state.results       = [];

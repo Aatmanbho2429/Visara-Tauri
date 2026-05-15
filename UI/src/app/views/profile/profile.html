@@ -1,0 +1,83 @@
+<div class="profile-page">
+
+  <!-- Loading skeleton -->
+  <div class="profile-loading" *ngIf="loading">
+    <div class="profile-loading__ring"></div>
+  </div>
+
+  <ng-container *ngIf="!loading && userState.user">
+
+    <!-- Avatar + identity -->
+    <div class="profile-identity">
+      <div class="profile-avatar">{{ userState.initials }}</div>
+      <div class="profile-identity__info">
+        <h1 class="profile-identity__name">{{ userState.fullName }}</h1>
+        <p class="profile-identity__email">{{ userState.user?.email }}</p>
+        <p class="profile-identity__company" *ngIf="userState.user?.company_name">
+          {{ userState.user?.company_name }}
+        </p>
+      </div>
+    </div>
+
+    <!-- Subscription card -->
+    <div class="sub-card" [ngClass]="'sub-card--' + userState.subscriptionStatus">
+
+      <div class="sub-card__header">
+        <span class="sub-badge" [ngClass]="'sub-badge--' + userState.subscriptionStatus">
+          <i class="pi"
+            [ngClass]="{
+              'pi-clock':       userState.subscriptionStatus === 'trial',
+              'pi-verified':    userState.subscriptionStatus === 'active',
+              'pi-times-circle':userState.subscriptionStatus === 'expired',
+              'pi-ban':         userState.subscriptionStatus === 'exhausted'
+            }">
+          </i>
+          {{ statusLabel }}
+        </span>
+        <span class="sub-card__plan" *ngIf="userState.subscriptionStatus === 'active'">
+          {{ 'profile.subscription' | translate }}
+        </span>
+      </div>
+
+      <!-- Trial — days remaining -->
+      <ng-container *ngIf="userState.subscriptionStatus === 'trial'">
+        <div class="sub-card__metric">
+          <span class="sub-card__metric-value">{{ userState.daysRemaining ?? 0 }}</span>
+          <span class="sub-card__metric-label">{{ 'profile.daysLeft' | translate }}</span>
+        </div>
+        <p class="sub-card__hint">{{ 'profile.trialHint' | translate }}</p>
+      </ng-container>
+
+      <!-- Active subscription -->
+      <ng-container *ngIf="userState.subscriptionStatus === 'active'">
+        <div class="sub-card__metric" *ngIf="userState.daysRemaining !== null">
+          <span class="sub-card__metric-value">{{ userState.daysRemaining }}</span>
+          <span class="sub-card__metric-label">{{ 'profile.daysLeft' | translate }}</span>
+        </div>
+        <p class="sub-card__hint" *ngIf="subscriptionEndFormatted">
+          {{ 'profile.renewsOn' | translate }} {{ subscriptionEndFormatted }}
+        </p>
+      </ng-container>
+
+      <!-- Expired / Exhausted — CTA -->
+      <ng-container *ngIf="userState.subscriptionStatus === 'expired' || userState.subscriptionStatus === 'exhausted'">
+        <p class="sub-card__expired-msg">{{ 'profile.expiredMsg' | translate }}</p>
+        <button class="sub-card__cta">
+          <i class="pi pi-credit-card"></i>
+          {{ 'profile.viewPlans' | translate }}
+        </button>
+      </ng-container>
+
+    </div>
+
+    <!-- Account details -->
+    <div class="profile-details">
+      <div class="profile-detail-row" *ngIf="userState.user?.phone_number">
+        <i class="pi pi-phone"></i>
+        <span>{{ userState.user?.phone_number }}</span>
+      </div>
+    </div>
+
+  </ng-container>
+
+</div>

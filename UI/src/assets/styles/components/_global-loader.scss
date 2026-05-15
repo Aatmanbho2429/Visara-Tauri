@@ -1,0 +1,108 @@
+// ── Global Loader Overlay ──────────────────────────────────────
+.g-loader-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(24, 18, 30, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: g-loader-fade-in 0.18s ease;
+}
+
+@keyframes g-loader-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+// ── Orb container ──────────────────────────────────────────────
+.g-loader-orb {
+  position: relative;
+  width: 10rem;
+  height: 10rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+// ── Animated rings ─────────────────────────────────────────────
+.g-loader-ring {
+  position: absolute;
+  border-radius: 50%;
+  border-style: solid;
+  border-color: transparent;
+  animation: g-loader-spin linear infinite;
+
+  &--1 {
+    width: 100%;
+    height: 100%;
+    border-width: 2px;
+    border-top-color: rgba(217, 70, 239, 0.7);
+    border-right-color: rgba(217, 70, 239, 0.15);
+    animation-duration: 1.1s;
+  }
+
+  &--2 {
+    width: 72%;
+    height: 72%;
+    border-width: 2px;
+    border-top-color: rgba(251, 146, 60, 0.6);
+    border-right-color: rgba(251, 146, 60, 0.1);
+    animation-duration: 0.8s;
+    animation-direction: reverse;
+  }
+
+  &--3 {
+    width: 44%;
+    height: 44%;
+    border-width: 1.5px;
+    border-top-color: rgba(217, 70, 239, 0.9);
+    border-right-color: rgba(217, 70, 239, 0.2);
+    animation-duration: 0.55s;
+  }
+}
+
+@keyframes g-loader-spin {
+  to { transform: rotate(360deg); }
+}
+
+// ── Core dot ───────────────────────────────────────────────────
+.g-loader-core {
+  position: relative;
+  width: 1.8rem;
+  height: 1.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &__dot {
+    width: 0.8rem;
+    height: 0.8rem;
+    border-radius: 50%;
+    background: linear-gradient(135deg, $primary-400, $tertiary-400);
+    box-shadow:
+      0 0 12px rgba(217, 70, 239, 0.8),
+      0 0 28px rgba(217, 70, 239, 0.4),
+      0 0 50px rgba(251, 146, 60, 0.2);
+    animation: g-loader-pulse 1.1s ease-in-out infinite;
+  }
+}
+
+@keyframes g-loader-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 12px rgba(217, 70, 239, 0.8),
+      0 0 28px rgba(217, 70, 239, 0.4),
+      0 0 50px rgba(251, 146, 60, 0.2);
+  }
+  50% {
+    transform: scale(1.35);
+    box-shadow:
+      0 0 20px rgba(217, 70, 239, 1),
+      0 0 44px rgba(217, 70, 239, 0.6),
+      0 0 70px rgba(251, 146, 60, 0.3);
+  }
+}

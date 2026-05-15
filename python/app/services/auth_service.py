@@ -25,6 +25,7 @@ def _load_model(onnx_key: str):
 
 def login(email: str, password: str) -> dict:
     try:
+        print(get_device_id())
         r = requests.post(
             f"{SUPABASE_EDGE}/login-user-test",
             json={"email": email, "password": password, "device_id": get_device_id()},

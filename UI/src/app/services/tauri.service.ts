@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { Observable } from 'rxjs';
 import { BaseResponse } from '../models/base-response.model';
+import { LoaderService } from './loader.service';
 
 export interface SearchEvent {
   type: 'progress' | 'complete' | 'error';
@@ -11,17 +12,20 @@ export interface SearchEvent {
 
 @Injectable({ providedIn: 'root' })
 export class TauriService {
-  constructor(private zone: NgZone) {}
+  constructor(private zone: NgZone, private loader: LoaderService) {}
 
-  // ── Generic auth invoke via events ────────────────────────────────
+  // ── Generic invoke — auto shows/hides global loader ───────────────
   invoke<T>(command: string, args?: Record<string, unknown>): Observable<BaseResponse<T>> {
     const eventName = `${command}_response`;
     return new Observable(observer => {
       let unlistenFn: (() => void) | null = null;
 
+      this.loader.show();
+
       this.zone.runOutsideAngular(() => {
         listen<BaseResponse<T>>(eventName, event => {
           this.zone.run(() => {
+            this.loader.hide();
             observer.next(event.payload);
             observer.complete();
             unlistenFn?.();
@@ -30,6 +34,7 @@ export class TauriService {
           unlistenFn = unlisten;
           invoke(command, args ?? {}).catch(err => {
             this.zone.run(() => {
+              this.loader.hide();
               observer.next({ success: false, message: String(err), data: null as T });
               observer.complete();
               unlistenFn?.();

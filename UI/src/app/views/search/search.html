@@ -194,3 +194,103 @@
   }
 
 </div>
+
+<!-- ══ PLANS DIALOG ════════════════════════════════════════════ -->
+<p-dialog
+  [(visible)]="plansVisible"
+  [modal]="true"
+  [showHeader]="false"
+  [closable]="false"
+  [draggable]="false"
+  [resizable]="false"
+  styleClass="plans-overlay">
+
+  <div class="plans-modal">
+
+    <!-- Close -->
+    <button class="plans-modal__close" (click)="closePlansDialog()">
+      <i class="pi pi-times"></i>
+    </button>
+
+    <!-- Hero -->
+    <div class="plans-modal__hero">
+      <div class="plans-modal__hero-glow"></div>
+      <div class="plans-modal__hero-icon">
+        <i class="pi pi-crown"></i>
+      </div>
+      <h2 class="plans-modal__title">Unlock Full Access</h2>
+      <p class="plans-modal__sub">Your trial period has ended. Choose a plan to keep searching with Visara AI.</p>
+    </div>
+
+    <!-- Loading -->
+    @if (plansLoading) {
+      <div class="plans-modal__loading">
+        <div class="plans-loading-ring"></div>
+        <span>Fetching plans…</span>
+      </div>
+    }
+
+    <!-- Plan cards -->
+    @if (!plansLoading && plans.length > 0) {
+      <div class="plans-modal__cards">
+        @for (plan of plans; track plan.id) {
+          <div class="plan-card" [class.plan-card--highlight]="isRecommended(plan)">
+
+            @if (isRecommended(plan)) {
+              <div class="plan-card__popular">Most Popular</div>
+            }
+
+            <!-- Plan icon + name -->
+            <div class="plan-card__top">
+              <div class="plan-card__icon" [class.plan-card__icon--highlight]="isRecommended(plan)">
+                <i class="pi" [ngClass]="planIcon(plan)"></i>
+              </div>
+              <span class="plan-card__name">{{ plan.name }}</span>
+            </div>
+
+            <!-- Price -->
+            <div class="plan-card__pricing">
+              <span class="plan-card__price" [class.plan-card__price--highlight]="isRecommended(plan)">
+                {{ formatAmount(plan) }}
+              </span>
+              <span class="plan-card__period">/ {{ durationLabel(plan) }}</span>
+            </div>
+
+            <!-- Divider -->
+            <div class="plan-card__divider"></div>
+
+            <!-- Duration chip + tagline -->
+            <div class="plan-card__duration-chip">
+              <i class="pi pi-calendar"></i>
+              <span>{{ durationLabel(plan) }} access</span>
+            </div>
+            <p class="plan-card__tagline">{{ planTagline(plan) }}</p>
+
+            <!-- CTA -->
+            <button class="plan-card__cta" [class.plan-card__cta--highlight]="isRecommended(plan)">
+              <span>Get {{ plan.name }}</span>
+              <i class="pi pi-arrow-right"></i>
+            </button>
+
+          </div>
+        }
+      </div>
+    }
+
+    <!-- Error -->
+    @if (!plansLoading && plans.length === 0) {
+      <div class="plans-modal__error">
+        <i class="pi pi-exclamation-circle"></i>
+        <span>Could not load plans. Please try again.</span>
+      </div>
+    }
+
+    <!-- Footer -->
+    <div class="plans-modal__footer">
+      <i class="pi pi-shield"></i>
+      <span>Secure payment via Razorpay &nbsp;·&nbsp; Cancel anytime</span>
+    </div>
+
+  </div>
+
+</p-dialog>
