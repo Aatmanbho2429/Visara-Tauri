@@ -1,9 +1,9 @@
 <div class="profile-page">
 
   <!-- Loading skeleton -->
-  <div class="profile-loading" *ngIf="loading">
+  <!-- <div class="profile-loading" *ngIf="loading">
     <div class="profile-loading__ring"></div>
-  </div>
+  </div> -->
 
   <ng-container *ngIf="!loading && userState.user">
 
@@ -62,7 +62,7 @@
       <!-- Expired / Exhausted — CTA -->
       <ng-container *ngIf="userState.subscriptionStatus === 'expired' || userState.subscriptionStatus === 'exhausted'">
         <p class="sub-card__expired-msg">{{ 'profile.expiredMsg' | translate }}</p>
-        <button class="sub-card__cta">
+        <button class="sub-card__cta" (click)="openPlans()">
           <i class="pi pi-credit-card"></i>
           {{ 'profile.viewPlans' | translate }}
         </button>
@@ -78,6 +78,64 @@
       </div>
     </div>
 
+    <!-- Payment history -->
+    <div class="pay-history">
+      <div class="pay-history__head">
+        <i class="pi pi-receipt"></i>
+        <span>Payment History</span>
+      </div>
+
+      <!-- Loading -->
+      @if (historyLoading) {
+        <div class="pay-history__loading">
+          <div class="pay-history__ring"></div>
+        </div>
+      }
+
+      <!-- Empty -->
+      @if (!historyLoading && subscriptions.length === 0) {
+        <div class="pay-history__empty">
+          <i class="pi pi-inbox"></i>
+          <span>No payments yet</span>
+        </div>
+      }
+
+      <!-- List -->
+      @if (!historyLoading && subscriptions.length > 0) {
+        <div class="pay-history__list">
+          @for (sub of subscriptions; track sub.id) {
+            <div class="pay-row">
+
+              <div class="pay-row__icon" [class.pay-row__icon--active]="sub.status === 'active'">
+                <i class="pi pi-credit-card"></i>
+              </div>
+
+              <div class="pay-row__info">
+                <span class="pay-row__plan">{{ sub.plans?.name ?? 'Plan' }} Plan</span>
+                <span class="pay-row__date">Purchased {{ formatDate(sub.created_at) }}</span>
+                <span class="pay-row__validity">
+                  {{ formatDate(sub.start_date) }} → {{ formatDate(sub.end_date) }}
+                </span>
+              </div>
+
+              <div class="pay-row__right">
+                <span class="pay-row__amount">{{ formatAmount(sub.amount, sub.currency) }}</span>
+                <span class="pay-row__status"
+                  [class.pay-row__status--active]="sub.status === 'active'"
+                  [class.pay-row__status--expired]="sub.status !== 'active'">
+                  {{ sub.status | titlecase }}
+                </span>
+              </div>
+
+            </div>
+          }
+        </div>
+      }
+
+    </div>
+
   </ng-container>
 
 </div>
+
+<app-plans-dialog />

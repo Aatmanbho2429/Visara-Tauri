@@ -3,14 +3,12 @@ sys.dont_write_bytecode = True
 
 import os
 import requests
-from app.config import SUPABASE_EDGE, TOKEN_FILE
+from app.config import SUPABASE_EDGE, TOKEN_FILE, USER_ID_FILE
 from app.services.license_service import get_device_id
 
 
 def _load_model(onnx_key: str):
-    """Load encrypted ONNX model after successful auth."""
     from app.config import MODEL_ENC_PATH
-    import os
     print(f"[auth] Loading model from: {MODEL_ENC_PATH}", flush=True)
     if not os.path.exists(MODEL_ENC_PATH):
         print(f"[auth] ERROR: Model file not found at {MODEL_ENC_PATH}", flush=True)
@@ -21,6 +19,26 @@ def _load_model(onnx_key: str):
         print(f"[auth] Model loaded successfully", flush=True)
     except Exception as e:
         print(f"[auth] ERROR loading model: {e}", flush=True)
+
+
+def _save_session(token: str, user_id: str):
+    with open(TOKEN_FILE, "w") as f:
+        f.write(token)
+    with open(USER_ID_FILE, "w") as f:
+        f.write(user_id)
+
+
+def _clear_session():
+    if os.path.exists(TOKEN_FILE):   os.remove(TOKEN_FILE)
+    if os.path.exists(USER_ID_FILE): os.remove(USER_ID_FILE)
+
+
+def get_saved_user_id() -> str | None:
+    if not os.path.exists(USER_ID_FILE):
+        return None
+    with open(USER_ID_FILE, "r") as f:
+        uid = f.read().strip()
+    return uid if uid else None
 
 
 def login(email: str, password: str) -> dict:
@@ -36,8 +54,7 @@ def login(email: str, password: str) -> dict:
         if not data.get("success"):
             return {"success": False, "message": data.get("message", "Login failed"), "data": None}
 
-        with open(TOKEN_FILE, "w") as f:
-            f.write(data["token"])
+        _save_session(data["token"], data["user"]["id"])
 
         if data.get("onnx_key"):
             _load_model(data["onnx_key"])
@@ -73,8 +90,13 @@ def validate_saved_token() -> dict:
         data = r.json()
 
         if not data.get("valid"):
-            os.remove(TOKEN_FILE)
+            _clear_session()
             return {"success": False, "message": data.get("message", "Session expired. Please login again."), "data": None}
+
+        # Refresh user_id file in case it was missing
+        if data.get("user", {}).get("id"):
+            with open(USER_ID_FILE, "w") as f:
+                f.write(data["user"]["id"])
 
         if data.get("onnx_key"):
             _load_model(data["onnx_key"])
@@ -88,8 +110,7 @@ def validate_saved_token() -> dict:
 
 
 def logout() -> dict:
-    if os.path.exists(TOKEN_FILE):
-        os.remove(TOKEN_FILE)
+    _clear_session()
     try:
         from app.core.embedder import Embedder
         Embedder().reset()

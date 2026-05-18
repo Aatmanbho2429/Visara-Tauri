@@ -9,7 +9,7 @@ import { TauriService } from '../../services/tauri.service';
 import { AuthService } from '../../services/auth.service';
 import { UserStateService } from '../../services/user-state.service';
 import { SearchStateService } from '../../services/search-state.service';
-import { Plan } from '../../models/auth.model';
+import { PlansDialog } from '../../shared/plans-dialog/plans-dialog';
 
 export interface SearchResult {
   rank:         number;
@@ -38,7 +38,7 @@ export interface SearchProgress {
 
 @Component({
   selector:    'app-search',
-  imports:     [CommonModule, TranslateModule, PrimengComponentsModule],
+  imports:     [CommonModule, TranslateModule, PrimengComponentsModule, PlansDialog],
   templateUrl: './search.html',
   styleUrl:    './search.scss',
 })
@@ -50,15 +50,10 @@ export class Search extends BaseComponent {
   state             = inject(SearchStateService);
 
   @ViewChild('masonryGrid') masonryGridRef!: ElementRef<HTMLElement>;
+  @ViewChild(PlansDialog)   plansDialog!: PlansDialog;
 
   readonly topKOptions = [10, 20, 50];
 
-  // ── Plans dialog state ────────────────────────────────────────
-  plansVisible  = false;
-  plansLoading  = false;
-  plans: Plan[] = [];
-
-  // ── Delegate getters to service ───────────────────────────────
   get canSearch()   { return !!this.state.imagePath && !!this.state.folderPath; }
   get isIdle()      { return this.state.searchState === 'idle'; }
   get isSearching() { return this.state.searchState === 'searching'; }
@@ -73,7 +68,6 @@ export class Search extends BaseComponent {
 
   constructor() { super(); }
 
-  // ── File / folder pickers ─────────────────────────────────────
   async pickImage() {
     const selected = await open({
       multiple: false,
@@ -94,7 +88,7 @@ export class Search extends BaseComponent {
     }
   }
 
-  // ── Search — validate subscription first ──────────────────────
+  // ── Validate subscription then search ─────────────────────────
   doSearch(): void {
     if (!this.canSearch) return;
 
@@ -107,9 +101,9 @@ export class Search extends BaseComponent {
 
       if (res.data?.user) this.userState.set(res.data.user);
 
-      const status = res.data?.user?.subscription_status;
+      const status = (res.data?.user?.subscription_status ?? '').toLowerCase();
       if (status === 'expired' || status === 'exhausted') {
-        this.openPlansDialog();
+        this.plansDialog.open();
         return;
       }
 
@@ -117,58 +111,10 @@ export class Search extends BaseComponent {
     });
   }
 
-  private openPlansDialog(): void {
-    this.plansVisible = true;
-    this.plansLoading = true;
-    this.plans        = [];
-
-    this.handle(this.auth.getPlans(), res => {
-      this.plansLoading = false;
-      if (res.success && res.data?.plans) {
-        this.plans = res.data.plans;
-      }
-    });
-  }
-
-  closePlansDialog(): void {
-    this.plansVisible = false;
-  }
-
-  // ── Helpers for plan cards ────────────────────────────────────
-  formatAmount(plan: Plan): string {
-    const symbol = plan.currency === 'INR' ? '₹' : plan.currency;
-    return `${symbol}${Number(plan.amount).toLocaleString('en-IN')}`;
-  }
-
-  durationLabel(plan: Plan): string {
-    if (plan.duration === 7)   return '7 Days';
-    if (plan.duration === 30)  return '1 Month';
-    if (plan.duration === 365) return '1 Year';
-    return `${plan.duration} Days`;
-  }
-
-  isRecommended(plan: Plan): boolean {
-    return plan.duration === 30;
-  }
-
-  planTagline(plan: Plan): string {
-    if (plan.duration <= 7)  return 'No commitment. Full AI power for 7 days — perfect for a quick project.';
-    if (plan.duration <= 30) return `The professional's choice. Search as much as you want, every single day.`;
-    return 'Go all in. A full year of unlimited access and you save 33% vs monthly.';
-  }
-
-  planIcon(plan: Plan): string {
-    if (plan.duration <= 7)  return 'pi-bolt';
-    if (plan.duration <= 30) return 'pi-star';
-    return 'pi-crown';
-  }
-
-  // ── Actual search execution ───────────────────────────────────
   private readonly BROWSER_SAFE = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp']);
 
   private isBrowserSafe(path: string): boolean {
-    const ext = path.split('.').pop()?.toLowerCase() ?? '';
-    return this.BROWSER_SAFE.has(ext);
+    return this.BROWSER_SAFE.has(path.split('.').pop()?.toLowerCase() ?? '');
   }
 
   private runSearch(): void {
@@ -187,11 +133,7 @@ export class Search extends BaseComponent {
         } else if (event.type === 'complete') {
           this.state.results = (event.data?.results ?? []).map((r: any) => {
             const safe = this.isBrowserSafe(r.path);
-            return {
-              ...r,
-              thumbnailUrl: safe ? convertFileSrc(r.path) : '',
-              imgError:     !safe,
-            };
+            return { ...r, thumbnailUrl: safe ? convertFileSrc(r.path) : '', imgError: !safe };
           });
           this.state.failedFiles = event.data?.failed_files ?? [];
           this.state.searchState = 'results';
@@ -204,15 +146,9 @@ export class Search extends BaseComponent {
     });
   }
 
-  newSearch(): void {
-    this.state.reset();
-    this.cdr.detectChanges();
-  }
+  newSearch(): void { this.state.reset(); this.cdr.detectChanges(); }
 
-  onImgError(item: SearchResult): void {
-    item.imgError = true;
-    this.cdr.detectChanges();
-  }
+  onImgError(item: SearchResult): void { item.imgError = true; this.cdr.detectChanges(); }
 
   openFile(path: string): void { this.tauri.openFilePath(path); }
 

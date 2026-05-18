@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { TauriService } from './tauri.service';
 import { BaseResponse } from '../models/base-response.model';
-import { LoginData, ValidateTokenData, PlansData } from '../models/auth.model';
+import { LoginData, ValidateTokenData, PlansData, SubscriptionsData } from '../models/auth.model';
 
 export interface LoginPayload { email: string; password: string; }
 export interface RegisterPayload {
@@ -34,6 +34,30 @@ export class AuthService {
 
   getPlans(): Observable<BaseResponse<PlansData>> {
     return this.tauri.invoke<PlansData>('get_plans');
+  }
+
+  getUserSubscriptions(): Observable<BaseResponse<SubscriptionsData>> {
+    return this.tauri.invoke<SubscriptionsData>('get_user_subscriptions');
+  }
+
+  createOrder(userId: string, planId: string): Observable<BaseResponse<any>> {
+    return this.tauri.invoke<any>('create_order', { userId, planId });
+  }
+
+  verifyPayment(
+    razorpayOrderId:   string,
+    razorpayPaymentId: string,
+    razorpaySignature: string,
+    userId:            string,
+    planId:            string
+  ): Observable<BaseResponse<any>> {
+    return this.tauri.invoke<any>('verify_payment', {
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+      userId,
+      planId,
+    });
   }
 
   requestAccess(payload: RegisterPayload): Observable<BaseResponse<null>> {

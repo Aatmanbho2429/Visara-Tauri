@@ -24,8 +24,15 @@ export class UserStateService {
     return `${u.first_name?.[0] ?? ''}${u.last_name?.[0] ?? ''}`.toUpperCase() || '?';
   }
 
+  get userId(): string | null { return this.user?.id ?? null; }
+
+  updateSubscription(data: { subscription_status: string; subscription_end: string; days_remaining: number }): void {
+    if (!this.user) return;
+    this.set({ ...this.user, ...data });
+  }
+
   get subscriptionStatus(): string {
-    return this.user?.subscription_status ?? 'trial';
+    return (this.user?.subscription_status ?? 'trial').toLowerCase();
   }
 
   get canSearch(): boolean {

@@ -201,6 +201,155 @@
   }
 }
 
+// ── Payment History ────────────────────────────────────────────
+.pay-history {
+  display: flex;
+  flex-direction: column;
+  gap: $space-3;
+
+  &__head {
+    display: flex;
+    align-items: center;
+    gap: $space-2;
+    font-size: $font-size-base;
+    font-weight: $font-weight-semibold;
+    font-family: $font-primary;
+    color: $surface-300;
+    i { color: $surface-500; }
+  }
+
+  &__loading {
+    display: flex;
+    justify-content: center;
+    padding: $space-6;
+  }
+
+  &__ring {
+    width: 2.8rem;
+    height: 2.8rem;
+    border-radius: 50%;
+    border: 2px solid rgba(217, 70, 239, 0.15);
+    border-top-color: $primary-400;
+    animation: profile-spin 0.9s linear infinite;
+  }
+
+  &__empty {
+    display: flex;
+    align-items: center;
+    gap: $space-3;
+    padding: $space-5;
+    border-radius: $border-radius-md;
+    border: 1px dashed rgba(217, 70, 239, 0.12);
+    color: $surface-600;
+    font-size: $font-size-sm;
+    font-family: $font-primary;
+    i { font-size: $font-size-lg; }
+  }
+
+  &__list {
+    display: flex;
+    flex-direction: column;
+    gap: $space-2;
+  }
+}
+
+.pay-row {
+  display: flex;
+  align-items: center;
+  gap: $space-4;
+  padding: $space-4 $space-5;
+  border-radius: $border-radius-md;
+  border: 1px solid rgba(217, 70, 239, 0.1);
+  background: rgba(34, 24, 48, 0.5);
+  transition: border-color 0.2s ease, background 0.2s ease;
+
+  &:hover {
+    border-color: rgba(217, 70, 239, 0.22);
+    background: rgba(45, 31, 61, 0.6);
+  }
+
+  &__icon {
+    width: 4rem;
+    height: 4rem;
+    border-radius: $border-radius-sm;
+    background: rgba(217, 70, 239, 0.08);
+    border: 1px solid rgba(217, 70, 239, 0.15);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    i { font-size: $font-size-base; color: $surface-500; }
+
+    &--active {
+      background: rgba(52, 211, 153, 0.08);
+      border-color: rgba(52, 211, 153, 0.2);
+      i { color: #34d399; }
+    }
+  }
+
+  &__info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__plan {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    font-family: $font-primary;
+    color: $surface-200;
+  }
+
+  &__date {
+    font-size: $font-size-xs;
+    color: $surface-500;
+    font-family: $font-primary;
+  }
+
+  &__validity {
+    font-size: $font-size-xs;
+    color: $surface-600;
+    font-family: $font-primary;
+  }
+
+  &__right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: $space-1;
+    flex-shrink: 0;
+  }
+
+  &__amount {
+    font-size: $font-size-base;
+    font-weight: $font-weight-bold;
+    font-family: $font-primary;
+    color: $surface-100;
+  }
+
+  &__status {
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    font-family: $font-primary;
+    padding: 2px $space-2;
+    border-radius: 4px;
+
+    &--active {
+      background: rgba(52, 211, 153, 0.1);
+      color: #34d399;
+      border: 1px solid rgba(52, 211, 153, 0.2);
+    }
+
+    &--expired {
+      background: rgba(248, 113, 113, 0.08);
+      color: $color-invalid;
+      border: 1px solid rgba(248, 113, 113, 0.18);
+    }
+  }
+}
+
 // ── Account details ────────────────────────────────────────────
 .profile-details {
   display: flex;

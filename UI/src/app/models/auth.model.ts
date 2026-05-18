@@ -5,9 +5,26 @@ export interface User {
   last_name: string;
   phone_number?: string;
   company_name?: string;
-  subscription_status: 'trial' | 'active' | 'expired' | 'exhausted';
+  subscription_status: string;
   subscription_end: string | null;
   days_remaining: number | null;
+}
+
+export interface Subscription {
+  id: string;
+  amount: string;
+  currency: string;
+  status: string;
+  start_date: string;
+  end_date: string;
+  created_at: string;
+  razorpay_payment_id?: string;
+  payment_method?: string;
+  plans?: { name: string; duration: number };
+}
+
+export interface SubscriptionsData {
+  subscriptions: Subscription[];
 }
 
 export interface Plan {

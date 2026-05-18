@@ -35,6 +35,7 @@ CLIP_STD  = [0.26862954, 0.26130258, 0.27577711]
 
 MODEL_ENC_PATH = os.path.join(BASE_DIR, "models", "clip_vitb32.onnx.enc")
 TOKEN_FILE     = os.path.join(os.path.expanduser("~"), ".visara_token")
+USER_ID_FILE   = os.path.join(os.path.expanduser("~"), ".visara_user_id")
 
 SUPABASE_EDGE = "https://qpxvwdxuhgbthzbcppye.supabase.co/functions/v1"
 APP_VERSION   = "1.1.7"

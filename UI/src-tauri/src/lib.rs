@@ -92,6 +92,60 @@ async fn get_plans(app: tauri::AppHandle) {
     let _ = app.emit("get_plans_response", result);
 }
 
+#[tauri::command]
+async fn get_user_subscriptions(app: tauri::AppHandle) {
+    let client = Client::new();
+    let result = match client
+        .post(format!("{}/subscription/history", API_BASE))
+        .send().await
+    {
+        Ok(res) => res.json::<Value>().await.unwrap_or_else(|_| error_response("Invalid response from server")),
+        Err(_)  => error_response("Cannot connect to Visara service."),
+    };
+    let _ = app.emit("get_user_subscriptions_response", result);
+}
+
+#[tauri::command]
+async fn create_order(app: tauri::AppHandle, user_id: String, plan_id: String) {
+    let client = Client::new();
+    let result = match client
+        .post(format!("{}/subscription/create-order", API_BASE))
+        .json(&serde_json::json!({ "user_id": user_id, "plan_id": plan_id }))
+        .send().await
+    {
+        Ok(res) => res.json::<Value>().await.unwrap_or_else(|_| error_response("Invalid response from server")),
+        Err(_)  => error_response("Cannot connect to Visara service."),
+    };
+    let _ = app.emit("create_order_response", result);
+}
+
+#[tauri::command]
+async fn verify_payment(
+    app:                 tauri::AppHandle,
+    razorpay_order_id:   String,
+    razorpay_payment_id: String,
+    razorpay_signature:  String,
+    user_id:             String,
+    plan_id:             String,
+) {
+    let client = Client::new();
+    let result = match client
+        .post(format!("{}/subscription/verify-payment", API_BASE))
+        .json(&serde_json::json!({
+            "razorpay_order_id":   razorpay_order_id,
+            "razorpay_payment_id": razorpay_payment_id,
+            "razorpay_signature":  razorpay_signature,
+            "user_id":             user_id,
+            "plan_id":             plan_id,
+        }))
+        .send().await
+    {
+        Ok(res) => res.json::<Value>().await.unwrap_or_else(|_| error_response("Invalid response from server")),
+        Err(_)  => error_response("Cannot connect to Visara service."),
+    };
+    let _ = app.emit("verify_payment_response", result);
+}
+
 // ── Search command ─────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -215,6 +269,9 @@ pub fn run() {
             auth_logout,
             auth_request_access,
             get_plans,
+            get_user_subscriptions,
+            create_order,
+            verify_payment,
             start_search,
             open_file_path,
         ])

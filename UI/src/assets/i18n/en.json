@@ -118,7 +118,7 @@
     "subscription": "Subscription",
     "daysLeft":     "days remaining",
     "trialHint":    "Upgrade anytime to unlock unlimited searches",
-    "renewsOn":     "Renews on",
+    "renewsOn":     "Expires on",
     "expiredMsg":   "Your access has ended. Choose a plan to continue.",
     "viewPlans":    "View Plans"
   },

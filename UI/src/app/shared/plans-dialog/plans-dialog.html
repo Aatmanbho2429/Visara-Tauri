@@ -1,0 +1,132 @@
+<p-dialog
+  [(visible)]="visible"
+  [modal]="true"
+  [showHeader]="false"
+  [closable]="false"
+  [draggable]="false"
+  [resizable]="false"
+  styleClass="plans-overlay">
+
+  <div class="plans-modal">
+
+    <!-- Close -->
+    <button class="plans-modal__close" (click)="close()" [disabled]="!!payingPlanId">
+      <i class="pi pi-times"></i>
+    </button>
+
+    <!-- ── Success state ── -->
+    @if (paySuccess) {
+      <div class="plans-modal__success">
+        <div class="plans-success-icon">
+          <i class="pi pi-check"></i>
+        </div>
+        <h2 class="plans-modal__title">You're all set!</h2>
+        <p class="plans-modal__sub">{{ successMsg }}</p>
+        <div class="plans-success-bar">
+          <div class="plans-success-bar__fill"></div>
+        </div>
+      </div>
+    }
+
+    <!-- ── Normal state ── -->
+    @if (!paySuccess) {
+
+      <!-- Hero -->
+      <div class="plans-modal__hero">
+        <div class="plans-modal__hero-glow"></div>
+        <div class="plans-modal__hero-icon">
+          <i class="pi pi-crown"></i>
+        </div>
+        <h2 class="plans-modal__title">Unlock Full Access</h2>
+        <p class="plans-modal__sub">Your trial has ended. Choose a plan to continue searching with Visara AI.</p>
+      </div>
+
+      <!-- Error banner -->
+      @if (payError) {
+        <div class="plans-modal__error-banner">
+          <i class="pi pi-exclamation-triangle"></i>
+          <span>{{ payError }}</span>
+        </div>
+      }
+
+      <!-- Loading plans -->
+      @if (loading) {
+        <div class="plans-modal__loading">
+          <div class="plans-loading-ring"></div>
+          <span>Fetching plans…</span>
+        </div>
+      }
+
+      <!-- Plan cards -->
+      @if (!loading && plans.length > 0) {
+        <div class="plans-modal__cards">
+          @for (plan of plans; track plan.id) {
+            <div class="plan-card" [class.plan-card--highlight]="isRecommended(plan)">
+
+              @if (isRecommended(plan)) {
+                <div class="plan-card__popular">Most Popular</div>
+              }
+
+              <div class="plan-card__top">
+                <div class="plan-card__icon" [class.plan-card__icon--highlight]="isRecommended(plan)">
+                  <i class="pi" [ngClass]="planIcon(plan)"></i>
+                </div>
+                <span class="plan-card__name">{{ plan.name }}</span>
+              </div>
+
+              <div class="plan-card__pricing">
+                <span class="plan-card__price" [class.plan-card__price--highlight]="isRecommended(plan)">
+                  {{ formatAmount(plan) }}
+                </span>
+                <span class="plan-card__period">/ {{ durationLabel(plan) }}</span>
+              </div>
+
+              <div class="plan-card__divider"></div>
+
+              <div class="plan-card__duration-chip">
+                <i class="pi pi-calendar"></i>
+                <span>{{ durationLabel(plan) }} access</span>
+              </div>
+              <p class="plan-card__tagline">{{ planTagline(plan) }}</p>
+
+              <!-- CTA -->
+              <button
+                class="plan-card__cta"
+                [class.plan-card__cta--highlight]="isRecommended(plan)"
+                [class.plan-card__cta--loading]="payingPlanId === plan.id"
+                [disabled]="!!payingPlanId"
+                (click)="buyPlan(plan)">
+
+                @if (payingPlanId === plan.id) {
+                  <div class="plan-card__cta-spinner"></div>
+                  <span>Processing…</span>
+                } @else {
+                  <span>Get {{ plan.name }}</span>
+                  <i class="pi pi-arrow-right"></i>
+                }
+              </button>
+
+            </div>
+          }
+        </div>
+      }
+
+      <!-- No plans -->
+      @if (!loading && plans.length === 0) {
+        <div class="plans-modal__error">
+          <i class="pi pi-exclamation-circle"></i>
+          <span>Could not load plans. Please try again.</span>
+        </div>
+      }
+
+      <!-- Footer -->
+      <div class="plans-modal__footer">
+        <i class="pi pi-shield"></i>
+        <span>Secure payment via Razorpay &nbsp;·&nbsp; Cancel anytime</span>
+      </div>
+
+    }
+
+  </div>
+
+</p-dialog>
