@@ -20,6 +20,8 @@ python/**/__pycache__/
 python/.venv/
 python/venv/
 *.onnx.enc
+# Allow the bundled model inside the Tauri resources folder (tracked via Git LFS)
+!UI/src-tauri/resources/models/*.onnx.enc
 index.faiss
 meta.db
 # OS
