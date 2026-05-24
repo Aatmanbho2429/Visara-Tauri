@@ -28,6 +28,11 @@ export class AuthService {
     return this.tauri.invoke<ValidateTokenData>('auth_validate_token');
   }
 
+  /** Instant file-existence check — no Supabase call. Use in route guards. */
+  checkSession(): Observable<BaseResponse<null>> {
+    return this.tauri.invoke<null>('auth_check_session');
+  }
+
   logout(): Observable<BaseResponse<null>> {
     return this.tauri.invoke<null>('auth_logout');
   }

@@ -1,9 +1,12 @@
 import { Injectable, NgZone } from '@angular/core';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { Observable } from 'rxjs';
 import { BaseResponse } from '../models/base-response.model';
 import { LoaderService } from './loader.service';
+
+export interface UpdateInfo   { version: string; notes: string; }
+export interface UpdateProgress { downloaded: number; total: number | null; }
 
 export interface SearchEvent {
   type: 'progress' | 'complete' | 'error';
@@ -46,7 +49,7 @@ export class TauriService {
   }
 
   // ── Search stream — emits progress/complete/error events ──────────
-  searchStream(imagePath: string, folderPath: string, topK: number): Observable<SearchEvent> {
+  searchStream(imagePath: string, folderPath: string, topK: number, onnxKey: string): Observable<SearchEvent> {
     return new Observable(observer => {
       let ulProgress: (() => void) | null = null;
       let ulComplete: (() => void) | null = null;
@@ -78,7 +81,7 @@ export class TauriService {
           ulComplete = c;
           ulError    = er;
 
-          invoke('start_search', { imagePath, folderPath, topK }).catch(err => {
+          invoke('start_search', { imagePath, folderPath, topK, onnxKey }).catch(err => {
             this.zone.run(() => {
               observer.next({ type: 'error', data: { message: String(err) } });
               observer.complete();
@@ -95,5 +98,26 @@ export class TauriService {
   // ── Open file in OS explorer ──────────────────────────────────────
   openFilePath(path: string): void {
     invoke('open_file_path', { path }).catch(console.error);
+  }
+
+  // ── Updater ───────────────────────────────────────────────────────
+  checkForUpdate(): void {
+    invoke('check_for_update').catch(console.error);
+  }
+
+  installUpdate(): void {
+    invoke('install_update').catch(console.error);
+  }
+
+  onUpdateAvailable(cb: (info: UpdateInfo) => void): Promise<UnlistenFn> {
+    return listen<UpdateInfo>('update_available', e => cb(e.payload));
+  }
+
+  onUpdateProgress(cb: (p: UpdateProgress) => void): Promise<UnlistenFn> {
+    return listen<UpdateProgress>('update_progress', e => cb(e.payload));
+  }
+
+  onUpdateError(cb: (msg: string) => void): Promise<UnlistenFn> {
+    return listen<{ message: string }>('update_error', e => cb(e.payload.message));
   }
 }

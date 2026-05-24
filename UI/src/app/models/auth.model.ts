@@ -45,5 +45,6 @@ export interface LoginData {
 }
 
 export interface ValidateTokenData {
-  user: User;
+  user:     User;
+  onnx_key: string;
 }

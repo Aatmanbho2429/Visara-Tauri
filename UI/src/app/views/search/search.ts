@@ -107,7 +107,9 @@ export class Search extends BaseComponent {
         return;
       }
 
-      this.runSearch();
+      // Pass the onnx_key received from Supabase to the search command.
+      // Rust loads the model on first search using this key, then discards it.
+      this.runSearch(res.data?.onnx_key ?? '');
     });
   }
 
@@ -117,7 +119,7 @@ export class Search extends BaseComponent {
     return this.BROWSER_SAFE.has(path.split('.').pop()?.toLowerCase() ?? '');
   }
 
-  private runSearch(): void {
+  private runSearch(onnxKey: string): void {
     this.state.searchState   = 'searching';
     this.state.searchError   = '';
     this.state.results       = [];
@@ -126,7 +128,7 @@ export class Search extends BaseComponent {
     this.state.progress      = { phase: 'Starting…', percent: 0, done: 0, total: 0, current: '', eta_sec: -1, errors: 0, active: true };
     this.cdr.detectChanges();
 
-    this.tauri.searchStream(this.state.imagePath, this.state.folderPath, this.state.topK).subscribe({
+    this.tauri.searchStream(this.state.imagePath, this.state.folderPath, this.state.topK, onnxKey).subscribe({
       next: event => {
         if (event.type === 'progress') {
           if (event.data?.progress) this.state.progress = event.data.progress;

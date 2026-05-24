@@ -96,7 +96,7 @@
     "signIn": "Sign In",
     "signingIn": "Signing in...",
     "newToVisara": "New to Visara?",
-    "requestAccess": "Request Access",
+    "requestAccess": "Create Account",
     "successHeading": "Welcome, {{name}}!",
     "successMessage": "You're signed in. Loading Visara...",
     "validation": {
@@ -151,9 +151,16 @@
     "noMatch":  "No matches"
   },
 
+  "update": {
+    "available":   "Update available —",
+    "installBtn":  "Install & Restart",
+    "dismiss":     "Dismiss",
+    "downloading": "Downloading update…"
+  },
+
   "register": {
-    "title": "Request Access",
-    "subtitle": "Fill your details — we'll activate your account",
+    "title": "Create Account",
+    "subtitle": "Start your 45-day free trial — no card required",
     "firstNameLabel": "First Name",
     "firstNamePlaceholder": "John",
     "lastNameLabel": "Last Name",
@@ -168,14 +175,14 @@
     "passwordPlaceholder": "Min. 8 characters",
     "confirmPasswordLabel": "Confirm Password",
     "confirmPasswordPlaceholder": "Re-enter password",
-    "sendRequest": "Send Request",
-    "sending": "Sending...",
+    "sendRequest": "Create Account",
+    "sending": "Creating account...",
     "alreadyHaveAccount": "Already have an account?",
     "signIn": "Sign In",
     "required": "*",
-    "requestSentTitle": "Request Sent!",
-    "requestSentMessage": "Thank you for registering. Your account will be activated soon. We'll reach out at",
-    "backToSignIn": "Back to Sign In",
+    "requestSentTitle": "You're all set!",
+    "requestSentMessage": "Your 45-day free trial has started. Sign in with",
+    "backToSignIn": "Sign In Now",
     "deviceLockTitle": "Device-Locked Account",
     "deviceLockDesc": "Your licence will be bound to this PC. Visara will not work on any other machine unless you request a device reset.",
     "validation": {

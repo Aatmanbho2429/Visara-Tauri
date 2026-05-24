@@ -14,6 +14,7 @@ import { TranslateModule } from '@ngx-translate/core';
 import { MessageService } from 'primeng/api';
 import { PrimengComponentsModule } from '../../shared/primeng-components-module';
 import { AuthService } from '../../services/auth.service';
+import { UserStateService } from '../../services/user-state.service';
 
 function passwordMatchValidator(group: AbstractControl): ValidationErrors | null {
   const pw      = group.get('password')?.value;
@@ -89,6 +90,7 @@ export class Login extends BaseComponent implements OnInit {
   constructor(
     private router:         Router,
     private authService:    AuthService,
+    private userState:      UserStateService,
     private messageService: MessageService
   ) {
     super();
@@ -120,6 +122,7 @@ export class Login extends BaseComponent implements OnInit {
       if (res.success && res.data) {
         this.loginSuccess   = true;
         this.loginFirstName = res.data.user.first_name;
+        this.userState.set(res.data.user); // pre-populate so authGuard skips validate
         setTimeout(() => this.router.navigate(['/master']), 1500);
       } else {
         this.loginError = res.message;

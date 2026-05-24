@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Visara",
-  "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "version": "1.1.7",
+  "identifier": "com.visara.app",
   "build": {
     "frontendDist": "../dist/UI/browser",
     "devUrl": "http://localhost:4200",
@@ -41,6 +41,15 @@
     ],
     "android": {
       "debugApplicationIdSuffix": ".debug"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERFNUY4MUZCNEUyODZEN0QKUldSOWJTaE8rNEZmM3FzV2lxNHYyWjlVYkk2NHdLcEl0OVc0QlpYRkNQMExvWS9OTVBHSGUwNjYK",
+      "endpoints": [
+        "https://github.com/Aatmanbho2429/Visara-Tauri/releases/latest/download/latest.json"
+      ],
+      "dialog": false
     }
   }
 }

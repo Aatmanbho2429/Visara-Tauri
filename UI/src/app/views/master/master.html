@@ -1,5 +1,41 @@
 <div class="app-shell">
 
+  <!-- Update notification banner -->
+  @if (updateInfo && !updateDismissed) {
+    <div class="update-banner" [class.update-banner--installing]="installing">
+
+      @if (!installing) {
+        <div class="update-banner__content">
+          <i class="pi pi-arrow-circle-up update-banner__icon"></i>
+          <div class="update-banner__text">
+            <span class="update-banner__title">{{ 'update.available' | translate }} v{{ updateInfo.version }}</span>
+            @if (updateError) {
+              <span class="update-banner__error">{{ updateError }}</span>
+            }
+          </div>
+          <button class="update-banner__btn update-banner__btn--install" (click)="installUpdate()">
+            {{ 'update.installBtn' | translate }}
+          </button>
+          <button class="update-banner__btn update-banner__btn--dismiss" (click)="dismissUpdate()" [title]="'update.dismiss' | translate">
+            <i class="pi pi-times"></i>
+          </button>
+        </div>
+      } @else {
+        <div class="update-banner__content">
+          <i class="pi pi-spin pi-spinner update-banner__icon"></i>
+          <div class="update-banner__text">
+            <span class="update-banner__title">{{ 'update.downloading' | translate }}</span>
+          </div>
+          <div class="update-banner__progress">
+            <div class="update-banner__progress-bar" [style.width.%]="installPct"></div>
+          </div>
+          <span class="update-banner__pct">{{ installPct }}%</span>
+        </div>
+      }
+
+    </div>
+  }
+
   <!-- Floating nav pill -->
   <nav class="nav-pill">
 

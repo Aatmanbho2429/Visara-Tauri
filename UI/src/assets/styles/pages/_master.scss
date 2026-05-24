@@ -161,3 +161,134 @@
     }
   }
 }
+
+// ── Update Banner ──────────────────────────────────────────────
+.update-banner {
+  position: fixed;
+  bottom: $space-5;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  min-width: 36rem;
+  max-width: 52rem;
+
+  background: rgba(26, 18, 38, 0.96);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(217, 70, 239, 0.32);
+  border-radius: $border-radius-lg;
+  box-shadow:
+    0 8px 40px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(217, 70, 239, 0.08);
+
+  padding: $space-4 $space-5;
+  animation: banner-slide-up 0.3s ease;
+
+  &--installing {
+    border-color: rgba(251, 146, 60, 0.32);
+    box-shadow:
+      0 8px 40px rgba(0, 0, 0, 0.6),
+      0 0 0 1px rgba(251, 146, 60, 0.08);
+  }
+
+  &__content {
+    display: flex;
+    align-items: center;
+    gap: $space-3;
+  }
+
+  &__icon {
+    font-size: 1.8rem;
+    color: $primary-400;
+    flex-shrink: 0;
+
+    .update-banner--installing & { color: $tertiary-400; }
+  }
+
+  &__text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    min-width: 0;
+  }
+
+  &__title {
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: $surface-100;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__error {
+    font-size: $font-size-xs;
+    color: #f87171;
+  }
+
+  &__btn {
+    flex-shrink: 0;
+    border: none;
+    cursor: pointer;
+    border-radius: $border-radius-sm;
+    font-family: $font-primary;
+    font-size: $font-size-sm;
+    font-weight: $font-weight-medium;
+    transition: background 0.2s, transform 0.15s;
+
+    &--install {
+      background: linear-gradient(135deg, $primary-500, $primary-700);
+      color: #fff;
+      padding: $space-2 $space-4;
+
+      &:hover {
+        background: linear-gradient(135deg, $primary-400, $primary-600);
+        transform: scale(1.04);
+      }
+    }
+
+    &--dismiss {
+      background: rgba(217, 70, 239, 0.08);
+      color: rgba(200, 144, 188, 0.5);
+      padding: $space-2;
+      width: 3rem;
+      height: 3rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      &:hover { background: rgba(248, 113, 113, 0.12); color: #f87171; }
+
+      i { font-size: 1.2rem; }
+    }
+  }
+
+  &__progress {
+    flex: 1;
+    height: 4px;
+    background: rgba(217, 70, 239, 0.12);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  &__progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, $tertiary-500, $primary-500);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+
+  &__pct {
+    font-size: $font-size-xs;
+    color: $tertiary-400;
+    font-weight: $font-weight-semibold;
+    min-width: 3.2rem;
+    text-align: right;
+  }
+}
+
+@keyframes banner-slide-up {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
