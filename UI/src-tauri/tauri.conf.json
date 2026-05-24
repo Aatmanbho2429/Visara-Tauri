@@ -39,6 +39,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "resources/models/clip_vitb32.onnx.enc": "models/clip_vitb32.onnx.enc"
+    },
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }
