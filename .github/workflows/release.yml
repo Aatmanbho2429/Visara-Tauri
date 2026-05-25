@@ -63,6 +63,39 @@ jobs:
         run: npm install
         working-directory: UI
 
+      # Diagnostic — proves whether the signing secrets reached this step.
+      # Prints only length + first/last 8 chars so the actual key is never leaked.
+      - name: Verify signing secrets are present
+        shell: bash
+        env:
+          KEY:  ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is EMPTY or NOT SET"
+            exit 1
+          fi
+          if [ -z "$PASS" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is EMPTY or NOT SET"
+            exit 1
+          fi
+          KEY_LEN=$(printf %s "$KEY" | wc -c)
+          KEY_HEAD=$(printf %s "$KEY" | head -c 8)
+          KEY_TAIL=$(printf %s "$KEY" | tail -c 8)
+          KEY_LINES=$(printf %s "$KEY" | grep -c '' || true)
+          echo "[diag] KEY length=$KEY_LEN lines=$KEY_LINES head='$KEY_HEAD...' tail='...$KEY_TAIL'"
+          echo "[diag] PASS length=$(printf %s "$PASS" | wc -c)"
+          # A correctly-pasted minisign encrypted key:
+          #  - is ~190 chars total
+          #  - starts with "untrusted comment: "
+          #  - has exactly 2 lines
+          if ! printf %s "$KEY" | head -1 | grep -q "^untrusted comment:"; then
+            echo "::warning::KEY does NOT start with 'untrusted comment:' — it was probably pasted without the header line"
+          fi
+          if [ "$KEY_LINES" -lt 2 ]; then
+            echo "::warning::KEY appears to be a single line — the newline between header and base64 was lost when pasted"
+          fi
+
       - name: Build & publish release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -93,4 +126,4 @@ jobs:
           prerelease: false
           includeUpdaterJson: true            # publish latest.json for auto-updates
           updaterJsonPreferNsis: true         # use NSIS .nsis.zip (smaller) for Windows updates
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} --verbose
