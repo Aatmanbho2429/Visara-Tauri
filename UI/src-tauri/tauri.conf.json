@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Visara",
-  "version": "1.1.11",
+  "version": "1.1.13",
   "identifier": "com.visara.app",
   "build": {
     "frontendDist": "../dist/UI/browser",
@@ -48,7 +48,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERFNUY4MUZCNEUyODZEN0QKUldSOWJTaE8rNEZmM3FzV2lxNHYyWjlVYkk2NHdLcEl0OVc0QlpYRkNQMExvWS9OTVBHSGUwNjYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVEMDhGRDc3ODJDQzk5MTAKUldRUW1jeUNkLzBJN2J1bEZnd2hIRTBodnVEN1E4MG1FdDcwV3hPVVBrSXNzWEJzcEFNMEdpeW8K",
       "endpoints": [
         "https://github.com/Aatmanbho2429/Visara-Tauri/releases/latest/download/latest.json"
       ],

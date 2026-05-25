@@ -63,8 +63,9 @@ jobs:
         run: npm install
         working-directory: UI
 
-      # Diagnostic — proves whether the signing secrets reached this step.
-      # Prints only length + first/last 8 chars so the actual key is never leaked.
+      # Diagnostic — proves the signing secrets reached this step.
+      # Tauri's `signer generate` writes the key as a SINGLE base64 line
+      # (~190-400 chars), so we just sanity-check length and presence.
       - name: Verify signing secrets are present
         shell: bash
         env:
@@ -81,19 +82,11 @@ jobs:
           fi
           KEY_LEN=$(printf %s "$KEY" | wc -c)
           KEY_HEAD=$(printf %s "$KEY" | head -c 8)
-          KEY_TAIL=$(printf %s "$KEY" | tail -c 8)
-          KEY_LINES=$(printf %s "$KEY" | grep -c '' || true)
-          echo "[diag] KEY length=$KEY_LEN lines=$KEY_LINES head='$KEY_HEAD...' tail='...$KEY_TAIL'"
-          echo "[diag] PASS length=$(printf %s "$PASS" | wc -c)"
-          # A correctly-pasted minisign encrypted key:
-          #  - is ~190 chars total
-          #  - starts with "untrusted comment: "
-          #  - has exactly 2 lines
-          if ! printf %s "$KEY" | head -1 | grep -q "^untrusted comment:"; then
-            echo "::warning::KEY does NOT start with 'untrusted comment:' — it was probably pasted without the header line"
-          fi
-          if [ "$KEY_LINES" -lt 2 ]; then
-            echo "::warning::KEY appears to be a single line — the newline between header and base64 was lost when pasted"
+          PASS_LEN=$(printf %s "$PASS" | wc -c)
+          echo "[diag] KEY length=$KEY_LEN head='$KEY_HEAD...'"
+          echo "[diag] PASS length=$PASS_LEN"
+          if [ "$KEY_LEN" -lt 100 ]; then
+            echo "::warning::KEY length=$KEY_LEN is suspiciously short — Tauri keys are usually 300-400 chars"
           fi
 
       - name: Build & publish release
