@@ -1,6 +1,6 @@
 [package]
 name         = "visara"
-version      = "1.1.10"
+version      = "1.1.11"
 description  = "Visara — AI-powered Visual Image Search"
 authors      = ["Aatman Stridely"]
 license      = "UNLICENSED"
