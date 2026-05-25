@@ -1,6 +1,6 @@
 [package]
 name         = "visara"
-version      = "1.1.8"
+version      = "1.1.10"
 description  = "Visara — AI-powered Visual Image Search"
 authors      = ["Aatman Stridely"]
 license      = "UNLICENSED"
@@ -24,8 +24,14 @@ tauri-build = { version = "2.6.1", features = [] }
 tauri                 = { version = "2.11.1", features = ["protocol-asset"] }
 tauri-plugin-log      = "2"
 tauri-plugin-dialog   = "2"
-tauri-plugin-updater  = "2"
-tauri-plugin-process  = "2"
+tauri-plugin-updater          = "2"
+tauri-plugin-process          = "2"
+tauri-plugin-global-shortcut  = "2"
+
+# Cross-platform clipboard reader — handles both bitmap data (screenshots,
+# "Copy Image" from browsers) and file-list clipboards (Windows Explorer
+# "Copy", macOS Finder "Copy").  More robust than the Tauri plugin.
+clipboard-rs = "0.2"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

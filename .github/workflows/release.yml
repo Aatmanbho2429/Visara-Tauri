@@ -17,19 +17,26 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows
+            blocking: true                  # release waits for this
 
-          - os: macos-latest          # Apple Silicon (M1/M2/M3) — covers all current Macs
+          - os: macos-latest                # Apple Silicon (M1/M2/M3)
             target: aarch64-apple-darwin
             label: macos-arm
+            blocking: true                  # release waits for this
 
-          # NOTE: macos-13 (Intel) is intentionally NOT in the matrix.
-          # GitHub's Intel runners are heavily backlogged (jobs sit for hours).
-          # All Macs sold since 2020 are Apple Silicon — Intel support adds
-          # release latency for ~0% of new users.  Re-add if/when a customer
-          # actually needs it.
+          - os: macos-13                    # Intel Macs (older customers)
+            target: x86_64-apple-darwin
+            label: macos-intel
+            blocking: false                 # may sit in GitHub queue for hours
+                                            # — let the rest of the release ship
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
+    # Intel macOS runners on GitHub are often queue-starved.  Marking that
+    # platform non-blocking lets Windows + macOS ARM publish promptly even
+    # if Intel has to wait.  When Intel finishes (whenever that is), its
+    # artifacts are appended to the same release and latest.json is updated.
+    continue-on-error: ${{ !matrix.blocking }}
 
     steps:
       - name: Checkout
@@ -81,6 +88,9 @@ jobs:
             ### Download
             - **Windows**: `Visara_*_x64-setup.exe`
             - **macOS (Apple Silicon)**: `Visara_*_aarch64.dmg`
+            - **macOS (Intel)**: `Visara_*_x64.dmg` *(may appear later — Intel runners can be queue-starved)*
           releaseDraft: false
           prerelease: false
+          includeUpdaterJson: true            # publish latest.json for auto-updates
+          updaterJsonPreferNsis: true         # use NSIS .nsis.zip (smaller) for Windows updates
           args: --target ${{ matrix.target }}

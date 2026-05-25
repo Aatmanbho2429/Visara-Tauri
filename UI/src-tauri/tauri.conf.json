@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Visara",
-  "version": "1.1.8",
+  "version": "1.1.10",
   "identifier": "com.visara.app",
   "build": {
     "frontendDist": "../dist/UI/browser",
