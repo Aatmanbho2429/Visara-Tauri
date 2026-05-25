@@ -6,7 +6,7 @@ use once_cell::sync::Lazy;
 
 // ── App identity ───────────────────────────────────────────────────────────
 
-pub const APP_VERSION:   &str = "1.1.7";
+pub const APP_VERSION:   &str = "1.1.8";
 pub const SUPABASE_EDGE: &str =
     "https://qpxvwdxuhgbthzbcppye.supabase.co/functions/v1";
 
@@ -41,25 +41,32 @@ pub const IMAGE_EXTENSIONS: &[&str] =
 // ── Filesystem paths (resolved once at startup) ───────────────────────────
 
 /// Directory that holds the encrypted ONNX model bundled with the app.
-/// In development this is `src-tauri/`; in a packaged bundle it is the
-/// resource directory Tauri sets up next to the executable.
-pub static MODELS_DIR: Lazy<PathBuf> = Lazy::new(|| {
-    // Packaged build: Tauri sets TAURI_RESOURCE_DIR to the bundle resource dir.
-    if let Ok(res) = std::env::var("TAURI_RESOURCE_DIR") {
-        return PathBuf::from(res).join("models");
+/// Set at startup from `app.path().resource_dir()` (packaged build) or
+/// falls back to the in-repo dev path when running `cargo tauri dev`.
+static MODELS_DIR: once_cell::sync::OnceCell<PathBuf> =
+    once_cell::sync::OnceCell::new();
+
+/// Called from `setup()` once the Tauri `AppHandle` is available.
+pub fn set_resource_dir(resource_dir: PathBuf) {
+    let dir = resource_dir.join("models");
+    let _ = MODELS_DIR.set(dir);
+}
+
+/// Resolve the encrypted CLIP model location.
+/// Packaged build → `<resource_dir>/models/clip_vitb32.onnx.enc`
+/// Dev build      → `<repo>/python/models/clip_vitb32.onnx.enc`
+pub fn model_enc_path() -> PathBuf {
+    if let Some(dir) = MODELS_DIR.get() {
+        return dir.join("clip_vitb32.onnx.enc");
     }
-    // Development: CARGO_MANIFEST_DIR = UI/src-tauri
-    // The encrypted model lives in python/models/ at the project root.
+    // Dev fallback: CARGO_MANIFEST_DIR = UI/src-tauri
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..") // UI/
         .join("..") // project root
         .join("python")
         .join("models")
-});
-
-/// Encrypted CLIP model file shipped with every release.
-pub static MODEL_ENC_PATH: Lazy<PathBuf> =
-    Lazy::new(|| MODELS_DIR.join("clip_vitb32.onnx.enc"));
+        .join("clip_vitb32.onnx.enc")
+}
 
 /// User-scoped data directory:  ~/.visara/   (created on first run).
 pub static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {

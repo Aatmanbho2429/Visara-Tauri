@@ -1,5 +1,5 @@
 use crate::{
-    config::{BATCH_SIZE, CLIP_INPUT_SIZE, CLIP_MEAN, CLIP_STD, EMB_DIM, MODEL_ENC_PATH},
+    config::{model_enc_path, BATCH_SIZE, CLIP_INPUT_SIZE, CLIP_MEAN, CLIP_STD, EMB_DIM},
     error::{Result, VisaraError},
 };
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
@@ -33,15 +33,16 @@ pub fn load_model(key: &str) -> Result<()> {
         return Ok(());
     }
 
-    log::info!("Loading CLIP model from {:?}", *MODEL_ENC_PATH);
+    let model_path = model_enc_path();
+    log::info!("Loading CLIP model from {:?}", model_path);
 
-    if !MODEL_ENC_PATH.exists() {
+    if !model_path.exists() {
         return Err(VisaraError::Fatal(format!(
-            "Model file not found: {:?}", *MODEL_ENC_PATH
+            "Model file not found: {:?}", model_path
         )));
     }
 
-    let encrypted   = std::fs::read(MODEL_ENC_PATH.as_path())?;
+    let encrypted   = std::fs::read(&model_path)?;
     let token_str   = String::from_utf8_lossy(&encrypted);
     let model_bytes = fernet_decrypt(key, token_str.trim())?;
 

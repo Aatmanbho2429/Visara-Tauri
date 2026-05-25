@@ -13,6 +13,7 @@ mod services;
 mod utils;
 
 use commands::{auth, search, subscription, update};
+use tauri::Manager;
 
 // ── Platform file opener ───────────────────────────────────────────────────
 
@@ -44,6 +45,20 @@ fn open_file_path(path: String) {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            // Resolve bundled-resource directory once and stash it in config.
+            // This is the only reliable way to locate packaged resources in
+            // Tauri v2 — there is no `TAURI_RESOURCE_DIR` env var at runtime.
+            match app.path().resource_dir() {
+                Ok(res_dir) => {
+                    log::info!("[startup] resource_dir = {:?}", res_dir);
+                    config::set_resource_dir(res_dir);
+                }
+                Err(e) => log::warn!(
+                    "[startup] could not resolve resource_dir ({e}); \
+                     falling back to dev path"
+                ),
+            }
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
