@@ -18,15 +18,18 @@ jobs:
             target: x86_64-pc-windows-msvc
             label: windows
 
-          - os: macos-latest          # Apple Silicon (M1/M2/M3)
+          - os: macos-latest          # Apple Silicon (M1/M2/M3) — covers all current Macs
             target: aarch64-apple-darwin
             label: macos-arm
 
-          - os: macos-13              # Last GitHub-hosted Intel macOS runner
-            target: x86_64-apple-darwin
-            label: macos-intel
+          # NOTE: macos-13 (Intel) is intentionally NOT in the matrix.
+          # GitHub's Intel runners are heavily backlogged (jobs sit for hours).
+          # All Macs sold since 2020 are Apple Silicon — Intel support adds
+          # release latency for ~0% of new users.  Re-add if/when a customer
+          # actually needs it.
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -77,8 +80,7 @@ jobs:
 
             ### Download
             - **Windows**: `Visara_*_x64-setup.exe`
-            - **macOS Apple Silicon**: `Visara_*_aarch64.dmg`
-            - **macOS Intel**: `Visara_*_x64.dmg`
+            - **macOS (Apple Silicon)**: `Visara_*_aarch64.dmg`
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
