@@ -6,6 +6,10 @@ on:
     tags:
       - 'v*'
 
+# Top-level permissions so every job inherits write access by default.
+permissions:
+  contents: write
+
 jobs:
   build:
     permissions:
