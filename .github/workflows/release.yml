@@ -1,17 +1,44 @@
 name: Release
 
-# Triggers when you push a tag like: git tag v1.2.0 && git push origin v1.2.0
 on:
   push:
     tags:
       - 'v*'
 
-# Top-level permissions so every job inherits write access by default.
 permissions:
   contents: write
 
 jobs:
+  # Creates the GitHub Release before any build starts, so all build jobs
+  # upload to the same release without racing to create it.
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        id: create
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              tag_name:   tag,
+              name:       `Visara ${tag}`,
+              body:       `## What's new in ${tag}\n\nSee full changelog in the commit history.\n\n### Download\n- **Windows**: \`Visara_*_x64-setup.exe\`\n- **macOS (Apple Silicon)**: \`Visara_*_aarch64.dmg\`\n- **macOS (Intel)**: \`Visara_*_x64.dmg\` *(may appear later — Intel runners can be queue-starved)*`,
+              draft:      false,
+              prerelease: false,
+            });
+            return data.id;
+          result-encoding: string
+
   build:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -21,25 +48,20 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows
-            blocking: true                  # release waits for this
+            blocking: true
 
-          - os: macos-latest                # Apple Silicon (M1/M2/M3)
+          - os: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm
-            blocking: true                  # release waits for this
+            blocking: true
 
-          - os: macos-13                    # Intel Macs (older customers)
+          - os: macos-13
             target: x86_64-apple-darwin
             label: macos-intel
-            blocking: false                 # may sit in GitHub queue for hours
-                                            # — let the rest of the release ship
+            blocking: false
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
-    # Intel macOS runners on GitHub are often queue-starved.  Marking that
-    # platform non-blocking lets Windows + macOS ARM publish promptly even
-    # if Intel has to wait.  When Intel finishes (whenever that is), its
-    # artifacts are appended to the same release and latest.json is updated.
     continue-on-error: ${{ !matrix.blocking }}
 
     steps:
@@ -67,9 +89,6 @@ jobs:
         run: npm install
         working-directory: UI
 
-      # Diagnostic — proves the signing secrets reached this step.
-      # Tauri's `signer generate` writes the key as a SINGLE base64 line
-      # (~190-400 chars), so we just sanity-check length and presence.
       - name: Verify signing secrets are present
         shell: bash
         env:
@@ -89,38 +108,16 @@ jobs:
           PASS_LEN=$(printf %s "$PASS" | wc -c)
           echo "[diag] KEY length=$KEY_LEN head='$KEY_HEAD...'"
           echo "[diag] PASS length=$PASS_LEN"
-          if [ "$KEY_LEN" -lt 100 ]; then
-            echo "::warning::KEY length=$KEY_LEN is suspiciously short — Tauri keys are usually 300-400 chars"
-          fi
 
       - name: Build & publish release
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN:                      ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY:         ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          GITHUB_TOKEN:                       ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code signing (optional — removes "unidentified developer" warning)
-          # APPLE_CERTIFICATE:               ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD:      ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY:          ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID:                        ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD:                  ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID:                   ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: UI
-          tagName: ${{ github.ref_name }}
-          releaseName: Visara ${{ github.ref_name }}
-          releaseBody: |
-            ## What's new in ${{ github.ref_name }}
-
-            See full changelog in the commit history.
-
-            ### Download
-            - **Windows**: `Visara_*_x64-setup.exe`
-            - **macOS (Apple Silicon)**: `Visara_*_aarch64.dmg`
-            - **macOS (Intel)**: `Visara_*_x64.dmg` *(may appear later — Intel runners can be queue-starved)*
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true            # publish latest.json for auto-updates
-          updaterJsonPreferNsis: true         # use NSIS .nsis.zip (smaller) for Windows updates
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
           args: --target ${{ matrix.target }} --verbose
