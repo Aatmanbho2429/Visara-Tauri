@@ -7,6 +7,7 @@ import { LoaderService } from './loader.service';
 
 export interface UpdateInfo   { version: string; notes: string; }
 export interface UpdateProgress { downloaded: number; total: number | null; }
+export interface HotkeyEvent  { has_image: boolean; image_path: string; }
 
 export interface SearchEvent {
   type: 'progress' | 'complete' | 'error';
@@ -119,5 +120,10 @@ export class TauriService {
 
   onUpdateError(cb: (msg: string) => void): Promise<UnlistenFn> {
     return listen<{ message: string }>('update_error', e => cb(e.payload.message));
+  }
+
+  // ── Global hot-key ────────────────────────────────────────────────
+  onHotkey(cb: (payload: HotkeyEvent) => void): Promise<UnlistenFn> {
+    return listen<HotkeyEvent>('hotkey_pressed', e => cb(e.payload));
   }
 }

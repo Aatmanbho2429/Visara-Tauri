@@ -6,10 +6,13 @@ export class SearchStateService {
 
   searchState: 'idle' | 'searching' | 'results' = 'idle';
 
-  imageName  = '';
-  imagePath  = '';
-  folderPath = '';
-  topK       = 20;
+  imageName    = '';
+  imagePath    = '';
+  /** Base-64 data-URL shown in the pick-card when the query came from
+   *  the clipboard via the global hot-key.  Empty for normal file picks. */
+  imagePreview = '';
+  folderPath   = '';
+  topK         = 20;
 
   results:      SearchResult[] = [];
   failedFiles:  FailedFile[]   = [];
@@ -25,6 +28,7 @@ export class SearchStateService {
     this.searchState   = 'idle';
     this.imageName     = '';
     this.imagePath     = '';
+    this.imagePreview  = '';
     this.folderPath    = '';
     this.results       = [];
     this.failedFiles   = [];

@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod hotkey;
 pub mod search;
 pub mod subscription;
 pub mod update;

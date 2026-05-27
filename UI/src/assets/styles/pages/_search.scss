@@ -144,6 +144,15 @@
     &--cyan   { background: radial-gradient(ellipse at 50% 60%, rgba(251, 146, 60, 0.1) 0%, transparent 65%); }
   }
 
+  &__thumb {
+    width: 6rem; height: 6rem;
+    border-radius: $border-radius-md;
+    object-fit: cover;
+    border: 1px solid rgba(217, 70, 239, 0.35);
+    box-shadow: 0 0 14px rgba(217, 70, 239, 0.25);
+    z-index: 1;
+  }
+
   &__icon-wrap {
     width: 6rem; height: 6rem;
     border-radius: $border-radius-md;
@@ -180,6 +189,47 @@
       font-family: monospace; font-size: $font-size-xs;
       color: $surface-500; word-break: break-all;
     }
+  }
+}
+
+// ── Hot-key hint shown inside the empty image pick-card ──────────
+.hotkey-hint {
+  margin-top: $space-3;
+  display: inline-flex;
+  align-items: center;
+  gap: $space-2;
+  padding: $space-2 $space-3;
+  border-radius: 2rem;
+  background: rgba(217, 70, 239, 0.08);
+  border: 1px solid rgba(217, 70, 239, 0.2);
+  color: rgba(200, 144, 188, 0.85);
+  font-size: $font-size-xs;
+  font-weight: $font-weight-medium;
+  z-index: 1;
+  cursor: default;
+  transition: background 0.2s, border-color 0.2s;
+
+  &:hover {
+    background: rgba(217, 70, 239, 0.14);
+    border-color: rgba(217, 70, 239, 0.32);
+  }
+
+  i.pi-bolt {
+    font-size: 1.1rem;
+    color: $tertiary-400;
+  }
+
+  kbd {
+    font-family: $font-primary;
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    color: $surface-100;
+    background: rgba(34, 24, 48, 0.85);
+    border: 1px solid rgba(217, 70, 239, 0.32);
+    border-radius: $border-radius-sm;
+    padding: 0.2rem 0.6rem;
+    box-shadow: 0 1px 0 rgba(217, 70, 239, 0.18);
+    letter-spacing: 0.02em;
   }
 }
 

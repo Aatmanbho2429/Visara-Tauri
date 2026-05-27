@@ -7,6 +7,12 @@
   ],
   "permissions": [
     "core:default",
-    "dialog:allow-open"
+    "core:window:allow-show",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-focus",
+    "dialog:allow-open",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-is-registered",
+    "global-shortcut:allow-unregister"
   ]
 }

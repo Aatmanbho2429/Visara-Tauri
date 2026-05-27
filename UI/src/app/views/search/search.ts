@@ -54,6 +54,11 @@ export class Search extends BaseComponent {
 
   readonly topKOptions = [10, 20, 50];
 
+  /** Platform-aware label for the global hot-key shown in the empty-state hint. */
+  readonly hotkeyLabel = navigator.platform.toLowerCase().includes('mac')
+    ? '⌘ + Shift + V'
+    : 'Ctrl + Shift + V';
+
   get canSearch()   { return !!this.state.imagePath && !!this.state.folderPath; }
   get isIdle()      { return this.state.searchState === 'idle'; }
   get isSearching() { return this.state.searchState === 'searching'; }
@@ -74,8 +79,9 @@ export class Search extends BaseComponent {
       filters:  [{ name: 'Images', extensions: ['jpg','jpeg','png','tif','tiff','psd','psb'] }]
     });
     if (selected) {
-      this.state.imagePath = selected as string;
-      this.state.imageName = (selected as string).split(/[\\/]/).pop() ?? selected as string;
+      this.state.imagePath    = selected as string;
+      this.state.imageName    = (selected as string).split(/[\\/]/).pop() ?? selected as string;
+      this.state.imagePreview = '';  // drop any clipboard preview
       this.cdr.detectChanges();
     }
   }

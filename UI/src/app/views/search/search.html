@@ -24,6 +24,15 @@
             <div class="pick-card__icon-wrap"><i class="pi pi-image"></i></div>
             <span class="pick-card__title">{{ 'search.imagePick' | translate }}</span>
             <span class="pick-card__hint">{{ 'search.imageHint' | translate }}</span>
+            <div class="hotkey-hint" (click)="$event.stopPropagation()">
+              <i class="pi pi-bolt"></i>
+              <span>{{ 'search.hotkeyHint' | translate }}</span>
+              <kbd>{{ hotkeyLabel }}</kbd>
+            </div>
+          } @else if (state.imagePreview) {
+            <img [src]="state.imagePreview" alt="Clipboard preview" class="pick-card__thumb" />
+            <span class="pick-card__title">{{ state.imageName }}</span>
+            <span class="pick-card__hint">{{ 'search.imageChange' | translate }}</span>
           } @else {
             <div class="pick-card__icon-wrap pick-card__icon-wrap--done"><i class="pi pi-check"></i></div>
             <span class="pick-card__title">{{ state.imageName }}</span>

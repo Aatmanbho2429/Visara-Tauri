@@ -1,0 +1,117 @@
+// ── App-wide Toast (PrimeNG) ────────────────────────────────────
+// Used for hot-key feedback ("Clipboard image captured", etc.) and any
+// other transient notifications surfaced from app.ts via MessageService.
+
+.p-toast {
+  font-family: $font-primary;
+  width: auto;
+  min-width: 32rem;
+  max-width: 48rem;
+
+  // Slight inset so the toast doesn't kiss the window edge on top-center
+  &.p-toast-top-center {
+    top: $space-5 !important;
+  }
+
+  .p-toast-message {
+    background: rgba(26, 18, 38, 0.96);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid rgba(217, 70, 239, 0.32);
+    border-radius: $border-radius-lg;
+    box-shadow:
+      0 8px 40px rgba(0, 0, 0, 0.6),
+      0 0 0 1px rgba(217, 70, 239, 0.08);
+    margin-bottom: $space-3;
+    color: $surface-100;
+    overflow: hidden;
+
+    // ── Severity stripe ───────────────────────────────────────────
+    &::before {
+      content: '';
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 3px;
+      background: linear-gradient(180deg, $primary-400, $tertiary-400);
+    }
+  }
+
+  .p-toast-message-content {
+    padding: $space-4 $space-5;
+    display: flex;
+    align-items: flex-start;
+    gap: $space-3;
+  }
+
+  .p-toast-message-icon {
+    font-size: 2rem;
+    color: $primary-300;
+    margin-top: 0.2rem;
+    flex-shrink: 0;
+  }
+
+  .p-toast-message-text {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .p-toast-summary {
+    font-size: $font-size-base;
+    font-weight: $font-weight-semibold;
+    color: $surface-100;
+    margin-bottom: 0.3rem;
+  }
+
+  .p-toast-detail {
+    font-size: $font-size-sm;
+    color: rgba(200, 144, 188, 0.85);
+    line-height: $line-height-base;
+  }
+
+  // Close (×) button
+  .p-toast-message-close,
+  .p-toast-icon-close {
+    background: rgba(217, 70, 239, 0.08);
+    color: rgba(200, 144, 188, 0.7);
+    width: 2.6rem; height: 2.6rem;
+    border-radius: $border-radius-sm;
+    border: none;
+    margin-left: $space-2;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+
+    &:hover {
+      background: rgba(248, 113, 113, 0.18);
+      color: #fca5a5;
+    }
+  }
+
+  // ── Per-severity tints ────────────────────────────────────────
+  .p-toast-message-success {
+    border-color: rgba(52, 211, 153, 0.35);
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(52, 211, 153, 0.10);
+    &::before { background: linear-gradient(180deg, #34d399, $primary-400); }
+    .p-toast-message-icon { color: #34d399; }
+  }
+
+  .p-toast-message-warn {
+    border-color: rgba(251, 146, 60, 0.40);
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(251, 146, 60, 0.10);
+    &::before { background: linear-gradient(180deg, $tertiary-400, $primary-500); }
+    .p-toast-message-icon { color: $tertiary-300; }
+  }
+
+  .p-toast-message-error {
+    border-color: rgba(248, 113, 113, 0.45);
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(248, 113, 113, 0.12);
+    &::before { background: linear-gradient(180deg, #f87171, $secondary-500); }
+    .p-toast-message-icon { color: #fca5a5; }
+  }
+
+  .p-toast-message-info {
+    border-color: rgba(217, 70, 239, 0.40);
+    &::before { background: linear-gradient(180deg, $primary-400, $secondary-400); }
+    .p-toast-message-icon { color: $primary-300; }
+  }
+}

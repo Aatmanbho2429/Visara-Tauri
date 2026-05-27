@@ -140,7 +140,8 @@
     "errors":          "errors",
     "failedFiles":     "images could not be processed",
     "noResults":       "No similar images found",
-    "maxResults":      "Max results"
+    "maxResults":      "Max results",
+    "hotkeyHint":      "Or copy any image and press"
   },
 
   "activity": {

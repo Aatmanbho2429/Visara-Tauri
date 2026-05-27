@@ -123,8 +123,11 @@ pub async fn validate_saved_token() -> Value {
             };
 
             if !data["valid"].as_bool().unwrap_or(false) {
+                // Session lost — unload the model so a fresh login is required
+                // to get the onnx_key again.  Nothing usable left in memory.
                 delete_token();
                 clear_in_memory_session();
+                embedder::reset();
                 return serde_json::json!({
                     "success": false,
                     "message": data["message"].as_str().unwrap_or("Session expired. Please login again."),
@@ -145,10 +148,24 @@ pub async fn validate_saved_token() -> Value {
                 embedder::reset();
             }
 
-            // Pass onnx_key to Angular — it will forward it to start_search,
-            // which loads the model right before the first search and then
-            // discards the key.  Nothing is saved to disk.
-            let onnx_key = data["onnx_key"].as_str().unwrap_or("");
+            let onnx_key = data["onnx_key"].as_str().unwrap_or("").to_string();
+
+            // Eagerly preload the CLIP model in the background so the user's
+            // first search doesn't pay the multi-second decrypt-and-compile
+            // cost.  No-op if the model is already loaded (e.g. token was
+            // re-validated mid-session).  The onnx_key is still returned to
+            // Angular as a fallback for the rare case where the user clicks
+            // Search before this background task finishes.
+            if !onnx_key.is_empty() && !embedder::is_ready() {
+                let key = onnx_key.clone();
+                tokio::task::spawn_blocking(move || {
+                    match embedder::load_model(&key) {
+                        Ok(_)  => log::info!("[auth] CLIP model preloaded after validate"),
+                        Err(e) => log::warn!("[auth] background model preload failed: {e}"),
+                    }
+                });
+            }
+
             serde_json::json!({
                 "success": true,
                 "message": "Session valid",

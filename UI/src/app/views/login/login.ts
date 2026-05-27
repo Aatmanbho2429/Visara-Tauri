@@ -13,8 +13,11 @@ import { Router } from '@angular/router';
 import { TranslateModule } from '@ngx-translate/core';
 import { MessageService } from 'primeng/api';
 import { PrimengComponentsModule } from '../../shared/primeng-components-module';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { AuthService } from '../../services/auth.service';
 import { UserStateService } from '../../services/user-state.service';
+import { SearchStateService } from '../../services/search-state.service';
+import { App } from '../../app';
 
 function passwordMatchValidator(group: AbstractControl): ValidationErrors | null {
   const pw      = group.get('password')?.value;
@@ -91,6 +94,7 @@ export class Login extends BaseComponent implements OnInit {
     private router:         Router,
     private authService:    AuthService,
     private userState:      UserStateService,
+    private searchState:    SearchStateService,
     private messageService: MessageService
   ) {
     super();
@@ -123,7 +127,19 @@ export class Login extends BaseComponent implements OnInit {
         this.loginSuccess   = true;
         this.loginFirstName = res.data.user.first_name;
         this.userState.set(res.data.user); // pre-populate so authGuard skips validate
-        setTimeout(() => this.router.navigate(['/master']), 1500);
+
+        // If the user pressed Ctrl+Shift+V before logging in, jump straight
+        // to the search view with the captured clipboard image pre-loaded.
+        const pendingImage = sessionStorage.getItem(App.PENDING_IMAGE_KEY);
+        if (pendingImage) {
+          sessionStorage.removeItem(App.PENDING_IMAGE_KEY);
+          this.searchState.imagePath    = pendingImage;
+          this.searchState.imageName    = 'Clipboard image';
+          this.searchState.imagePreview = convertFileSrc(pendingImage);
+          setTimeout(() => this.router.navigate(['/master/search']), 1500);
+        } else {
+          setTimeout(() => this.router.navigate(['/master']), 1500);
+        }
       } else {
         this.loginError = res.message;
       }
