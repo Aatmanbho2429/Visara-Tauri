@@ -1,8 +1,10 @@
 import { Component, OnInit, ViewChild, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { TranslateModule } from '@ngx-translate/core';
+import { MessageService } from 'primeng/api';
 import { BaseComponent } from '../../core/base.component';
 import { AuthService } from '../../services/auth.service';
+import { TauriService } from '../../services/tauri.service';
 import { UserStateService } from '../../services/user-state.service';
 import { PlansDialog } from '../../shared/plans-dialog/plans-dialog';
 import { Subscription } from '../../models/auth.model';
@@ -15,13 +17,19 @@ import { Subscription } from '../../models/auth.model';
 })
 export class Profile extends BaseComponent implements OnInit {
   userState = inject(UserStateService);
-  private auth = inject(AuthService);
+  private auth     = inject(AuthService);
+  private tauri    = inject(TauriService);
+  private messages = inject(MessageService);
 
   @ViewChild(PlansDialog) plansDialog!: PlansDialog;
 
   loading              = true;
   subscriptions: Subscription[] = [];
   historyLoading       = true;
+
+  /** Reflects the real OS-level autostart state. */
+  autostartEnabled  = false;
+  autostartBusy     = false;
 
   ngOnInit(): void {
     this.handle(this.auth.validateToken(), res => {
@@ -35,6 +43,49 @@ export class Profile extends BaseComponent implements OnInit {
         this.subscriptions = res.data.subscriptions;
       }
     });
+
+    this.refreshAutostartState();
+  }
+
+  private refreshAutostartState(): void {
+    this.tauri.autostartIsEnabled()
+      .then(on => this.autostartEnabled = on)
+      .catch(err => console.warn('[autostart] isEnabled failed:', err));
+  }
+
+  toggleAutostart(): void {
+    if (this.autostartBusy) return;
+    this.autostartBusy = true;
+
+    const action = this.autostartEnabled ? this.tauri.autostartDisable() : this.tauri.autostartEnable();
+    const willBe = !this.autostartEnabled;
+
+    action
+      .then(() => {
+        this.autostartEnabled = willBe;
+        this.messages.add({
+          key: 'app',
+          severity: 'success',
+          summary:  willBe ? 'Startup launch enabled' : 'Startup launch disabled',
+          detail:   willBe
+            ? 'Visara will start silently in the tray when you sign in.'
+            : 'Visara will no longer launch automatically.',
+          life:     4000,
+        });
+      })
+      .catch(err => {
+        console.error('[autostart] toggle failed:', err);
+        this.messages.add({
+          key: 'app',
+          severity: 'error',
+          summary:  'Could not change startup setting',
+          detail:   String(err),
+          life:     5000,
+        });
+        // Re-sync UI with whatever the OS actually reports.
+        this.refreshAutostartState();
+      })
+      .finally(() => this.autostartBusy = false);
   }
 
   openPlans(): void { this.plansDialog.open(); }

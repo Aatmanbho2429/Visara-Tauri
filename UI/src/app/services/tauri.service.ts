@@ -1,6 +1,7 @@
 import { Injectable, NgZone } from '@angular/core';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { disable as autostartDisable, enable as autostartEnable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart';
 import { Observable } from 'rxjs';
 import { BaseResponse } from '../models/base-response.model';
 import { LoaderService } from './loader.service';
@@ -50,7 +51,11 @@ export class TauriService {
   }
 
   // ── Search stream — emits progress/complete/error events ──────────
-  searchStream(imagePath: string, folderPath: string, topK: number, onnxKey: string): Observable<SearchEvent> {
+  /**
+   * @param scopePaths Watched-folder paths to restrict the search to.  Empty
+   *                   array means "search every folder in the Library".
+   */
+  searchStream(imagePath: string, scopePaths: string[], topK: number, onnxKey: string): Observable<SearchEvent> {
     return new Observable(observer => {
       let ulProgress: (() => void) | null = null;
       let ulComplete: (() => void) | null = null;
@@ -82,7 +87,7 @@ export class TauriService {
           ulComplete = c;
           ulError    = er;
 
-          invoke('start_search', { imagePath, folderPath, topK, onnxKey }).catch(err => {
+          invoke('start_search', { imagePath, scopePaths, topK, onnxKey }).catch(err => {
             this.zone.run(() => {
               observer.next({ type: 'error', data: { message: String(err) } });
               observer.complete();
@@ -126,4 +131,9 @@ export class TauriService {
   onHotkey(cb: (payload: HotkeyEvent) => void): Promise<UnlistenFn> {
     return listen<HotkeyEvent>('hotkey_pressed', e => cb(e.payload));
   }
+
+  // ── Autostart (launch at user login) ──────────────────────────────
+  autostartIsEnabled(): Promise<boolean>  { return autostartIsEnabled(); }
+  autostartEnable():    Promise<void>     { return autostartEnable(); }
+  autostartDisable():   Promise<void>     { return autostartDisable(); }
 }

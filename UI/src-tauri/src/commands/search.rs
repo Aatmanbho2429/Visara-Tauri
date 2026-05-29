@@ -11,8 +11,7 @@
 //!   search_error     — fatal error that stopped the search
 
 use crate::{
-    config::VECTOR_STORE_PATH,
-    core::{embedder, progress, vector_store::VectorStore},
+    core::{embedder, progress},
     services::search,
 };
 use serde_json::json;
@@ -34,11 +33,13 @@ fn search_state() -> &'static Mutex<SearchState> {
 
 // ── Command ───────────────────────────────────────────────────────────────
 
+/// `scope_paths` empty or omitted → search every watched folder in the Library.
+/// Otherwise the search is restricted to the provided folders.
 #[tauri::command]
 pub async fn start_search(
     app:         tauri::AppHandle,
     image_path:  String,
-    folder_path: String,
+    scope_paths: Option<Vec<String>>,
     top_k:       usize,
     onnx_key:    Option<String>,
 ) {
@@ -57,8 +58,6 @@ pub async fn start_search(
     }
 
     // Load the model now if it is not already in memory.
-    // The onnx_key came from Angular's validate-token call moments ago;
-    // it is a local variable and will be dropped when this block ends.
     if !embedder::is_ready() {
         match onnx_key {
             Some(ref key) => {
@@ -89,15 +88,15 @@ pub async fn start_search(
 
     // Spawn the heavy work on a blocking thread so Tokio stays responsive.
     tokio::task::spawn_blocking(move || {
-        let image  = PathBuf::from(&image_path);
-        let folder = PathBuf::from(&folder_path);
+        let image = PathBuf::from(&image_path);
+        let scope: Vec<PathBuf> = scope_paths
+            .unwrap_or_default()
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
 
-        match search::execute(&image, &folder, top_k) {
+        match search::execute(&image, &scope, top_k) {
             Ok((results, failed_files)) => {
-                if let Ok(store) = VectorStore::load(VECTOR_STORE_PATH.as_path()) {
-                    let _ = store.save(VECTOR_STORE_PATH.as_path());
-                }
-
                 let _ = app_clone.emit("search_complete", json!({
                     "done":         true,
                     "results":      results,

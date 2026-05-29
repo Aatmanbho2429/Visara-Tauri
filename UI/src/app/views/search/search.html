@@ -16,74 +16,106 @@
         </div>
       }
 
-      <div class="search-hero__row">
+      <!-- No watched folders → empty state CTA -->
+      @if (!foldersLoading && !hasWatchedFolders) {
+        <div class="search-empty">
+          <i class="pi pi-folder-open search-empty__icon"></i>
+          <h2 class="search-empty__title">Add a folder to start searching</h2>
+          <p class="search-empty__hint">
+            Visara keeps the folders you add indexed automatically — no re-scan needed.
+            Open the Library to add your first folder.
+          </p>
+          <button class="search-empty__cta" (click)="goToLibrary()">
+            <i class="pi pi-plus"></i>
+            Open Library
+          </button>
+        </div>
+      }
 
-        <div class="pick-card" [class.pick-card--set]="state.imageName" (click)="pickImage()">
-          <div class="pick-card__glow pick-card__glow--violet"></div>
-          @if (!state.imageName) {
-            <div class="pick-card__icon-wrap"><i class="pi pi-image"></i></div>
-            <span class="pick-card__title">{{ 'search.imagePick' | translate }}</span>
-            <span class="pick-card__hint">{{ 'search.imageHint' | translate }}</span>
-            <div class="hotkey-hint" (click)="$event.stopPropagation()">
-              <i class="pi pi-bolt"></i>
-              <span>{{ 'search.hotkeyHint' | translate }}</span>
-              <kbd>{{ hotkeyLabel }}</kbd>
-            </div>
-          } @else if (state.imagePreview) {
-            <img [src]="state.imagePreview" alt="Clipboard preview" class="pick-card__thumb" />
-            <span class="pick-card__title">{{ state.imageName }}</span>
-            <span class="pick-card__hint">{{ 'search.imageChange' | translate }}</span>
-          } @else {
-            <div class="pick-card__icon-wrap pick-card__icon-wrap--done"><i class="pi pi-check"></i></div>
-            <span class="pick-card__title">{{ state.imageName }}</span>
-            <span class="pick-card__hint">{{ 'search.imageChange' | translate }}</span>
-          }
+      <!-- Image picker + scope selector + go (only when at least 1 watched folder) -->
+      @if (!foldersLoading && hasWatchedFolders) {
+        <div class="search-hero__solo">
+
+          <div class="pick-card" [class.pick-card--set]="state.imageName" (click)="pickImage()">
+            <div class="pick-card__glow pick-card__glow--violet"></div>
+            @if (!state.imageName) {
+              <div class="pick-card__icon-wrap"><i class="pi pi-image"></i></div>
+              <span class="pick-card__title">{{ 'search.imagePick' | translate }}</span>
+              <span class="pick-card__hint">{{ 'search.imageHint' | translate }}</span>
+              <div class="hotkey-hint" (click)="$event.stopPropagation()">
+                <i class="pi pi-bolt"></i>
+                <span>{{ 'search.hotkeyHint' | translate }}</span>
+                <kbd>{{ hotkeyLabel }}</kbd>
+              </div>
+            } @else if (state.imagePreview) {
+              <img [src]="state.imagePreview" alt="Clipboard preview" class="pick-card__thumb" />
+              <span class="pick-card__title">{{ state.imageName }}</span>
+              <span class="pick-card__hint">{{ 'search.imageChange' | translate }}</span>
+            } @else {
+              <div class="pick-card__icon-wrap pick-card__icon-wrap--done"><i class="pi pi-check"></i></div>
+              <span class="pick-card__title">{{ state.imageName }}</span>
+              <span class="pick-card__hint">{{ 'search.imageChange' | translate }}</span>
+            }
+          </div>
+
         </div>
 
-        <div class="pick-divider">
-          <div class="pick-divider__line"></div>
-          <div class="pick-divider__chip"><i class="pi pi-arrow-right"></i></div>
-          <div class="pick-divider__line"></div>
-        </div>
+        <!-- Scope selector -->
+        <div class="scope-row">
+          <span class="scope-row__label">Searching in</span>
 
-        <div class="pick-card pick-card--folder" [class.pick-card--set]="state.folderPath" (click)="pickFolder()">
-          <div class="pick-card__glow pick-card__glow--cyan"></div>
-          @if (!state.folderPath) {
-            <div class="pick-card__icon-wrap pick-card__icon-wrap--cyan"><i class="pi pi-folder-open"></i></div>
-            <span class="pick-card__title">{{ 'search.folderPick' | translate }}</span>
-            <span class="pick-card__hint">{{ 'search.folderHint' | translate }}</span>
-          } @else {
-            <div class="pick-card__icon-wrap pick-card__icon-wrap--cyan pick-card__icon-wrap--done"><i class="pi pi-folder"></i></div>
-            <span class="pick-card__title">{{ state.folderPath.split('\\').pop() }}</span>
-            <span class="pick-card__hint pick-card__hint--mono">{{ state.folderPath }}</span>
-          }
-        </div>
-
-      </div>
-
-      <!-- Top-K selector -->
-      <div class="topk-row">
-        <span class="topk-row__label">{{ 'search.maxResults' | translate }}</span>
-        <div class="topk-row__options">
-          @for (opt of topKOptions; track opt) {
-            <button class="topk-btn" [class.topk-btn--active]="state.topK === opt" (click)="state.topK = opt">
-              {{ opt }}
+          <div class="scope-picker" (click)="$event.stopPropagation()">
+            <button class="scope-pill" (click)="toggleScopeDropdown()">
+              <i class="pi pi-folder"></i>
+              <span>{{ scopeLabel }}</span>
+              <i class="pi pi-chevron-down scope-pill__chev" [class.scope-pill__chev--open]="scopeOpen"></i>
             </button>
-          }
+
+            @if (scopeOpen) {
+              <div class="scope-dropdown">
+                <button class="scope-dropdown__all" (click)="selectAllFolders()">
+                  <i class="pi pi-globe"></i>
+                  All folders
+                </button>
+                <div class="scope-dropdown__sep"></div>
+                @for (f of watchedFolders; track f.id) {
+                  <label class="scope-dropdown__row">
+                    <input type="checkbox"
+                           [checked]="isFolderInScope(f.path)"
+                           (change)="toggleFolderInScope(f.path)" />
+                    <span class="scope-dropdown__name" [title]="f.path">{{ shortName(f.path) }}</span>
+                    <span class="scope-dropdown__count">{{ f.image_count }}</span>
+                  </label>
+                }
+              </div>
+            }
+          </div>
         </div>
-      </div>
 
-      <button class="search-trigger" [class.search-trigger--ready]="canSearch"
-              [disabled]="!canSearch" (click)="doSearch()">
-        <span class="search-trigger__glow"></span>
-        <i class="pi pi-sparkles"></i>
-        <span>{{ 'search.findBtn' | translate }}</span>
-      </button>
+        <!-- Top-K selector -->
+        <div class="topk-row">
+          <span class="topk-row__label">{{ 'search.maxResults' | translate }}</span>
+          <div class="topk-row__options">
+            @for (opt of topKOptions; track opt) {
+              <button class="topk-btn" [class.topk-btn--active]="state.topK === opt" (click)="state.topK = opt">
+                {{ opt }}
+              </button>
+            }
+          </div>
+        </div>
 
-      <p class="search-hero__badge">
-        <i class="pi pi-microchip-ai"></i>
-        {{ 'search.poweredBy' | translate }}
-      </p>
+        <button class="search-trigger" [class.search-trigger--ready]="canSearch"
+                [disabled]="!canSearch" (click)="doSearch()">
+          <span class="search-trigger__glow"></span>
+          <i class="pi pi-sparkles"></i>
+          <span>{{ 'search.findBtn' | translate }}</span>
+        </button>
+
+        <p class="search-hero__badge">
+          <i class="pi pi-microchip-ai"></i>
+          {{ 'search.poweredBy' | translate }}
+        </p>
+      }
 
     </div>
   }
@@ -116,7 +148,7 @@
         </div>
       </div>
 
-      <p class="scan-path">{{ state.folderPath }}</p>
+      <p class="scan-path">{{ scopeLabel }}</p>
     </div>
   }
 
@@ -128,7 +160,7 @@
         <div class="results-bar__thumb"><i class="pi pi-image"></i></div>
         <div class="results-bar__meta">
           <span class="results-bar__name">{{ state.imageName }}</span>
-          <span class="results-bar__path">{{ state.folderPath }}</span>
+          <span class="results-bar__path">{{ scopeLabel }}</span>
         </div>
         <span class="results-bar__count">{{ state.results.length }} {{ 'search.matches' | translate }}</span>
         <button class="results-bar__btn" (click)="newSearch()">
@@ -181,9 +213,12 @@
                     </div>
                   </div>
                   <div class="pin-card__foot">
-                    <span class="pin-card__name" [title]="item.path">{{ item.name }}</span>
+                    <div class="pin-card__foot-text">
+                      <span class="pin-card__name" [title]="item.path">{{ item.name }}</span>
+                      <span class="pin-card__folder" [title]="item.folder">from: {{ shortName(item.folder) }}</span>
+                    </div>
                     <span class="pin-card__badge pin-card__badge--{{ similarityClass(item.similarity) }}">
-                      {{ item.similarity }}%
+                      {{ item.similarity | number:'1.2-2' }}%
                     </span>
                   </div>
                 </div>

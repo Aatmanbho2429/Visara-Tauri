@@ -11,7 +11,8 @@ export class SearchStateService {
   /** Base-64 data-URL shown in the pick-card when the query came from
    *  the clipboard via the global hot-key.  Empty for normal file picks. */
   imagePreview = '';
-  folderPath   = '';
+  /** Subset of watched-folder paths to search.  Empty array = all watched. */
+  scopePaths:   string[] = [];
   topK         = 20;
 
   results:      SearchResult[] = [];
@@ -29,7 +30,7 @@ export class SearchStateService {
     this.imageName     = '';
     this.imagePath     = '';
     this.imagePreview  = '';
-    this.folderPath    = '';
+    this.scopePaths    = [];
     this.results       = [];
     this.failedFiles   = [];
     this.searchError   = '';

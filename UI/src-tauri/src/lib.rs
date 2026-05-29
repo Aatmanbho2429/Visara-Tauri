@@ -13,10 +13,20 @@ mod services;
 mod utils;
 
 use clipboard_rs::{Clipboard, ClipboardContext, common::RustImage};
-use commands::{auth, hotkey, search, subscription, update};
+use commands::{auth, hotkey, library, search, subscription, update};
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{
+    AppHandle, Emitter, Manager, WindowEvent,
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
+use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_notification::NotificationExt;
+
+/// CLI flag passed by the OS when the app is launched at user login.
+/// Detected in `setup()` to keep the main window hidden (tray-only boot).
+const AUTOSTART_FLAG: &str = "--autostart";
 
 // ── Platform file opener ───────────────────────────────────────────────────
 
@@ -120,16 +130,103 @@ fn on_global_hotkey(app: &AppHandle) {
         .unwrap_or_default();
 
     // Bring the main window forward regardless — user pressed the hot-key for a reason.
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.show();
-        let _ = win.unminimize();
-        let _ = win.set_focus();
-    }
+    show_main_window(app);
 
     let _ = app.emit("hotkey_pressed", serde_json::json!({
         "has_image":  !image_path.is_empty(),
         "image_path": image_path,
     }));
+}
+
+// ── System tray ────────────────────────────────────────────────────────────
+
+/// Reveal + focus the main window. Safe to call whether the window is hidden,
+/// minimized, or already visible behind other apps.
+fn show_main_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
+/// Build the persistent tray icon with menu: Open, Check Updates, Quit.
+/// Silent failure (logged warning) — tray is a UX enhancement, not critical.
+fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    let show_item   = MenuItem::with_id(app, "tray_show",   "Open Visara",         true, None::<&str>)?;
+    let update_item = MenuItem::with_id(app, "tray_update", "Check for Updates",   true, None::<&str>)?;
+    let quit_item   = MenuItem::with_id(app, "tray_quit",   "Quit Visara",         true, None::<&str>)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+
+    let menu = Menu::with_items(app, &[&show_item, &sep1, &update_item, &sep2, &quit_item])?;
+
+    let icon = match app.default_window_icon() {
+        Some(i) => i.clone(),
+        None => {
+            log::warn!("[tray] no default window icon available; skipping tray setup");
+            return Ok(());
+        }
+    };
+
+    TrayIconBuilder::with_id("main-tray")
+        .icon(icon)
+        .tooltip("Visara — AI Image Search")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "tray_show" => show_main_window(app),
+            "tray_update" => {
+                let app_clone = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    update::check_for_update(app_clone).await;
+                });
+            }
+            "tray_quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+/// Intercept the X button on the main window: hide to tray instead of quitting.
+/// First close per session triggers a native OS notification so the user
+/// understands the app is still running.  Other windows close normally.
+fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static NOTIFIED_THIS_SESSION: AtomicBool = AtomicBool::new(false);
+
+    if let WindowEvent::CloseRequested { api, .. } = event {
+        if window.label() == "main" {
+            api.prevent_close();
+            let _ = window.hide();
+
+            if !NOTIFIED_THIS_SESSION.swap(true, Ordering::SeqCst) {
+                let body = if cfg!(target_os = "macos") {
+                    "Click the Visara icon in the menu bar, or press ⌘+Shift+V, to bring it back."
+                } else {
+                    "Click the Visara icon in the system tray, or press Ctrl+Shift+V, to bring it back."
+                };
+                let _ = window.app_handle()
+                    .notification()
+                    .builder()
+                    .title("Visara is still running")
+                    .body(body)
+                    .show();
+            }
+        }
+    }
 }
 
 // ── Application entry point ────────────────────────────────────────────────
@@ -169,11 +266,40 @@ pub fn run() {
                 log::info!("[hotkey] registered Ctrl+Shift+V");
             }
 
+            // Build the persistent system tray.  Failure is non-fatal — the
+            // app remains usable, just without the tray icon.
+            if let Err(e) = setup_tray(app.handle()) {
+                log::warn!("[tray] failed to build tray: {e}");
+            }
+
+            // Start the background folder watcher.  Its OS subscriptions and
+            // initial reconciliation kick in later (after token validation
+            // loads the CLIP model) via `crate::core::watcher::refresh_active_watches`
+            // and `reconcile_all`.
+            crate::core::watcher::init();
+
+            // When launched at user login via autostart, the OS passes
+            // `--autostart` on the command line.  In that case we keep the
+            // main window hidden so Visara boots silently into the tray.
+            let launched_via_autostart = std::env::args().any(|a| a == AUTOSTART_FLAG);
+            if launched_via_autostart {
+                log::info!("[autostart] launched via autostart — starting hidden in tray");
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.hide();
+                }
+            }
+
             Ok(())
         })
+        .on_window_event(on_window_event)
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![AUTOSTART_FLAG]),
+        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -200,6 +326,13 @@ pub fn run() {
             // ── Updates ──────────────────────────────────────────────
             update::check_for_update,
             update::install_update,
+            // ── Library / watched folders ────────────────────────────
+            library::library_list_folders,
+            library::library_add_folder,
+            library::library_remove_folder,
+            library::library_set_paused,
+            library::library_rescan_folder,
+            library::library_stats,
             // ── Utilities ────────────────────────────────────────────
             open_file_path,
         ])

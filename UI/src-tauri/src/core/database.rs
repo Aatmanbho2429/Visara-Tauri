@@ -35,12 +35,106 @@ pub fn open() -> Result<Connection> {
         CREATE INDEX IF NOT EXISTS idx_hash     ON files(hash);
         CREATE INDEX IF NOT EXISTS idx_path     ON files(path);
         CREATE INDEX IF NOT EXISTS idx_faiss_id ON files(faiss_id);
+
+        CREATE TABLE IF NOT EXISTS watched_folders (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            path          TEXT    UNIQUE NOT NULL,
+            status        TEXT    NOT NULL DEFAULT 'watching',
+            added_at      REAL    NOT NULL,
+            last_event_at REAL    NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_watched_path ON watched_folders(path);
     ")?;
 
     // Idempotent column addition for databases created before mtime existed.
     let _ = con.execute("ALTER TABLE files ADD COLUMN mtime REAL NOT NULL DEFAULT 0", []);
 
     Ok(con)
+}
+
+// ── Watched folders queries ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WatchedFolder {
+    pub id:            i64,
+    pub path:          String,
+    pub status:        String,
+    pub added_at:      f64,
+    pub last_event_at: f64,
+    pub image_count:   usize,
+}
+
+pub fn list_watched_folders(con: &Connection) -> Result<Vec<WatchedFolder>> {
+    let mut stmt = con.prepare_cached(
+        "SELECT id, path, status, added_at, last_event_at FROM watched_folders ORDER BY added_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, f64>(3)?,
+                r.get::<_, f64>(4)?,
+            ))
+        })?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, path, status, added_at, last_event_at) in rows {
+        let image_count = folder_file_count(con, &path).unwrap_or(0);
+        out.push(WatchedFolder { id, path, status, added_at, last_event_at, image_count });
+    }
+    Ok(out)
+}
+
+pub fn watched_folder_paths(con: &Connection) -> Result<Vec<String>> {
+    let mut stmt = con.prepare_cached(
+        "SELECT path FROM watched_folders WHERE status != 'paused' ORDER BY added_at DESC",
+    )?;
+    let v = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(v)
+}
+
+pub fn insert_watched_folder(con: &Connection, path: &str) -> Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    con.execute(
+        "INSERT OR IGNORE INTO watched_folders (path, status, added_at, last_event_at) \
+         VALUES (?1, 'indexing', ?2, ?2)",
+        params![path, now],
+    )?;
+    Ok(())
+}
+
+pub fn delete_watched_folder(con: &Connection, path: &str) -> Result<()> {
+    con.execute("DELETE FROM watched_folders WHERE path = ?1", params![path])?;
+    Ok(())
+}
+
+pub fn set_watched_folder_status(con: &Connection, path: &str, status: &str) -> Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    con.execute(
+        "UPDATE watched_folders SET status = ?1, last_event_at = ?2 WHERE path = ?3",
+        params![status, now, path],
+    )?;
+    Ok(())
+}
+
+/// Total rows in `files` — used to detect legacy users with an existing index
+/// but no watched folders registered yet.
+pub fn total_indexed_files(con: &Connection) -> Result<usize> {
+    let count: i64 = con.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
+    Ok(count as usize)
 }
 
 // ── Queries ───────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 use crate::{
     config::{SUPABASE_EDGE, TOKEN_FILE},
-    core::embedder,
+    core::{embedder, watcher},
     services::license,
 };
 use once_cell::sync::Lazy;
@@ -156,13 +156,23 @@ pub async fn validate_saved_token() -> Value {
             // re-validated mid-session).  The onnx_key is still returned to
             // Angular as a fallback for the rare case where the user clicks
             // Search before this background task finishes.
-            if !onnx_key.is_empty() && !embedder::is_ready() {
+            //
+            // Once the model is ready, we (re)register the OS file-system
+            // watchers and run a reconciliation pass so any changes made
+            // while the app was closed are picked up.
+            if !onnx_key.is_empty() {
                 let key = onnx_key.clone();
+                let model_already_ready = embedder::is_ready();
                 tokio::task::spawn_blocking(move || {
-                    match embedder::load_model(&key) {
-                        Ok(_)  => log::info!("[auth] CLIP model preloaded after validate"),
-                        Err(e) => log::warn!("[auth] background model preload failed: {e}"),
+                    if !model_already_ready {
+                        if let Err(e) = embedder::load_model(&key) {
+                            log::warn!("[auth] background model preload failed: {e}");
+                            return;
+                        }
+                        log::info!("[auth] CLIP model preloaded after validate");
                     }
+                    watcher::refresh_active_watches();
+                    watcher::reconcile_all();
                 });
             }
 

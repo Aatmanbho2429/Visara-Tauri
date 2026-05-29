@@ -86,7 +86,7 @@ export class App implements OnInit, OnDestroy {
           key: 'app',
           severity: 'success',
           summary:  'Clipboard image captured',
-          detail:   'Pick a folder, then click Find Similar.',
+          detail:   'Click Find Similar to search your Library.',
           life:     3000,
         });
       } else {
