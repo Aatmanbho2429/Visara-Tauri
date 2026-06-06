@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { SearchResult, FailedFile, SearchProgress } from '../views/search/search';
 
 @Injectable({ providedIn: 'root' })
@@ -24,6 +25,17 @@ export class SearchStateService {
     phase: '', percent: 0, done: 0, total: 0,
     current: '', eta_sec: -1, errors: 0, active: false,
   };
+
+  /** Capture a clipboard / hot-key image as the current query.
+   *  A file copied from Finder/Explorer keeps its real name; only a captured
+   *  bitmap (screenshot, browser "Copy Image") lands on the temp file, which we
+   *  still label generically. */
+  setClipboardImage(imagePath: string): void {
+    const base = imagePath.split(/[\\/]/).pop() ?? imagePath;
+    this.imagePath    = imagePath;
+    this.imageName    = base === 'visara_clipboard.png' ? 'Clipboard image' : base;
+    this.imagePreview = convertFileSrc(imagePath);
+  }
 
   reset(): void {
     this.searchState   = 'idle';

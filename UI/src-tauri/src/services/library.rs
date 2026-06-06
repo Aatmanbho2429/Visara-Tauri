@@ -65,6 +65,44 @@ pub fn add_folder(path: String) -> Value {
         Err(e) => return err(format!("Database error: {e}")),
     };
 
+    // Detect overlaps with already-watched folders.  A recursive watch on a
+    // parent already covers its children, so two overlapping watches would
+    // double-count and double-scan every shared file.
+    let new_dir = norm_dir(&path);
+    let mut absorbed: Vec<String> = Vec::new();
+    if let Ok(existing) = database::list_watched_folders(&con) {
+        for e in &existing {
+            let e_dir = norm_dir(&e.path);
+            if e_dir == new_dir {
+                return err("That folder is already in your Library.".into());
+            }
+            if new_dir.starts_with(&e_dir) {
+                // New folder sits inside an existing watched parent → it is
+                // already covered recursively, so there is nothing to add.
+                return err(format!(
+                    "This folder is already covered by a watched parent folder:\n{}\n\nSubfolders are indexed automatically — no need to add them separately.",
+                    e.path
+                ));
+            }
+            if e_dir.starts_with(&new_dir) {
+                // An existing watched folder sits inside the new one → it
+                // becomes redundant once the parent is watched recursively.
+                absorbed.push(e.path.clone());
+            }
+        }
+    }
+
+    // Absorb the redundant child folders: drop their watched-folder rows but
+    // KEEP their embeddings.  Those files now fall under the new parent's scope,
+    // so nothing has to be re-indexed — the parent's reconcile reuses them
+    // (their mtime is unchanged, so the scan skips straight past).
+    for child in &absorbed {
+        match database::delete_watched_folder(&con, child) {
+            Ok(_)  => log::info!("[library] absorbed watched subfolder '{child}' into '{path}'"),
+            Err(e) => log::warn!("[library] could not absorb child '{child}': {e}"),
+        }
+    }
+
     if let Err(e) = database::insert_watched_folder(&con, &path) {
         return err(format!("Could not save folder: {e}"));
     }
@@ -79,9 +117,19 @@ pub fn add_folder(path: String) -> Value {
         watcher::reconcile_all_path(&path_for_task);
     });
 
+    let message = if absorbed.is_empty() {
+        "Folder added — indexing will run in the background.".to_string()
+    } else {
+        format!(
+            "Folder added — {} watched subfolder{} merged into it. Indexing runs in the background.",
+            absorbed.len(),
+            if absorbed.len() == 1 { "" } else { "s" },
+        )
+    };
+
     json!({
         "success": true,
-        "message": "Folder added — indexing will run in the background.",
+        "message": message,
         "data":    null,
     })
 }
@@ -137,6 +185,24 @@ pub fn set_paused(path: String, paused: bool) -> Value {
     })
 }
 
+/// Nested subfolder tree (with image counts) for one watched folder.  Used by
+/// the Library page's "View subfolders" panel.
+pub fn folder_tree(path: String) -> Value {
+    match folder_tree_inner(&path) {
+        Ok(tree) => json!({
+            "success": true,
+            "message": "ok",
+            "data":    { "tree": tree },
+        }),
+        Err(e) => err(format!("Could not read subfolders: {e}")),
+    }
+}
+
+fn folder_tree_inner(path: &str) -> Result<database::FolderTreeNode> {
+    let con = database::open()?;
+    database::folder_tree(&con, path)
+}
+
 /// Force a re-scan in the background.
 pub fn rescan_folder(path: String) -> Value {
     let path_for_task = path.clone();
@@ -162,6 +228,14 @@ fn purge_folder_rows(con: &rusqlite::Connection, folder: &str) -> rusqlite::Resu
         "DELETE FROM files WHERE path LIKE ?1",
         rusqlite::params![format!("{prefix}%")],
     )
+}
+
+/// Normalise a folder path to a directory prefix with exactly one trailing
+/// separator, so prefix `starts_with` checks classify nesting correctly:
+/// `/a/b/` starts_with `/a/` ⇒ b is inside a, while `/a-b/` does not.
+fn norm_dir(p: &str) -> String {
+    let trimmed = p.trim_end_matches(std::path::MAIN_SEPARATOR);
+    format!("{trimmed}{}", std::path::MAIN_SEPARATOR)
 }
 
 fn err(msg: String) -> Value {

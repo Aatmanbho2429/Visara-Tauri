@@ -66,6 +66,105 @@
             </span>
           </div>
 
+          <!-- Live indexing progress -->
+          @if (isSyncing(f.path)) {
+            <div class="folder-progress"
+                 [class.folder-progress--indeterminate]="syncProgress[f.path].total === 0">
+              <div class="folder-progress__bar">
+                <div class="folder-progress__fill"
+                     [style.width.%]="syncProgress[f.path].total > 0 ? (syncProgress[f.path].percent || 2) : 100"></div>
+              </div>
+              <div class="folder-progress__meta">
+                <span class="folder-progress__phase">{{ syncProgress[f.path].phase }}</span>
+                @if (syncProgress[f.path].total > 0) {
+                  <span class="folder-progress__count">
+                    {{ syncProgress[f.path].done | number }} / {{ syncProgress[f.path].total | number }}
+                    · {{ syncProgress[f.path].percent | number:'1.0-0' }}%
+                  </span>
+                }
+              </div>
+              @if (syncProgress[f.path].current || syncProgress[f.path].etaSec > 0 || syncProgress[f.path].errors > 0) {
+                <div class="folder-progress__sub">
+                  @if (syncProgress[f.path].current) {
+                    <span class="folder-progress__file" [title]="syncProgress[f.path].current">
+                      <i class="pi pi-image"></i>
+                      {{ shortName(syncProgress[f.path].current) }}
+                    </span>
+                  }
+                  <span class="folder-progress__right">
+                    @if (syncProgress[f.path].etaSec > 0) {
+                      <span class="folder-progress__eta">~{{ syncProgress[f.path].etaSec }}s left</span>
+                    }
+                    @if (syncProgress[f.path].errors > 0) {
+                      <span class="folder-progress__err">{{ syncProgress[f.path].errors }} skipped</span>
+                    }
+                  </span>
+                </div>
+              }
+            </div>
+          }
+
+          <!-- Error notice (expandable: shows which files failed and why) -->
+          @if (syncError[f.path] && !isSyncing(f.path)) {
+            <div class="folder-error">
+              <button class="folder-error__head"
+                      (click)="toggleErrorDetails(f.path)"
+                      [attr.aria-expanded]="!!errorsExpanded[f.path]">
+                <i class="pi pi-exclamation-triangle"></i>
+                <span class="folder-error__summary">{{ syncError[f.path] }}</span>
+                @if (syncFailed[f.path]?.length) {
+                  <span class="folder-error__toggle">
+                    {{ errorsExpanded[f.path] ? 'Hide details' : 'View details' }}
+                    <i class="pi" [ngClass]="errorsExpanded[f.path] ? 'pi-chevron-up' : 'pi-chevron-down'"></i>
+                  </span>
+                }
+              </button>
+
+              @if (errorsExpanded[f.path] && syncFailed[f.path]?.length) {
+                <ul class="folder-error__list">
+                  @for (fail of syncFailed[f.path]; track fail.file) {
+                    <li class="folder-error__item">
+                      <span class="folder-error__file" [title]="fail.file">{{ shortName(fail.file) }}</span>
+                      <span class="folder-error__reason">{{ fail.reason }}</span>
+                    </li>
+                  }
+                </ul>
+              }
+            </div>
+          }
+
+          <!-- Subfolder tree -->
+          <button class="folder-subfolders-toggle" (click)="toggleTree(f)">
+            <i class="pi" [ngClass]="treeOpen[f.path] ? 'pi-chevron-down' : 'pi-chevron-right'"></i>
+            {{ treeOpen[f.path] ? 'Hide subfolders' : 'View subfolders' }}
+          </button>
+
+          @if (treeOpen[f.path]) {
+            <div class="folder-tree">
+              @if (treeLoading[f.path]) {
+                <div class="folder-tree__state">Loading subfolders…</div>
+              } @else if (tree[f.path]) {
+                @if (tree[f.path]!.direct > 0) {
+                  <div class="folder-tree__loose">
+                    <i class="pi pi-image"></i>
+                    {{ tree[f.path]!.direct | number }} {{ tree[f.path]!.direct === 1 ? 'image' : 'images' }} directly in this folder
+                  </div>
+                }
+                @if (tree[f.path]!.children.length === 0) {
+                  <div class="folder-tree__state">No subfolders — every image sits in this folder.</div>
+                } @else {
+                  <ul class="folder-tree__list">
+                    @for (child of tree[f.path]!.children; track child.rel) {
+                      <ng-container *ngTemplateOutlet="treeNode; context: { $implicit: child, depth: 0 }"></ng-container>
+                    }
+                  </ul>
+                }
+              } @else {
+                <div class="folder-tree__state">Could not load subfolders.</div>
+              }
+            </div>
+          }
+
           <div class="folder-card__actions">
             <button
               class="folder-btn"
@@ -113,3 +212,15 @@
   }
 
 </div>
+
+<!-- Recursive subfolder row — indented by depth, rendered for the tree panel. -->
+<ng-template #treeNode let-node let-depth="depth">
+  <li class="folder-tree__node" [style.padding-left.rem]="0.8 + depth * 1.4">
+    <i class="pi pi-folder folder-tree__node-icon"></i>
+    <span class="folder-tree__node-name" [title]="node.name">{{ node.name }}</span>
+    <span class="folder-tree__node-count">{{ node.total | number }}</span>
+  </li>
+  @for (child of node.children; track child.rel) {
+    <ng-container *ngTemplateOutlet="treeNode; context: { $implicit: child, depth: depth + 1 }"></ng-container>
+  }
+</ng-template>

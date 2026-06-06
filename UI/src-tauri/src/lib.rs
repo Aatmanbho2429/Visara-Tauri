@@ -76,10 +76,19 @@ fn is_image_file(p: &PathBuf) -> bool {
 
 /// Read the clipboard and resolve it to an image file path.
 ///
-/// 1. Bitmap (screenshots, "Copy Image" from browser, Photoshop, etc.)
-///    → written to `<temp>/visara_clipboard.png` (overwritten each call)
-/// 2. File list (Windows Explorer "Copy", macOS Finder "Copy")
+/// 1. File list (macOS Finder "Copy", Windows Explorer "Copy")
 ///    → first image file in the list is returned directly, no temp copy
+/// 2. Bitmap (screenshots, "Copy Image" from browser, Photoshop, etc.)
+///    → written to `<temp>/visara_clipboard.png` (overwritten each call)
+///
+/// The file list is checked FIRST and on purpose.  When the user copies an
+/// actual image file we always want the real, full-resolution file on disk.
+/// On macOS a Finder file-copy ALSO exposes an `NSImage` representation that is
+/// merely the file's icon/thumbnail, so reading the bitmap first (as we used to)
+/// embedded a tiny generic preview and returned unrelated matches.  Windows
+/// Explorer copies expose no bitmap at all — which is why this only misbehaved
+/// on macOS.  The bitmap branch now only runs for genuine bitmap clipboards
+/// (screenshots, browser "Copy Image"), which carry no file path.
 fn resolve_clipboard_image() -> Option<PathBuf> {
     let ctx = match ClipboardContext::new() {
         Ok(c) => c,
@@ -89,7 +98,22 @@ fn resolve_clipboard_image() -> Option<PathBuf> {
         }
     };
 
-    // ── 1. Bitmap clipboard ───────────────────────────────────────────
+    // ── 1. File-list clipboard ────────────────────────────────────────
+    match ctx.get_files() {
+        Ok(files) => {
+            for f in &files {
+                let path = PathBuf::from(f.trim_start_matches("file://"));
+                if is_image_file(&path) && path.exists() {
+                    log::info!("[hotkey] using clipboard file directly → {:?}", path);
+                    return Some(path);
+                }
+            }
+            log::info!("[hotkey] clipboard file list had no recognized image ({} files); trying bitmap", files.len());
+        }
+        Err(e) => log::info!("[hotkey] no file list in clipboard ({e}); trying bitmap"),
+    }
+
+    // ── 2. Bitmap clipboard ───────────────────────────────────────────
     match ctx.get_image() {
         Ok(img) => {
             let (w, h) = img.get_size();
@@ -102,22 +126,7 @@ fn resolve_clipboard_image() -> Option<PathBuf> {
                 Err(e) => log::warn!("[hotkey] failed to write clipboard bitmap: {e}"),
             }
         }
-        Err(e) => log::info!("[hotkey] no bitmap in clipboard ({e}); trying file list"),
-    }
-
-    // ── 2. File-list clipboard ────────────────────────────────────────
-    match ctx.get_files() {
-        Ok(files) => {
-            for f in &files {
-                let path = PathBuf::from(f.trim_start_matches("file://"));
-                if is_image_file(&path) && path.exists() {
-                    log::info!("[hotkey] using clipboard file directly → {:?}", path);
-                    return Some(path);
-                }
-            }
-            log::info!("[hotkey] clipboard file list had no recognized image ({} files)", files.len());
-        }
-        Err(e) => log::info!("[hotkey] no file list in clipboard ({e})"),
+        Err(e) => log::info!("[hotkey] no bitmap in clipboard ({e})"),
     }
 
     None
@@ -276,7 +285,7 @@ pub fn run() {
             // initial reconciliation kick in later (after token validation
             // loads the CLIP model) via `crate::core::watcher::refresh_active_watches`
             // and `reconcile_all`.
-            crate::core::watcher::init();
+            crate::core::watcher::init(app.handle().clone());
 
             // When launched at user login via autostart, the OS passes
             // `--autostart` on the command line.  In that case we keep the
@@ -333,6 +342,7 @@ pub fn run() {
             library::library_set_paused,
             library::library_rescan_folder,
             library::library_stats,
+            library::library_folder_tree,
             // ── Utilities ────────────────────────────────────────────
             open_file_path,
         ])

@@ -23,3 +23,18 @@ export interface LibraryStats {
   watched_folder_count: number;
   total_indexed_files:  number;
 }
+
+/** One node in a watched folder's subfolder tree.
+ *  `direct` = images stored directly in this folder;
+ *  `total`  = images in this folder and all descendants. */
+export interface FolderTreeNode {
+  name:     string;
+  rel:      string;
+  direct:   number;
+  total:    number;
+  children: FolderTreeNode[];
+}
+
+export interface FolderTreeData {
+  tree: FolderTreeNode;
+}

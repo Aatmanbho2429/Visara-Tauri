@@ -8,7 +8,7 @@
 
 use crate::{
     config::VECTOR_STORE_PATH,
-    core::{database, embedder, progress, vector_store::VectorStore},
+    core::{database, embedder, vector_store::VectorStore},
     error::{Result, VisaraError},
     utils::image_loader,
 };
@@ -78,19 +78,12 @@ pub fn execute(
     let store = VectorStore::load(VECTOR_STORE_PATH.as_path())?;
 
     // ── Embed query image ─────────────────────────────────────────────
-    let image_name = image_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("query");
-
-    progress::reset();
-    progress::set_progress(
-        Some("Searching"),
-        Some(0), Some(1),
-        Some(image_name),
-        Some(0),
-    );
-
+    // NOTE: search deliberately does not touch the global progress state.
+    // That state is owned by the sync/index pipeline and drives the Library
+    // page's progress bar; writing "Searching" here (or calling reset()) would
+    // corrupt a concurrent folder index — and reading it back in the search
+    // command produced the phantom "Indexing…" bar during search.  The search
+    // command emits its own lightweight "Searching" snapshot instead.
     let query_img  = image_loader::load_image(image_path)
         .map_err(|e| VisaraError::Fatal(format!("Could not load reference image: {e}")))?;
     let pixels     = embedder::preprocess(query_img);
@@ -121,6 +114,12 @@ pub fn execute(
         .into_iter()
         .filter_map(|(id, score)| {
             let (path, folder) = id_map.get(&id)?.clone();
+            // Skip stale hits whose file was renamed/deleted since indexing —
+            // the watcher reconciles these eventually, but never surface a
+            // dead path in results in the meantime.
+            if !Path::new(&path).exists() {
+                return None;
+            }
             let name = Path::new(&path)
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -141,6 +140,5 @@ pub fn execute(
         .map(|(i, mut r)| { r.rank = i + 1; r })
         .collect();
 
-    progress::reset();
     Ok((results, Vec::new()))
 }

@@ -156,23 +156,33 @@ pub async fn validate_saved_token() -> Value {
             // re-validated mid-session).  The onnx_key is still returned to
             // Angular as a fallback for the rare case where the user clicks
             // Search before this background task finishes.
-            //
-            // Once the model is ready, we (re)register the OS file-system
-            // watchers and run a reconciliation pass so any changes made
-            // while the app was closed are picked up.
             if !onnx_key.is_empty() {
                 let key = onnx_key.clone();
                 let model_already_ready = embedder::is_ready();
                 tokio::task::spawn_blocking(move || {
+                    // validate_saved_token() is hit frequently — the cold-start
+                    // route guard, every search, and every profile visit all call
+                    // it.  The OS watchers + reconciliation only need to run when
+                    // the model TRANSITIONS from not-ready to ready (cold start, or
+                    // after a renewal that followed an expiry reset).  Doing it on
+                    // every call re-scanned all folders needlessly and bled that
+                    // "Indexing…" progress into the search screen, since search and
+                    // sync shared one global progress state.  When the model is
+                    // already loaded the watchers are live and catching changes, so
+                    // there is nothing to redo.
                     if !model_already_ready {
                         if let Err(e) = embedder::load_model(&key) {
                             log::warn!("[auth] background model preload failed: {e}");
                             return;
                         }
                         log::info!("[auth] CLIP model preloaded after validate");
+
+                        // First time the model is ready this session: register the
+                        // OS file-system watchers and run one reconciliation pass so
+                        // changes made while the app was closed are picked up (also
+                        // drains folders deferred to the watcher's PENDING set).
+                        watcher::notify_model_ready();
                     }
-                    watcher::refresh_active_watches();
-                    watcher::reconcile_all();
                 });
             }
 

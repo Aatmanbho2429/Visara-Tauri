@@ -10,6 +10,24 @@ export interface UpdateInfo   { version: string; notes: string; }
 export interface UpdateProgress { downloaded: number; total: number | null; }
 export interface HotkeyEvent  { has_image: boolean; image_path: string; }
 
+export interface LibrarySyncProgressData {
+  path: string;
+  progress: {
+    phase: string; done: number; total: number; percent: number;
+    current: string; errors: number; eta_sec: number;
+  };
+}
+export interface LibrarySyncFailure      { file: string; reason: string; }
+export interface LibrarySyncCompleteData  { path: string; errors: number; failed: LibrarySyncFailure[]; image_count: number; }
+export interface LibrarySyncErrorData    { path: string; message: string; }
+
+export interface LibrarySyncHandlers {
+  started?:  (p: { path: string }) => void;
+  progress?: (p: LibrarySyncProgressData) => void;
+  complete?: (p: LibrarySyncCompleteData) => void;
+  error?:    (p: LibrarySyncErrorData) => void;
+}
+
 export interface SearchEvent {
   type: 'progress' | 'complete' | 'error';
   data: any;
@@ -130,6 +148,37 @@ export class TauriService {
   // ── Global hot-key ────────────────────────────────────────────────
   onHotkey(cb: (payload: HotkeyEvent) => void): Promise<UnlistenFn> {
     return listen<HotkeyEvent>('hotkey_pressed', e => cb(e.payload));
+  }
+
+  // ── Library sync lifecycle events ─────────────────────────────────
+  /**
+   * Subscribe to live per-folder sync events emitted by the background
+   * watcher.  All callbacks run inside Angular's zone so view bindings
+   * update automatically.  Returns one unlisten that detaches every handler.
+   */
+  onLibrarySync(handlers: LibrarySyncHandlers): Promise<UnlistenFn> {
+    const subs: UnlistenFn[] = [];
+
+    const register = async () => {
+      if (handlers.started) {
+        subs.push(await listen<{ path: string }>('library_sync_started',
+          e => this.zone.run(() => handlers.started!(e.payload))));
+      }
+      if (handlers.progress) {
+        subs.push(await listen<LibrarySyncProgressData>('library_sync_progress',
+          e => this.zone.run(() => handlers.progress!(e.payload))));
+      }
+      if (handlers.complete) {
+        subs.push(await listen<LibrarySyncCompleteData>('library_sync_complete',
+          e => this.zone.run(() => handlers.complete!(e.payload))));
+      }
+      if (handlers.error) {
+        subs.push(await listen<LibrarySyncErrorData>('library_sync_error',
+          e => this.zone.run(() => handlers.error!(e.payload))));
+      }
+    };
+
+    return register().then(() => () => subs.forEach(u => u()));
   }
 
   // ── Autostart (launch at user login) ──────────────────────────────

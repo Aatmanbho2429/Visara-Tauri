@@ -11,22 +11,53 @@
 //! batching.  This file is only event plumbing.
 
 use crate::{
-    config::VECTOR_STORE_PATH,
-    core::{database, embedder, vector_store::VectorStore},
+    config::{VECTOR_STORE_PATH, PROGRESS_EMIT_INTERVAL_MS},
+    core::{database, embedder, progress, vector_store::VectorStore},
     services::sync,
 };
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
+use serde_json::json;
 use std::{
     collections::HashSet,
     path::PathBuf,
     sync::{
+        atomic::{AtomicBool, Ordering},
         mpsc::{channel, Sender},
-        Mutex,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
 };
+use tauri::{AppHandle, Emitter};
+
+// ── App handle for emitting sync events to the UI ──────────────────────────
+//
+// The watcher runs on background threads with no access to a Tauri command's
+// AppHandle, so we stash a clone here at startup.  Every sync lifecycle event
+// (started / progress / complete / error) is emitted through it so the Library
+// page can show live per-folder progress without polling.
+
+static APP: OnceCell<AppHandle> = OnceCell::new();
+
+fn emit(event: &str, payload: serde_json::Value) {
+    if let Some(app) = APP.get() {
+        let _ = app.emit(event, payload);
+    }
+}
+
+/// Folders whose sync was requested before the CLIP model finished loading.
+/// Drained by `notify_model_ready()` once the model is in memory.
+static PENDING: Lazy<Mutex<HashSet<PathBuf>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+
+/// Called by the auth layer the instant the CLIP model becomes available.
+/// Re-runs every watched folder (which also covers anything deferred while the
+/// model was still decrypting/compiling) so nothing stays stuck on "Indexing".
+pub fn notify_model_ready() {
+    PENDING.lock().unwrap().clear();
+    refresh_active_watches();
+    reconcile_all();
+}
 
 // ── Debounce tuning ────────────────────────────────────────────────────────
 
@@ -68,7 +99,10 @@ static STATE: Lazy<Mutex<WatcherState>> = Lazy::new(|| {
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /// Spawn the background worker thread.  Idempotent.  Call once at startup.
-pub fn init() {
+/// `app` is stored so sync lifecycle events can be pushed to the UI.
+pub fn init(app: AppHandle) {
+    let _ = APP.set(app);
+
     let mut state = STATE.lock().unwrap();
     if state.msg_tx.is_some() {
         return; // Already initialised.
@@ -176,13 +210,19 @@ fn read_paths_from_db() -> crate::error::Result<Vec<String>> {
     database::watched_folder_paths(&con)
 }
 
-/// Filter to events that may actually change the file set: create, modify,
-/// remove, rename.  Everything else (access time, attribute-only) is ignored.
+/// Filter to events that may actually change the file set: create, content
+/// modify, remove, rename.  Metadata-only changes (access time, permissions)
+/// are ignored on purpose: indexing *reads* every file, which bumps its atime,
+/// and macOS FSEvents reports that straight back to us — without this filter the
+/// watcher re-triggers itself in an endless re-scan loop.
 fn should_handle(kind: &EventKind) -> bool {
-    matches!(
-        kind,
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-    )
+    use notify::event::ModifyKind;
+    match kind {
+        EventKind::Create(_) | EventKind::Remove(_) => true,
+        EventKind::Modify(ModifyKind::Metadata(_))  => false,
+        EventKind::Modify(_)                        => true,
+        _                                           => false,
+    }
 }
 
 /// Map an event path back to one of our watch roots.
@@ -196,21 +236,47 @@ fn owning_root(event_path: &PathBuf, roots: &HashSet<PathBuf>) -> Option<PathBuf
 }
 
 /// Single-folder reconcile.  Loads the vector store, calls `sync_folder`,
-/// saves the store back.  Updates the watched-folder status accordingly.
+/// saves the store back.  Updates the watched-folder status accordingly and
+/// emits live lifecycle events to the UI:
+///   library_sync_started  { path }
+///   library_sync_progress { path, progress: ProgressSnapshot }
+///   library_sync_complete  { path, errors, image_count }
+///   library_sync_error     { path, message }
 fn sync_one(folder: &PathBuf) {
+    let folder_str = folder.to_string_lossy().to_string();
+
     if !embedder::is_ready() {
-        log::info!("[watcher] model not ready; skipping sync of {folder:?}");
+        log::info!("[watcher] model not ready; deferring sync of {folder:?}");
+        PENDING.lock().unwrap().insert(folder.clone());
+        if let Ok(con) = database::open() {
+            let _ = database::set_watched_folder_status(&con, &folder_str, "indexing");
+        }
+        // Surface a "preparing" state so the card doesn't sit on a silent,
+        // fake "Indexing".  notify_model_ready() will re-drive this folder
+        // with real progress once the CLIP model has loaded.
+        emit("library_sync_progress", json!({
+            "path": folder_str,
+            "progress": {
+                "phase":   "Preparing AI model…",
+                "done":    0,
+                "total":   0,
+                "percent": 0,
+                "current": "",
+                "errors":  0,
+                "eta_sec": -1,
+            }
+        }));
         return;
     }
     if !folder.is_dir() {
         log::warn!("[watcher] watched folder missing: {folder:?}");
         if let Ok(con) = database::open() {
-            let _ = database::set_watched_folder_status(
-                &con,
-                &folder.to_string_lossy(),
-                "missing",
-            );
+            let _ = database::set_watched_folder_status(&con, &folder_str, "missing");
         }
+        emit("library_sync_error", json!({
+            "path": folder_str,
+            "message": "Folder no longer exists on disk.",
+        }));
         return;
     }
 
@@ -222,43 +288,111 @@ fn sync_one(folder: &PathBuf) {
 
     let mut store = match VectorStore::load(VECTOR_STORE_PATH.as_path()) {
         Ok(s)  => s,
-        Err(e) => { log::warn!("[watcher] vector store load failed: {e}"); return; }
+        Err(e) => {
+            log::warn!("[watcher] vector store load failed: {e}");
+            if let Ok(con) = database::open() {
+                let _ = database::set_watched_folder_status(&con, &folder_str, "error");
+            }
+            emit("library_sync_error", json!({
+                "path": folder_str,
+                "message": format!("Could not open the index: {e}"),
+            }));
+            return;
+        }
     };
 
     if let Ok(con) = database::open() {
-        let _ = database::set_watched_folder_status(
-            &con,
-            &folder.to_string_lossy(),
-            "indexing",
-        );
+        let _ = database::set_watched_folder_status(&con, &folder_str, "indexing");
     }
 
-    match sync::sync_folder(&mut store, folder) {
-        Ok(errors) => {
-            if !errors.is_empty() {
-                log::warn!("[watcher] {} per-file errors in {folder:?}", errors.len());
+    // Clear any stale snapshot so the ticker only streams this folder's run.
+    progress::reset();
+    emit("library_sync_started", json!({ "path": folder_str }));
+
+    // Spawn a ticker that streams progress snapshots to the UI while the
+    // (blocking) sync runs on this thread.  Stopped via the atomic flag.
+    let stop = Arc::new(AtomicBool::new(false));
+    let ticker = {
+        let stop      = stop.clone();
+        let path_str  = folder_str.clone();
+        thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let snap = progress::get_progress();
+                if snap.active {
+                    emit("library_sync_progress", json!({
+                        "path":     path_str,
+                        "progress": snap,
+                    }));
+                }
+                thread::sleep(Duration::from_millis(PROGRESS_EMIT_INTERVAL_MS));
             }
+        })
+    };
+
+    let sync_result = sync::sync_folder(&mut store, folder);
+
+    // Stop the ticker before emitting the terminal event.
+    stop.store(true, Ordering::Relaxed);
+    let _ = ticker.join();
+    progress::reset();
+
+    match sync_result {
+        Ok(errors) => {
             if let Err(e) = store.save(VECTOR_STORE_PATH.as_path()) {
                 log::warn!("[watcher] vector store save failed: {e}");
+                if let Ok(con) = database::open() {
+                    let _ = database::set_watched_folder_status(&con, &folder_str, "error");
+                }
+                emit("library_sync_error", json!({
+                    "path": folder_str,
+                    "message": format!("Could not save the index: {e}"),
+                }));
+                return;
             }
+
+            let image_count = database::open()
+                .ok()
+                .and_then(|con| database::folder_file_count(&con, &folder_str).ok())
+                .unwrap_or(0);
+
             if let Ok(con) = database::open() {
-                let _ = database::set_watched_folder_status(
-                    &con,
-                    &folder.to_string_lossy(),
-                    "watching",
-                );
+                let _ = database::set_watched_folder_status(&con, &folder_str, "watching");
+            }
+
+            if !errors.is_empty() {
+                log::warn!("[watcher] {} per-file errors in {folder:?}:", errors.len());
+                for e in &errors {
+                    log::warn!("[watcher]   • {} — {}", e.file, e.reason);
+                }
             }
             log::info!("[watcher] done reconciling {folder:?}");
+
+            // Ship a bounded sample of the failures so the Library card can show
+            // *why* files were skipped, without pushing a huge payload over IPC
+            // for a pathological folder.
+            const MAX_REPORTED_FAILURES: usize = 100;
+            let failed: Vec<serde_json::Value> = errors
+                .iter()
+                .take(MAX_REPORTED_FAILURES)
+                .map(|e| json!({ "file": e.file, "reason": e.reason }))
+                .collect();
+
+            emit("library_sync_complete", json!({
+                "path":        folder_str,
+                "errors":      errors.len(),
+                "failed":      failed,
+                "image_count": image_count,
+            }));
         }
         Err(e) => {
             log::warn!("[watcher] sync failed for {folder:?}: {e}");
             if let Ok(con) = database::open() {
-                let _ = database::set_watched_folder_status(
-                    &con,
-                    &folder.to_string_lossy(),
-                    "error",
-                );
+                let _ = database::set_watched_folder_status(&con, &folder_str, "error");
             }
+            emit("library_sync_error", json!({
+                "path": folder_str,
+                "message": e.to_string(),
+            }));
         }
     }
 }

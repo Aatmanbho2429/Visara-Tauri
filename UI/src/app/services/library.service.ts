@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { BaseResponse } from '../models/base-response.model';
-import { LibraryStats, ListFoldersData } from '../models/library.model';
+import { FolderTreeData, LibraryStats, ListFoldersData } from '../models/library.model';
 import { TauriService } from './tauri.service';
 
 @Injectable({ providedIn: 'root' })
@@ -31,5 +31,10 @@ export class LibraryService {
 
   stats(): Observable<BaseResponse<LibraryStats>> {
     return this.tauri.invoke<LibraryStats>('library_stats');
+  }
+
+  /** Nested subfolder tree (with image counts) for one watched folder. */
+  folderTree(path: string): Observable<BaseResponse<FolderTreeData>> {
+    return this.tauri.invoke<FolderTreeData>('library_folder_tree', { path });
   }
 }

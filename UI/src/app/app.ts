@@ -1,7 +1,6 @@
 import { ApplicationRef, Component, inject, NgZone, OnDestroy, OnInit } from '@angular/core';
 import { Router, RouterOutlet } from '@angular/router';
 import { TranslateService } from '@ngx-translate/core';
-import { convertFileSrc } from '@tauri-apps/api/core';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { MessageService } from 'primeng/api';
 import { ToastModule } from 'primeng/toast';
@@ -112,9 +111,9 @@ export class App implements OnInit, OnDestroy {
   }
 
   private loadClipboardIntoSearchState(imagePath: string): void {
-    this.searchState.imagePath    = imagePath;
-    this.searchState.imageName    = 'Clipboard image';
-    // Use Tauri's asset protocol to render the temp PNG in the pick-card.
-    this.searchState.imagePreview = convertFileSrc(imagePath);
+    // Delegates to the shared helper so the real filename (file copy) vs the
+    // generic "Clipboard image" (captured bitmap) labelling stays consistent
+    // with the post-login path in login.ts.
+    this.searchState.setClipboardImage(imagePath);
   }
 }

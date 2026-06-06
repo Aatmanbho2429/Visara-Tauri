@@ -43,3 +43,9 @@ pub fn library_stats(app: tauri::AppHandle) {
     let result = library::stats();
     let _ = app.emit("library_stats_response", result);
 }
+
+#[tauri::command]
+pub fn library_folder_tree(app: tauri::AppHandle, path: String) {
+    let result = library::folder_tree(path);
+    let _ = app.emit("library_folder_tree_response", result);
+}

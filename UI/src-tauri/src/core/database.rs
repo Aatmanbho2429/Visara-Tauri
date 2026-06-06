@@ -5,7 +5,7 @@
 
 use crate::{config, error::Result};
 use rusqlite::{Connection, params};
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::{HashMap, HashSet}, fs, path::Path};
 
 // ── Connection ────────────────────────────────────────────────────────────
 
@@ -281,6 +281,111 @@ pub fn folder_file_count(con: &Connection, folder: &str) -> Result<usize> {
         |r| r.get(0),
     )?;
     Ok(count as usize)
+}
+
+// ── Subfolder tree ─────────────────────────────────────────────────────────
+
+/// One node in a watched folder's subfolder tree.  `direct` = images stored
+/// directly in this folder; `total` = images in this folder and all descendants.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FolderTreeNode {
+    pub name:     String,
+    pub rel:      String,
+    pub direct:   usize,
+    pub total:    usize,
+    pub children: Vec<FolderTreeNode>,
+}
+
+/// Build the nested subfolder tree (with per-folder image counts) for a watched
+/// root, derived entirely from the indexed file paths already in `files`.
+pub fn folder_tree(con: &Connection, root: &str) -> Result<FolderTreeNode> {
+    let prefix = normalise_folder_prefix(root);
+
+    let mut stmt = con.prepare_cached("SELECT path FROM files WHERE path LIKE ?1")?;
+    let paths: Vec<String> = stmt
+        .query_map(params![format!("{prefix}%")], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let sep = std::path::MAIN_SEPARATOR;
+    let mut direct: HashMap<String, usize> = HashMap::new();
+    let mut total:  HashMap<String, usize> = HashMap::new();
+
+    for p in &paths {
+        // Path relative to the watched root (root prefix stripped).
+        let rel = match p.get(prefix.len()..) {
+            Some(r) => r,
+            None    => continue,
+        };
+        let segs: Vec<&str> = rel.split(sep).filter(|s| !s.is_empty()).collect();
+        if segs.is_empty() { continue; }
+
+        // All but the last segment are directories; the last is the file name.
+        let dir_segs = &segs[..segs.len() - 1];
+        *direct.entry(dir_segs.join("/")).or_insert(0) += 1;
+
+        // total: the root and every ancestor directory along the chain.
+        *total.entry(String::new()).or_insert(0) += 1;
+        let mut acc = String::new();
+        for seg in dir_segs {
+            if acc.is_empty() { acc = (*seg).to_string(); }
+            else              { acc = format!("{acc}/{seg}"); }
+            *total.entry(acc.clone()).or_insert(0) += 1;
+        }
+    }
+
+    // Parent → children adjacency over every directory key.
+    let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
+    for key in total.keys() {
+        if key.is_empty() { continue; }
+        let parent = match key.rsplit_once('/') {
+            Some((p, _)) => p.to_string(),
+            None         => String::new(),
+        };
+        children_map.entry(parent).or_default().push(key.clone());
+    }
+
+    let root_name = Path::new(root)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(root)
+        .to_string();
+
+    Ok(build_tree_node("", &root_name, &children_map, &direct, &total))
+}
+
+fn build_tree_node(
+    key:          &str,
+    root_name:    &str,
+    children_map: &HashMap<String, Vec<String>>,
+    direct:       &HashMap<String, usize>,
+    total:        &HashMap<String, usize>,
+) -> FolderTreeNode {
+    let name = if key.is_empty() {
+        root_name.to_string()
+    } else {
+        key.rsplit('/').next().unwrap_or(key).to_string()
+    };
+
+    let mut children: Vec<FolderTreeNode> = children_map
+        .get(key)
+        .map(|ks| {
+            ks.iter()
+                .map(|k| build_tree_node(k, root_name, children_map, direct, total))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Most-populated subfolders first, then alphabetical.
+    children.sort_by(|a, b| b.total.cmp(&a.total).then_with(|| a.name.cmp(&b.name)));
+
+    FolderTreeNode {
+        name,
+        rel:    key.to_string(),
+        direct: *direct.get(key).unwrap_or(&0),
+        total:  *total.get(key).unwrap_or(&0),
+        children,
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
