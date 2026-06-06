@@ -13,7 +13,7 @@ mod services;
 mod utils;
 
 use clipboard_rs::{Clipboard, ClipboardContext, common::RustImage};
-use commands::{auth, hotkey, library, search, subscription, update};
+use commands::{auth, browse, hotkey, library, search, subscription, tags, update};
 use std::path::PathBuf;
 use tauri::{
     AppHandle, Emitter, Manager, WindowEvent,
@@ -343,6 +343,17 @@ pub fn run() {
             library::library_rescan_folder,
             library::library_stats,
             library::library_folder_tree,
+            // ── Tags ─────────────────────────────────────────────────
+            tags::tags_set,
+            tags::tags_remove,
+            tags::tags_get,
+            tags::tags_facets,
+            tags::tags_query,
+            tags::tags_suggest,
+            tags::tags_backfill_colors,
+            // ── Browse ───────────────────────────────────────────────
+            browse::browse_directory,
+            browse::get_thumbnail,
             // ── Utilities ────────────────────────────────────────────
             open_file_path,
         ])

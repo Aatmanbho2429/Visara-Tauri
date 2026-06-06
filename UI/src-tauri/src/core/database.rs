@@ -44,6 +44,18 @@ pub fn open() -> Result<Connection> {
             last_event_at REAL    NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_watched_path ON watched_folders(path);
+
+        CREATE TABLE IF NOT EXISTS file_tags (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            path       TEXT NOT NULL,
+            category   TEXT NOT NULL,   -- color | material | finish | size | design | collection | custom
+            value      TEXT NOT NULL,
+            source     TEXT NOT NULL DEFAULT 'manual',  -- auto | manual | filename
+            created_at REAL NOT NULL DEFAULT 0,
+            UNIQUE(path, category, value)
+        );
+        CREATE INDEX IF NOT EXISTS idx_file_tags_path    ON file_tags(path);
+        CREATE INDEX IF NOT EXISTS idx_file_tags_cat_val ON file_tags(category, value);
     ")?;
 
     // Idempotent column addition for databases created before mtime existed.
@@ -386,6 +398,151 @@ fn build_tree_node(
         total:  *total.get(key).unwrap_or(&0),
         children,
     }
+}
+
+// ── Tags ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FileTag {
+    pub path:     String,
+    pub category: String,
+    pub value:    String,
+    pub source:   String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TagFacet {
+    pub category: String,
+    pub value:    String,
+    pub count:    usize,
+}
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// Add a tag (no-op if the exact (path, category, value) already exists).
+pub fn add_tag(con: &Connection, path: &str, category: &str, value: &str, source: &str) -> Result<()> {
+    con.execute(
+        "INSERT OR IGNORE INTO file_tags (path, category, value, source, created_at) VALUES (?1,?2,?3,?4,?5)",
+        params![path, category, value, source, now_secs()],
+    )?;
+    Ok(())
+}
+
+/// Replace every value in a single-valued category for a path (color, size,
+/// material, finish, design).
+pub fn set_single_tag(con: &Connection, path: &str, category: &str, value: &str, source: &str) -> Result<()> {
+    con.execute("DELETE FROM file_tags WHERE path = ?1 AND category = ?2", params![path, category])?;
+    add_tag(con, path, category, value, source)
+}
+
+pub fn remove_tag(con: &Connection, path: &str, category: &str, value: &str) -> Result<()> {
+    con.execute(
+        "DELETE FROM file_tags WHERE path = ?1 AND category = ?2 AND value = ?3",
+        params![path, category, value],
+    )?;
+    Ok(())
+}
+
+pub fn path_has_category(con: &Connection, path: &str, category: &str) -> Result<bool> {
+    let n: i64 = con.query_row(
+        "SELECT COUNT(*) FROM file_tags WHERE path = ?1 AND category = ?2",
+        params![path, category],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// All tags for a set of paths.
+pub fn tags_for_paths(con: &Connection, paths: &[String]) -> Result<Vec<FileTag>> {
+    if paths.is_empty() { return Ok(Vec::new()); }
+    let placeholders = (0..paths.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT path, category, value, source FROM file_tags WHERE path IN ({placeholders}) ORDER BY category, value"
+    );
+    let mut stmt = con.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(paths.iter()), |r| {
+            Ok(FileTag {
+                path:     r.get(0)?,
+                category: r.get(1)?,
+                value:    r.get(2)?,
+                source:   r.get(3)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+/// Distinct (category, value) with a count of how many files carry each — drives
+/// the filter chips.
+pub fn tag_facets(con: &Connection) -> Result<Vec<TagFacet>> {
+    let mut stmt = con.prepare(
+        "SELECT category, value, COUNT(DISTINCT path) FROM file_tags \
+         GROUP BY category, value ORDER BY category ASC, COUNT(DISTINCT path) DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(TagFacet {
+                category: r.get(0)?,
+                value:    r.get(1)?,
+                count:    r.get::<_, i64>(2)? as usize,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+/// Paths matching ALL of the given (category, value) filters (AND semantics).
+pub fn query_paths_by_tags(con: &Connection, filters: &[(String, String)]) -> Result<Vec<String>> {
+    if filters.is_empty() { return Ok(Vec::new()); }
+
+    let clause = (0..filters.len())
+        .map(|_| "(category = ? AND value = ?)")
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    // The match count is `filters.len()` — a trusted integer, inlined directly.
+    // Binding it as a parameter makes it TEXT, and SQLite's `COUNT(*) = '1'`
+    // (integer vs text) is always false, which silently returned zero rows.
+    let sql = format!(
+        "SELECT path FROM file_tags WHERE {clause} GROUP BY path HAVING COUNT(*) = {}",
+        filters.len()
+    );
+
+    let mut stmt = con.prepare(&sql)?;
+    let mut binds: Vec<&str> = Vec::with_capacity(filters.len() * 2);
+    for (c, v) in filters {
+        binds.push(c.as_str());
+        binds.push(v.as_str());
+    }
+
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(binds), |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+/// Files under a folder that have no tag in `category` yet (used by the color
+/// backfill so we never re-decode an already-coloured image).
+pub fn paths_missing_category_in_folder(con: &Connection, folder: &str, category: &str) -> Result<Vec<String>> {
+    let prefix = normalise_folder_prefix(folder);
+    let mut stmt = con.prepare(
+        "SELECT f.path FROM files f \
+         WHERE f.path LIKE ?1 \
+           AND NOT EXISTS (SELECT 1 FROM file_tags t WHERE t.path = f.path AND t.category = ?2)",
+    )?;
+    let rows = stmt
+        .query_map(params![format!("{prefix}%"), category], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

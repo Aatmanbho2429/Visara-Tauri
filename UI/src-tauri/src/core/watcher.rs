@@ -383,6 +383,17 @@ fn sync_one(folder: &PathBuf) {
                 "failed":      failed,
                 "image_count": image_count,
             }));
+
+            // Auto-compute colour tags for any images that don't have one yet
+            // (background — never blocks the sync).  Emits `tags_updated` so the
+            // Browse/filter UI can refresh its facets when colours land.
+            let folder_for_color = folder_str.clone();
+            std::thread::spawn(move || {
+                let n = crate::services::tags::backfill_colors(&folder_for_color);
+                if n > 0 {
+                    emit("tags_updated", json!({ "colored": n }));
+                }
+            });
         }
         Err(e) => {
             log::warn!("[watcher] sync failed for {folder:?}: {e}");

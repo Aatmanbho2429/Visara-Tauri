@@ -1,0 +1,216 @@
+<div class="browse-page">
+
+  <header class="browse-page__header">
+    <div>
+      <h1 class="browse-page__title">Browse &amp; Tag</h1>
+      <p class="browse-page__subtitle">Navigate folders or filter by tag, select tiles, then categorize them.</p>
+    </div>
+    <button class="browse-page__analyze" (click)="analyzeColors()">
+      <i class="pi pi-palette"></i> Analyze colors
+    </button>
+  </header>
+
+  <div class="browse-body">
+
+    <!-- ── Tag filter sidebar ───────────────────────────────── -->
+    <aside class="filter-sidebar">
+      <div class="filter-sidebar__head">
+        <span>Filter by tag</span>
+        @if (filtering) {
+          <button class="filter-sidebar__clear" (click)="clearFilters()">Clear</button>
+        }
+      </div>
+
+      @if (facetGroups.length === 0) {
+        <p class="filter-sidebar__empty">No tags yet. Select tiles and use <strong>Categorize</strong>.</p>
+      }
+
+      @for (group of facetGroups; track group.category) {
+        <div class="facet-group">
+          <span class="facet-group__label">{{ group.label }}</span>
+          <div class="facet-group__chips">
+            @for (f of group.facets; track f.category + f.value) {
+              <button class="facet-chip"
+                      [class.facet-chip--active]="isFilterActive(f)"
+                      (click)="toggleFilter(f)">
+                {{ f.value }} <span class="facet-chip__count">{{ f.count }}</span>
+              </button>
+            }
+          </div>
+        </div>
+      }
+    </aside>
+
+    <!-- ── Main area ────────────────────────────────────────── -->
+    <section class="browse-main">
+
+      <!-- Breadcrumb (folder mode) -->
+      @if (!filtering) {
+        <nav class="crumbs">
+          <button class="crumbs__item" (click)="openPath('')">
+            <i class="pi pi-home"></i> Library
+          </button>
+          @for (c of breadcrumb; track c.path) {
+            <i class="pi pi-angle-right crumbs__sep"></i>
+            <button class="crumbs__item" (click)="openPath(c.path)">{{ c.name }}</button>
+          }
+        </nav>
+      } @else {
+        <div class="filter-summary">
+          <span>Showing tiles tagged</span>
+          @for (a of activeFilters; track a.category + a.value) {
+            <span class="filter-summary__chip">{{ a.value }}</span>
+          }
+          <span class="filter-summary__count">· {{ filterImages.length }} results</span>
+        </div>
+      }
+
+      @if (loading) {
+        <div class="browse-loading"><div class="browse-loading__ring"></div></div>
+      }
+
+      @if (!loading) {
+        <!-- Toolbar -->
+        @if (visibleImages.length > 0) {
+          <div class="grid-toolbar">
+            <span>{{ visibleImages.length }} images</span>
+            <button class="grid-toolbar__btn" (click)="selectAllVisible()">Select all</button>
+          </div>
+        }
+
+        <div class="browse-grid">
+          <!-- Folders (folder mode only) -->
+          @if (!filtering) {
+            @for (d of folders; track d.path) {
+              <button class="dir-card" (click)="openPath(d.path)" [title]="d.path">
+                <i class="pi pi-folder dir-card__icon"></i>
+                <span class="dir-card__name">{{ d.name }}</span>
+              </button>
+            }
+          }
+
+          <!-- Images -->
+          @for (img of visibleImages; track img.path) {
+            <div class="tile-card"
+                 [class.tile-card--selected]="isSelected(img.path)"
+                 (click)="toggleSelect(img.path)">
+              <div class="tile-card__check">
+                <i class="pi" [ngClass]="isSelected(img.path) ? 'pi-check-circle' : 'pi-circle'"></i>
+              </div>
+              <div class="tile-card__img-wrap">
+                @if (thumbOf(img.path) && !hasThumbError(img.path)) {
+                  <img [src]="thumbOf(img.path)" [alt]="img.name" class="tile-card__img"
+                       loading="lazy" (error)="onThumbError(img.path)" />
+                } @else if (hasThumbError(img.path)) {
+                  <div class="tile-card__fallback"><i class="pi pi-image"></i></div>
+                } @else {
+                  <div class="tile-card__loading"></div>
+                }
+              </div>
+              <div class="tile-card__foot">
+                <span class="tile-card__name" [title]="img.path">{{ img.name }}</span>
+                <button class="tile-card__open" (click)="openFile(img.path); $event.stopPropagation()" title="Open in Finder">
+                  <i class="pi pi-external-link"></i>
+                </button>
+              </div>
+            </div>
+          }
+        </div>
+
+        @if (visibleImages.length === 0 && folders.length === 0) {
+          <div class="browse-empty">
+            <i class="pi pi-inbox"></i>
+            <p>{{ filtering ? 'No tiles match these tags.' : 'This folder is empty.' }}</p>
+          </div>
+        }
+      }
+    </section>
+  </div>
+
+  <!-- ── Selection action bar ───────────────────────────────── -->
+  @if (selected.size > 0) {
+    <div class="selection-bar">
+      <span class="selection-bar__count">{{ selected.size }} selected</span>
+      <div class="selection-bar__actions">
+        <button class="selection-bar__btn selection-bar__btn--primary" (click)="openCategorize()">
+          <i class="pi pi-tag"></i> Categorize
+        </button>
+        <button class="selection-bar__btn" disabled title="Coming soon">
+          <i class="pi pi-file-pdf"></i> Generate Catalog
+        </button>
+        <button class="selection-bar__btn selection-bar__btn--ghost" (click)="clearSelection()">Clear</button>
+      </div>
+    </div>
+  }
+
+  <!-- ── Categorize panel ───────────────────────────────────── -->
+  @if (showPanel) {
+    <div class="panel-overlay" (click)="closePanel()"></div>
+    <div class="cat-panel">
+      <div class="cat-panel__head">
+        <div>
+          <h2>Categorize</h2>
+          <span>{{ selected.size }} tile{{ selected.size === 1 ? '' : 's' }} selected</span>
+        </div>
+        <button class="cat-panel__close" (click)="closePanel()"><i class="pi pi-times"></i></button>
+      </div>
+
+      <div class="cat-panel__body">
+
+        @if (suggestions.length > 0) {
+          <div class="cat-section">
+            <span class="cat-section__label">Suggested from filenames</span>
+            <div class="cat-chips">
+              @for (s of suggestions; track s.category + s.value) {
+                <button class="cat-chip cat-chip--suggest"
+                        [class.cat-chip--active]="isSuggestionApplied(s)"
+                        (click)="applySuggestion(s)">
+                  {{ s.value }} <small>{{ catLabel[s.category] }}</small>
+                </button>
+              }
+            </div>
+          </div>
+        }
+
+        @for (cat of panelCategories; track cat) {
+          <div class="cat-section">
+            <span class="cat-section__label">{{ catLabel[cat] }}</span>
+            <div class="cat-chips">
+              @for (val of presets[cat]; track val) {
+                <button class="cat-chip"
+                        [class.cat-chip--active]="isFullyApplied(cat, val)"
+                        [class.cat-chip--partial]="isPartlyApplied(cat, val)"
+                        (click)="togglePreset(cat, val)">
+                  {{ val }}
+                </button>
+              }
+            </div>
+          </div>
+        }
+
+        <div class="cat-section">
+          <span class="cat-section__label">My Tags</span>
+          @if (customTags().length > 0) {
+            <div class="cat-chips">
+              @for (v of customTags(); track v) {
+                <span class="cat-chip cat-chip--custom">
+                  {{ v }}
+                  <i class="pi pi-times" (click)="removeCustom(v)"></i>
+                </span>
+              }
+            </div>
+          }
+          <div class="cat-custom">
+            <input class="cat-custom__input" type="text"
+                   [(ngModel)]="customInput"
+                   (keyup.enter)="addCustom()"
+                   placeholder="e.g. aatmans tile, bestseller…" />
+            <button class="cat-custom__add" (click)="addCustom()">Add</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  }
+
+</div>

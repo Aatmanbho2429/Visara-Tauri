@@ -4,6 +4,7 @@ import { Master } from './views/master/master';
 import { Search } from './views/search/search';
 import { Profile } from './views/profile/profile';
 import { Library } from './views/library/library';
+import { Browse } from './views/browse/browse';
 import { authGuard } from './guards/auth.guard';
 import { loginGuard } from './guards/login.guard';
 
@@ -13,6 +14,7 @@ export const routes: Routes = [
         { path: '', redirectTo: 'search', pathMatch: 'full' },
         { path: 'search', component: Search },
         { path: 'library', component: Library },
+        { path: 'browse', component: Browse },
         { path: 'profile', component: Profile },
     ]},
 ];
