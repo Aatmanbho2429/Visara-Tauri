@@ -1,6 +1,6 @@
 use crate::{
     config::{SUPABASE_EDGE, TOKEN_FILE},
-    core::embedder,
+    core::{embedder, watcher},
     services::license,
 };
 use once_cell::sync::Lazy;
@@ -156,12 +156,32 @@ pub async fn validate_saved_token() -> Value {
             // re-validated mid-session).  The onnx_key is still returned to
             // Angular as a fallback for the rare case where the user clicks
             // Search before this background task finishes.
-            if !onnx_key.is_empty() && !embedder::is_ready() {
+            if !onnx_key.is_empty() {
                 let key = onnx_key.clone();
+                let model_already_ready = embedder::is_ready();
                 tokio::task::spawn_blocking(move || {
-                    match embedder::load_model(&key) {
-                        Ok(_)  => log::info!("[auth] CLIP model preloaded after validate"),
-                        Err(e) => log::warn!("[auth] background model preload failed: {e}"),
+                    // validate_saved_token() is hit frequently — the cold-start
+                    // route guard, every search, and every profile visit all call
+                    // it.  The OS watchers + reconciliation only need to run when
+                    // the model TRANSITIONS from not-ready to ready (cold start, or
+                    // after a renewal that followed an expiry reset).  Doing it on
+                    // every call re-scanned all folders needlessly and bled that
+                    // "Indexing…" progress into the search screen, since search and
+                    // sync shared one global progress state.  When the model is
+                    // already loaded the watchers are live and catching changes, so
+                    // there is nothing to redo.
+                    if !model_already_ready {
+                        if let Err(e) = embedder::load_model(&key) {
+                            log::warn!("[auth] background model preload failed: {e}");
+                            return;
+                        }
+                        log::info!("[auth] CLIP model preloaded after validate");
+
+                        // First time the model is ready this session: register the
+                        // OS file-system watchers and run one reconciliation pass so
+                        // changes made while the app was closed are picked up (also
+                        // drains folders deferred to the watcher's PENDING set).
+                        watcher::notify_model_ready();
                     }
                 });
             }
@@ -186,6 +206,20 @@ pub fn logout() -> Value {
     })
 }
 
+/// Request a one-time verification code be emailed to `email` (registration).
+pub async fn send_otp(email: &str) -> Value {
+    let result = reqwest::Client::new()
+        .post(format!("{SUPABASE_EDGE}/send-otp"))
+        .json(&serde_json::json!({ "email": email }))
+        .send()
+        .await;
+
+    match result {
+        Err(e) => network_error(e),
+        Ok(resp) => resp.json().await.unwrap_or_else(|_| server_error()),
+    }
+}
+
 pub async fn register_request(
     first_name:   &str,
     last_name:    &str,
@@ -193,6 +227,7 @@ pub async fn register_request(
     password:     &str,
     phone_number: Option<&str>,
     company_name: Option<&str>,
+    otp_code:     &str,
 ) -> Value {
     let result = reqwest::Client::new()
         .post(format!("{SUPABASE_EDGE}/register-request"))
@@ -203,6 +238,7 @@ pub async fn register_request(
             "password":     password,
             "phone_number": phone_number,
             "company_name": company_name,
+            "otp_code":     otp_code,
             "device_id":    license::device_id(),
         }))
         .send()

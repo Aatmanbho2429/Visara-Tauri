@@ -28,11 +28,64 @@ pub fn load_image(path: &Path) -> Result<DynamicImage> {
         .unwrap_or("")
         .to_lowercase();
 
-    match ext.as_str() {
+    let primary = match ext.as_str() {
         "psd" | "psb" => load_psd_psb(path),
         "tif" | "tiff" => load_tiff(path),
         _ => load_standard(path),
+    };
+
+    match primary {
+        Ok(img) => Ok(img),
+        Err(e) => {
+            // Last resort on macOS: hand the file to the OS image tooling, which
+            // reads variants our in-process decoders reject (6-channel CMYK
+            // TIFFs, large PSBs, HEIC…) and resamples to a small size cheaply —
+            // i.e. "reduce, then embed".
+            #[cfg(target_os = "macos")]
+            if let Ok(img) = load_via_sips(path) {
+                log::info!("[image] decoded via sips fallback: {:?}", path);
+                return Ok(img);
+            }
+            Err(e)
+        }
     }
+}
+
+/// macOS fallback: render any image the OS can read into a small downscaled PNG
+/// we can embed.  Spawns `sips`, which streams the conversion (low memory) and
+/// applies proper colour management for CMYK.
+#[cfg(target_os = "macos")]
+fn load_via_sips(path: &Path) -> Result<DynamicImage> {
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Unique temp path per call so parallel sync workers don't clobber each other.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp = std::env::temp_dir().join(format!(
+        "visara_sips_{}_{}.png",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed),
+    ));
+
+    let status = Command::new("/usr/bin/sips")
+        .args(["-s", "format", "png"])
+        .arg(path)
+        .arg("--out")
+        .arg(&tmp)
+        .args(["--resampleHeightWidthMax", "512"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| VisaraError::Fatal(format!("sips spawn failed: {e}")))?;
+
+    if !status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(VisaraError::Fatal("sips could not convert image".into()));
+    }
+
+    let result = load_standard(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    result
 }
 
 // ── Standard formats ──────────────────────────────────────────────────────
@@ -44,7 +97,16 @@ fn load_standard(path: &Path) -> Result<DynamicImage> {
 // ── TIFF ──────────────────────────────────────────────────────────────────
 
 fn load_tiff(path: &Path) -> Result<DynamicImage> {
-    // Try the embedded thumbnail in IFD1 first (present in camera / scanner TIFFs).
+    // CMYK TIFFs are device-dependent and need ICC colour management to convert
+    // accurately.  Our in-Rust decode applies only a naive CMYK→RGB formula,
+    // which casts neutral marbles green/pink/yellow.  On macOS, sips is
+    // colour-managed (ColorSync) and cheap, so prefer it for TIFFs.
+    #[cfg(target_os = "macos")]
+    if let Ok(img) = load_via_sips(path) {
+        return Ok(img);
+    }
+
+    // Non-macOS, or sips unavailable: embedded IFD1 thumbnail, then full decode.
     if let Ok(thumb) = try_tiff_thumbnail(path) {
         return Ok(thumb);
     }
@@ -74,20 +136,130 @@ fn try_tiff_thumbnail(path: &Path) -> Result<DynamicImage> {
     tiff_result_to_dynamic(result, w as u32, h as u32)
 }
 
-fn load_tiff_main(path: &Path) -> Result<DynamicImage> {
-    // Use the `image` crate for the main image.  For JPEG-compressed TIFFs
-    // this is already fast; for LZW/uncompressed we must read all bytes.
-    let img = ImageReader::open(path)?.with_guessed_format()?.decode()?;
+/// Down-scaled longest edge fed toward the CLIP pipeline (which finally wants
+/// 224px).  Sampling to this size straight out of the decoded TIFF buffer avoids
+/// allocating a second full-resolution image.
+const TIFF_TARGET_MAX: u32 = 512;
 
-    // Limit size fed into the CLIP pipeline — we only need 224x224 ultimately.
+fn load_tiff_main(path: &Path) -> Result<DynamicImage> {
+    // Primary: decode with the `tiff` crate directly so we can lift its 256 MB
+    // buffer cap (large multi-channel design TIFFs — e.g. 8008x15709 CMYK ≈
+    // 480 MB — were otherwise rejected with "Memory limit exceeded") and convert
+    // CMYK ourselves.  Fall back to the image crate for compressions the `tiff`
+    // crate can't handle (e.g. some JPEG-in-TIFF variants).
+    match load_tiff_via_tiff_crate(path) {
+        Ok(img) => Ok(img),
+        Err(e)  => {
+            log::debug!("[tiff] direct decode failed ({e}); falling back to image crate");
+            let img = ImageReader::open(path)?.with_guessed_format()?.decode()?;
+            Ok(downscale(img, TIFF_TARGET_MAX))
+        }
+    }
+}
+
+fn load_tiff_via_tiff_crate(path: &Path) -> Result<DynamicImage> {
+    use tiff::decoder::{Decoder, Limits};
+
+    let file = std::fs::File::open(path)?;
+    let mut decoder = Decoder::new(file)
+        .map_err(|e| VisaraError::Fatal(format!("TIFF open failed: {e}")))?
+        .with_limits(Limits::unlimited());
+
+    let (w, h) = decoder
+        .dimensions()
+        .map_err(|e| VisaraError::Fatal(format!("TIFF dimensions failed: {e}")))?;
+    let color = decoder
+        .colortype()
+        .map_err(|e| VisaraError::Fatal(format!("TIFF colortype failed: {e}")))?;
+    let result = decoder
+        .read_image()
+        .map_err(|e| VisaraError::Fatal(format!("TIFF read failed: {e}")))?;
+
+    tiff_to_downscaled_rgb(result, w, h, color, TIFF_TARGET_MAX)
+}
+
+/// Convert a decoded TIFF buffer to a down-sampled RGB image in a single pass.
+/// Sampling with an integer stride out of the source buffer keeps peak memory at
+/// just the decoded buffer (no intermediate full-resolution RGB copy).
+fn tiff_to_downscaled_rgb(
+    result:     tiff::decoder::DecodingResult,
+    w:          u32,
+    h:          u32,
+    color:      tiff::ColorType,
+    target_max: u32,
+) -> Result<DynamicImage> {
+    use image::{ImageBuffer, Rgb};
+    use tiff::decoder::DecodingResult;
+
+    if w == 0 || h == 0 {
+        return Err(VisaraError::Fatal("TIFF has zero dimensions".into()));
+    }
+
+    // Normalise samples to 8-bit (16-bit scaled down by a byte).
+    let data: Vec<u8> = match result {
+        DecodingResult::U8(d)  => d,
+        DecodingResult::U16(d) => d.iter().map(|&v| (v >> 8) as u8).collect(),
+        _ => return Err(VisaraError::Fatal("Unsupported TIFF sample format".into())),
+    };
+
+    let px = (w as usize) * (h as usize);
+    let channels = data.len() / px;
+    if channels == 0 {
+        return Err(VisaraError::Fatal("TIFF sample/byte count mismatch".into()));
+    }
+
+    let stride     = (w.max(h) / target_max).max(1) as usize;
+    let ow         = ((w as usize) / stride).max(1);
+    let oh         = ((h as usize) / stride).max(1);
+    let row_stride = (w as usize) * channels;
+
+    let mut out = vec![0u8; ow * oh * 3];
+    for oy in 0..oh {
+        let sy = oy * stride;
+        for ox in 0..ow {
+            let base = sy * row_stride + (ox * stride) * channels;
+            if base + channels > data.len() { continue; }
+            let (r, g, b) = sample_to_rgb(&data[base..base + channels], channels, color);
+            let o = (oy * ow + ox) * 3;
+            out[o]     = r;
+            out[o + 1] = g;
+            out[o + 2] = b;
+        }
+    }
+
+    let buf = ImageBuffer::<Rgb<u8>, _>::from_raw(ow as u32, oh as u32, out)
+        .ok_or_else(|| VisaraError::Fatal("TIFF output buffer mismatch".into()))?;
+    Ok(DynamicImage::ImageRgb8(buf))
+}
+
+/// Map one interleaved TIFF sample to RGB based on the file's colour type.
+fn sample_to_rgb(s: &[u8], channels: usize, color: tiff::ColorType) -> (u8, u8, u8) {
+    use tiff::ColorType;
+    match color {
+        // Standard CMYK (stored 0 = no ink): R = (255-C)(255-K)/255, etc.
+        ColorType::CMYK(_) if channels >= 4 => {
+            let (c, m, y, k) = (s[0] as u16, s[1] as u16, s[2] as u16, s[3] as u16);
+            let kk = 255 - k;
+            ((((255 - c) * kk) / 255) as u8,
+             (((255 - m) * kk) / 255) as u8,
+             (((255 - y) * kk) / 255) as u8)
+        }
+        _ if channels >= 3 => (s[0], s[1], s[2]),
+        _                  => (s[0], s[0], s[0]),
+    }
+}
+
+/// Resize so the longest edge is at most `target_max`, preserving aspect ratio.
+fn downscale(img: DynamicImage, target_max: u32) -> DynamicImage {
     let (w, h) = (img.width(), img.height());
-    if w.max(h) > 1024 {
-        let factor = w.max(h) / 512;
+    if w.max(h) > target_max {
+        let factor = (w.max(h) / target_max).max(1);
         let nw     = (w / factor).max(1);
         let nh     = (h / factor).max(1);
-        return Ok(img.resize(nw, nh, image::imageops::FilterType::Triangle));
+        img.resize(nw, nh, image::imageops::FilterType::Triangle)
+    } else {
+        img
     }
-    Ok(img)
 }
 
 fn tiff_result_to_dynamic(
@@ -157,8 +329,17 @@ fn load_psd_psb(path: &Path) -> Result<DynamicImage> {
         Ok(img) => return Ok(img),
         Err(e)  => log::debug!("PSB thumbnail fallback: {e}"),
     }
-    // Fallback: let the image crate try to decode the PSD composite.
-    load_standard(path)
+    // The `image` crate cannot decode the PSD/PSB layer stack, so when there is
+    // no embedded preview there is nothing for us to index.  Surface an
+    // actionable reason rather than the crate's cryptic "format could not be
+    // determined" so the user knows how to fix it.
+    load_standard(path).map_err(|_| {
+        VisaraError::Fatal(
+            "No embedded preview in this PSD/PSB. Re-save it from Photoshop with \
+             'Maximize Compatibility' turned on so a preview thumbnail is stored."
+                .into(),
+        )
+    })
 }
 
 fn try_psb_thumbnail(path: &Path) -> Result<DynamicImage> {

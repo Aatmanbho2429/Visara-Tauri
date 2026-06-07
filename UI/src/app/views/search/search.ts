@@ -1,21 +1,25 @@
-import { Component, ElementRef, ViewChild, inject } from '@angular/core';
+import { Component, ElementRef, OnInit, ViewChild, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { TranslateModule } from '@ngx-translate/core';
+import { Router } from '@angular/router';
 import { open } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { PrimengComponentsModule } from '../../shared/primeng-components-module';
 import { BaseComponent } from '../../core/base.component';
 import { TauriService } from '../../services/tauri.service';
 import { AuthService } from '../../services/auth.service';
+import { LibraryService } from '../../services/library.service';
 import { UserStateService } from '../../services/user-state.service';
 import { SearchStateService } from '../../services/search-state.service';
 import { PlansDialog } from '../../shared/plans-dialog/plans-dialog';
+import { WatchedFolder } from '../../models/library.model';
 
 export interface SearchResult {
   rank:         number;
   path:         string;
   name:         string;
   similarity:   number;
+  folder:       string;
   thumbnailUrl: string;
   imgError:     boolean;
 }
@@ -42,11 +46,13 @@ export interface SearchProgress {
   templateUrl: './search.html',
   styleUrl:    './search.scss',
 })
-export class Search extends BaseComponent {
+export class Search extends BaseComponent implements OnInit {
 
   private tauri     = inject(TauriService);
   private auth      = inject(AuthService);
+  private libSvc    = inject(LibraryService);
   private userState = inject(UserStateService);
+  private router    = inject(Router);
   state             = inject(SearchStateService);
 
   @ViewChild('masonryGrid') masonryGridRef!: ElementRef<HTMLElement>;
@@ -59,10 +65,42 @@ export class Search extends BaseComponent {
     ? '⌘ + Shift + V'
     : 'Ctrl + Shift + V';
 
-  get canSearch()   { return !!this.state.imagePath && !!this.state.folderPath; }
-  get isIdle()      { return this.state.searchState === 'idle'; }
-  get isSearching() { return this.state.searchState === 'searching'; }
-  get hasResults()  { return this.state.searchState === 'results'; }
+  /** All watched folders pulled from backend.  Drives the empty state + scope picker. */
+  watchedFolders: WatchedFolder[] = [];
+  foldersLoading                  = true;
+  scopeOpen                       = false;
+
+  constructor() { super(); }
+
+  ngOnInit(): void {
+    this.refreshFolders();
+  }
+
+  refreshFolders(): void {
+    this.foldersLoading = true;
+    this.handle(this.libSvc.list(), res => {
+      this.foldersLoading = false;
+      this.watchedFolders = (res.success && res.data?.folders) ? res.data.folders : [];
+
+      // Drop any cached scope entries that no longer exist (folder removed
+      // from the Library while user was on this page).
+      const valid = new Set(this.watchedFolders.map(f => f.path));
+      this.state.scopePaths = this.state.scopePaths.filter(p => valid.has(p));
+    });
+  }
+
+  get hasWatchedFolders(): boolean { return this.watchedFolders.length > 0; }
+  get canSearch():       boolean   { return !!this.state.imagePath && this.hasWatchedFolders; }
+  get isIdle():          boolean   { return this.state.searchState === 'idle'; }
+  get isSearching():     boolean   { return this.state.searchState === 'searching'; }
+  get hasResults():      boolean   { return this.state.searchState === 'results'; }
+
+  get scopeLabel(): string {
+    const n = this.state.scopePaths.length;
+    if (n === 0) return `All ${this.watchedFolders.length} folders`;
+    if (n === 1) return this.shortName(this.state.scopePaths[0]);
+    return `${n} folders`;
+  }
 
   get masonryColumns(): SearchResult[][] {
     const cols    = 3;
@@ -71,7 +109,11 @@ export class Search extends BaseComponent {
     return columns;
   }
 
-  constructor() { super(); }
+  shortName(path: string): string {
+    return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  }
+
+  // ── Image picker ──────────────────────────────────────────────────
 
   async pickImage() {
     const selected = await open({
@@ -81,20 +123,60 @@ export class Search extends BaseComponent {
     if (selected) {
       this.state.imagePath    = selected as string;
       this.state.imageName    = (selected as string).split(/[\\/]/).pop() ?? selected as string;
-      this.state.imagePreview = '';  // drop any clipboard preview
+      this.state.imagePreview = '';
       this.cdr.detectChanges();
     }
   }
 
-  async pickFolder() {
-    const selected = await open({ directory: true, multiple: false });
-    if (selected) {
-      this.state.folderPath = selected as string;
-      this.cdr.detectChanges();
-    }
+  // ── Scope picker ──────────────────────────────────────────────────
+
+  toggleScopeDropdown(): void {
+    this.scopeOpen = !this.scopeOpen;
   }
 
-  // ── Validate subscription then search ─────────────────────────
+  isFolderInScope(path: string): boolean {
+    // Empty scope = all folders selected.
+    return this.state.scopePaths.length === 0 || this.state.scopePaths.includes(path);
+  }
+
+  toggleFolderInScope(path: string): void {
+    const isSelected = this.isFolderInScope(path);
+
+    // If scope was empty (all-on) and user is unchecking one, materialize
+    // the full list minus the clicked one.
+    if (this.state.scopePaths.length === 0 && isSelected) {
+      this.state.scopePaths = this.watchedFolders.map(f => f.path).filter(p => p !== path);
+      this.cdr.detectChanges();
+      return;
+    }
+
+    if (isSelected) {
+      // Never let the user uncheck the LAST remaining folder — the empty
+      // array would otherwise mean "all", flipping the UI's intent.
+      if (this.state.scopePaths.length <= 1) return;
+      this.state.scopePaths = this.state.scopePaths.filter(p => p !== path);
+    } else {
+      this.state.scopePaths = [...this.state.scopePaths, path];
+    }
+
+    // If the user re-selected every folder, collapse to empty (means "all").
+    if (this.state.scopePaths.length === this.watchedFolders.length) {
+      this.state.scopePaths = [];
+    }
+    this.cdr.detectChanges();
+  }
+
+  selectAllFolders(): void {
+    this.state.scopePaths = [];
+    this.cdr.detectChanges();
+  }
+
+  goToLibrary(): void {
+    this.router.navigate(['/master/library']);
+  }
+
+  // ── Search execution ─────────────────────────────────────────────
+
   doSearch(): void {
     if (!this.canSearch) return;
 
@@ -113,8 +195,6 @@ export class Search extends BaseComponent {
         return;
       }
 
-      // Pass the onnx_key received from Supabase to the search command.
-      // Rust loads the model on first search using this key, then discards it.
       this.runSearch(res.data?.onnx_key ?? '');
     });
   }
@@ -134,7 +214,7 @@ export class Search extends BaseComponent {
     this.state.progress      = { phase: 'Starting…', percent: 0, done: 0, total: 0, current: '', eta_sec: -1, errors: 0, active: true };
     this.cdr.detectChanges();
 
-    this.tauri.searchStream(this.state.imagePath, this.state.folderPath, this.state.topK, onnxKey).subscribe({
+    this.tauri.searchStream(this.state.imagePath, this.state.scopePaths, this.state.topK, onnxKey).subscribe({
       next: event => {
         if (event.type === 'progress') {
           if (event.data?.progress) this.state.progress = event.data.progress;

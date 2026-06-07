@@ -11,8 +11,7 @@
 //!   search_error     — fatal error that stopped the search
 
 use crate::{
-    config::VECTOR_STORE_PATH,
-    core::{embedder, progress, vector_store::VectorStore},
+    core::embedder,
     services::search,
 };
 use serde_json::json;
@@ -34,11 +33,13 @@ fn search_state() -> &'static Mutex<SearchState> {
 
 // ── Command ───────────────────────────────────────────────────────────────
 
+/// `scope_paths` empty or omitted → search every watched folder in the Library.
+/// Otherwise the search is restricted to the provided folders.
 #[tauri::command]
 pub async fn start_search(
     app:         tauri::AppHandle,
     image_path:  String,
-    folder_path: String,
+    scope_paths: Option<Vec<String>>,
     top_k:       usize,
     onnx_key:    Option<String>,
 ) {
@@ -57,8 +58,6 @@ pub async fn start_search(
     }
 
     // Load the model now if it is not already in memory.
-    // The onnx_key came from Angular's validate-token call moments ago;
-    // it is a local variable and will be dropped when this block ends.
     if !embedder::is_ready() {
         match onnx_key {
             Some(ref key) => {
@@ -85,19 +84,27 @@ pub async fn start_search(
     }
     // onnx_key goes out of scope here — dropped from memory.
 
+    // Query basename for the searching snapshot, captured before image_path is
+    // moved into the worker closure below.
+    let query_name = std::path::Path::new(&image_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+
     let app_clone = app.clone();
 
     // Spawn the heavy work on a blocking thread so Tokio stays responsive.
     tokio::task::spawn_blocking(move || {
-        let image  = PathBuf::from(&image_path);
-        let folder = PathBuf::from(&folder_path);
+        let image = PathBuf::from(&image_path);
+        let scope: Vec<PathBuf> = scope_paths
+            .unwrap_or_default()
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
 
-        match search::execute(&image, &folder, top_k) {
+        match search::execute(&image, &scope, top_k) {
             Ok((results, failed_files)) => {
-                if let Ok(store) = VectorStore::load(VECTOR_STORE_PATH.as_path()) {
-                    let _ = store.save(VECTOR_STORE_PATH.as_path());
-                }
-
                 let _ = app_clone.emit("search_complete", json!({
                     "done":         true,
                     "results":      results,
@@ -116,17 +123,32 @@ pub async fn start_search(
         search_state().lock().unwrap().running = false;
     });
 
-    // Stream progress snapshots every 500 ms until the blocking task finishes.
-    loop {
-        time::sleep(Duration::from_millis(500)).await;
-
-        let still_running = search_state().lock().unwrap().running;
-
-        let snap = progress::get_progress();
-        if snap.active || still_running {
-            let _ = app.emit("search_progress", json!({ "progress": snap }));
+    // Move the UI from "Starting…" into an active searching state.  A search is
+    // a single-image embed + cosine scan (sub-second over an indexed store), so
+    // we emit one indeterminate "Searching" snapshot rather than a granular bar.
+    //
+    // Crucially we do NOT read the global sync/index progress here: a background
+    // folder reconcile writes to that same state, and surfacing it would make the
+    // search screen show phantom "Indexing 4523/10000" progress that has nothing
+    // to do with the search the user just ran.
+    let _ = app.emit("search_progress", json!({
+        "progress": {
+            "active":  true,
+            "phase":   "Searching",
+            "done":    0,
+            "total":   0,
+            "current": query_name,
+            "percent": 0.0,
+            "eta_sec": -1,
+            "errors":  0,
         }
+    }));
 
-        if !still_running { break; }
+    // Wait for the blocking search to finish; it emits search_complete/_error.
+    loop {
+        time::sleep(Duration::from_millis(150)).await;
+        if !search_state().lock().unwrap().running {
+            break;
+        }
     }
 }

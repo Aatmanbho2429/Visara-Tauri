@@ -22,13 +22,26 @@
 //! exceeds 20 %.
 
 use crate::{config::EMB_DIM, error::{Result, VisaraError}};
+use once_cell::sync::Lazy;
 use rayon::prelude::*;
 use std::{
     collections::HashSet,
     fs::{self, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
+    sync::{Mutex, MutexGuard},
 };
+
+/// Global lock around any load → mutate → save sequence touching `vectors.bin`.
+/// Both the search pipeline and the watcher's reconciler acquire this to
+/// prevent lost-update races when two threads load+modify+save concurrently.
+pub static STORE_IO_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+/// Grab the global vector-store I/O lock.  Hold the returned guard for the
+/// duration of any load-modify-save sequence.
+pub fn store_io_guard() -> MutexGuard<'static, ()> {
+    STORE_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 const MAGIC:      &[u8; 8] = b"VISARA\x00\x01";
 const VERSION:    u32      = 1;

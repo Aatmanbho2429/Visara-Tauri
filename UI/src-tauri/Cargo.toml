@@ -21,12 +21,14 @@ tauri-build = { version = "2.6.1", features = [] }
 [dependencies]
 
 # Desktop shell
-tauri                 = { version = "2.11.1", features = ["protocol-asset"] }
+tauri                 = { version = "2.11.1", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-log      = "2"
 tauri-plugin-dialog   = "2"
 tauri-plugin-updater          = "2"
 tauri-plugin-process          = "2"
 tauri-plugin-global-shortcut  = "2"
+tauri-plugin-notification     = "2"
+tauri-plugin-autostart        = "2"
 
 # Cross-platform clipboard reader — handles both bitmap data (screenshots,
 # "Copy Image" from browsers) and file-list clipboards (Windows Explorer
@@ -72,6 +74,9 @@ rayon = "1"
 
 # Recursive directory walking
 walkdir = "2"
+
+# Cross-platform file-system watcher (Watch Folders feature)
+notify = "6"
 
 # Platform home / data directories
 dirs = "5"

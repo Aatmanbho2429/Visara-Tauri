@@ -11,8 +11,12 @@
     "core:window:allow-unminimize",
     "core:window:allow-set-focus",
     "dialog:allow-open",
+    "dialog:allow-save",
     "global-shortcut:allow-register",
     "global-shortcut:allow-is-registered",
-    "global-shortcut:allow-unregister"
+    "global-shortcut:allow-unregister",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
   ]
 }

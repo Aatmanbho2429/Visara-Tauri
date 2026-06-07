@@ -19,7 +19,11 @@
   flex-direction: column;
 
   app-search,
-  app-profile {
+  app-profile,
+  app-library,
+  app-browse,
+  app-catalog,
+  app-editor {
     flex: 1;
     display: flex;
     flex-direction: column;

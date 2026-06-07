@@ -42,7 +42,10 @@ pub fn sync_folder(
 
     progress::set_progress(Some("Scanning files"), Some(0), Some(total), Some(""), Some(0));
 
-    let hash_results: Vec<(PathBuf, Option<String>, Option<String>, f64)> = current_files
+    // Tuple: (path, hash, error, mtime, already_indexed).
+    // `already_indexed` = the file already has its own DB row at this exact path
+    // with an unchanged mtime, so it needs no work at all.
+    let hash_results: Vec<(PathBuf, Option<String>, Option<String>, f64, bool)> = current_files
         .par_iter()
         .map(|path| {
             let path_str = path.to_string_lossy().to_string();
@@ -50,20 +53,21 @@ pub fn sync_folder(
 
             let thread_con = match database::open() {
                 Ok(c)  => c,
-                Err(e) => return (path.clone(), None, Some(e.to_string()), mtime),
+                Err(e) => return (path.clone(), None, Some(e.to_string()), mtime, false),
             };
 
             if let Ok(Some((_, stored_hash, stored_mtime))) =
                 database::find_by_path(&thread_con, &path_str)
             {
                 if (stored_mtime - mtime).abs() < 0.001 {
-                    return (path.clone(), Some(stored_hash), None, mtime);
+                    // Already indexed at this path, unchanged → flag to skip.
+                    return (path.clone(), Some(stored_hash), None, mtime, true);
                 }
             }
 
             match file_utils::fast_hash(path) {
-                Ok(h)  => (path.clone(), Some(h), None, mtime),
-                Err(e) => (path.clone(), None, Some(e.to_string()), mtime),
+                Ok(h)  => (path.clone(), Some(h), None, mtime, false),
+                Err(e) => (path.clone(), None, Some(e.to_string()), mtime, false),
             }
         })
         .collect();
@@ -72,7 +76,7 @@ pub fn sync_folder(
     let mut needs_embed: Vec<(PathBuf, String, f64)> = Vec::new();
     let mut seen_hashes: HashSet<String>              = HashSet::new();
 
-    for (i, (path, hash_opt, err_opt, mtime)) in hash_results.into_iter().enumerate() {
+    for (i, (path, hash_opt, err_opt, mtime, already_indexed)) in hash_results.into_iter().enumerate() {
         let path_str = path.to_string_lossy().to_string();
         progress::set_progress(Some("Scanning files"), Some(i + 1), None, Some(&path_str), None);
 
@@ -85,17 +89,44 @@ pub fn sync_folder(
         let hash = hash_opt.unwrap();
         seen_hashes.insert(hash.clone());
 
-        let (existing_path, existing_id) = database::find_by_hash(&con, &hash)?;
+        // Already indexed at this exact path with an unchanged mtime → it is
+        // done; leave it untouched.  This is what stops every duplicate copy
+        // from being re-embedded on every sync: find_by_hash below only points
+        // at one copy of a shared image, so without this guard all the *other*
+        // copies look like they still need embedding.  Skipping here also means
+        // an unchanged folder reads no files, so it can't bump access-times and
+        // re-trigger the watcher.
+        if already_indexed {
+            continue;
+        }
+
+        // Per-file DB lookup must never abort the whole folder — record and skip.
+        let (existing_path, existing_id) = match database::find_by_hash(&con, &hash) {
+            Ok(v)  => v,
+            Err(e) => {
+                errors.push(FileError { file: path_str, reason: format!("DB lookup failed: {e}") });
+                progress::increment_errors();
+                continue;
+            }
+        };
 
         if let Some(_id) = existing_id {
             if existing_path.as_deref() != Some(&path_str) {
                 let existing  = existing_path.as_deref().unwrap_or("");
                 let in_folder = Path::new(existing).starts_with(folder_path);
 
+                // Same image already indexed elsewhere on disk:
+                //  • in this folder        → embed a fresh copy for this path
+                //  • old copy gone         → rename (move) the existing row
+                //  • old copy still exists  → it's a genuine duplicate across
+                //    folders, so embed a separate row for this path too.
                 if in_folder {
                     needs_embed.push((path, hash, mtime));
                 } else if !Path::new(existing).exists() {
-                    database::move_file(&con, existing, &path_str)?;
+                    if let Err(e) = database::move_file(&con, existing, &path_str) {
+                        log::warn!("[sync] move_file failed for {path_str}: {e}; will re-embed");
+                        needs_embed.push((path, hash, mtime));
+                    }
                 } else {
                     needs_embed.push((path, hash, mtime));
                 }
@@ -103,7 +134,7 @@ pub fn sync_folder(
         } else {
             if let Ok(Some((old_id, _, _))) = database::find_by_path(&con, &path_str) {
                 store.remove(&[old_id]);
-                database::delete_file(&con, &path_str)?;
+                let _ = database::delete_file(&con, &path_str);
             }
             needs_embed.push((path, hash, mtime));
         }
@@ -170,9 +201,28 @@ pub fn sync_folder(
                     let (path, hash, mtime) = &chunk[chunk_idx];
                     let path_str = path.to_string_lossy().to_string();
 
-                    let vector_id = database::next_vector_id(&con)?;
-                    store.add(vector_id, &embeddings[emb_idx])?;
-                    database::insert_file(&con, &path_str, hash, vector_id, *mtime)?;
+                    // Each persistence step is per-file-fatal only: a single
+                    // failure is recorded and skipped so the rest of the folder
+                    // still indexes (e.g. one locked/duplicate file won't kill
+                    // the whole batch).
+                    let vector_id = match database::next_vector_id(&con) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            errors.push(FileError { file: path_str, reason: format!("ID allocation failed: {e}") });
+                            progress::increment_errors();
+                            continue;
+                        }
+                    };
+                    if let Err(e) = store.add(vector_id, &embeddings[emb_idx]) {
+                        errors.push(FileError { file: path_str, reason: format!("Index add failed: {e}") });
+                        progress::increment_errors();
+                        continue;
+                    }
+                    if let Err(e) = database::insert_file(&con, &path_str, hash, vector_id, *mtime) {
+                        errors.push(FileError { file: path_str, reason: format!("DB insert failed: {e}") });
+                        progress::increment_errors();
+                        continue;
+                    }
                     progress::increment_file_type(
                         path.extension().and_then(|e| e.to_str()).unwrap_or(""),
                     );

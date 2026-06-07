@@ -132,7 +132,8 @@
         <p class="login-card__subtitle">{{ 'register.subtitle' | translate }}</p>
       </div>
 
-      <form [formGroup]="registerForm" (ngSubmit)="submitRegister()" novalidate>
+      @if (registerStep === 'details') {
+      <form [formGroup]="registerForm" (ngSubmit)="sendCode()" novalidate>
 
         <div class="register-row">
           <div class="login-field">
@@ -298,12 +299,52 @@
 
         <p-button
           type="submit"
-          [label]="registerLoading ? ('register.sending' | translate) : ('register.sendRequest' | translate)"
-          [icon]="registerLoading ? '' : 'pi pi-send'"
-          [loading]="registerLoading"
-          [disabled]="registerLoading" />
+          [label]="sendingOtp ? 'Sending code…' : 'Send verification code'"
+          [icon]="sendingOtp ? '' : 'pi pi-envelope'"
+          [loading]="sendingOtp"
+          [disabled]="sendingOtp" />
 
       </form>
+      } @else {
+        <!-- ── OTP verification step ────────────────────────────── -->
+        <div class="otp-step">
+          <p class="otp-step__lead">
+            Enter the 6-digit code we emailed to <strong>{{ registerEmail }}</strong>.
+          </p>
+
+          <input class="otp-input"
+                 [formControl]="otpControl"
+                 maxlength="6"
+                 inputmode="numeric"
+                 autocomplete="one-time-code"
+                 placeholder="••••••" />
+          <span class="field-error-msg" *ngIf="otpControl.touched && otpControl.invalid">
+            Enter the 6-digit code.
+          </span>
+
+          <div class="otp-resend">
+            <span *ngIf="resendIn > 0" class="otp-resend__timer">Resend code in {{ resendIn }}s</span>
+            <a *ngIf="resendIn === 0 && !sendingOtp" href="javascript:void(0)" (click)="resendOtp()">Resend code</a>
+            <span *ngIf="resendIn === 0 && sendingOtp" class="otp-resend__timer">Sending…</span>
+          </div>
+
+          <div class="login-error" *ngIf="registerError">
+            <i class="pi pi-exclamation-circle"></i>
+            <span>{{ registerError }}</span>
+          </div>
+
+          <p-button
+            [label]="registerLoading ? 'Creating account…' : 'Verify & create account'"
+            [icon]="registerLoading ? '' : 'pi pi-check'"
+            [loading]="registerLoading"
+            [disabled]="registerLoading"
+            (onClick)="verifyAndRegister()" />
+
+          <a class="otp-back" href="javascript:void(0)" (click)="backToDetails()">
+            <i class="pi pi-arrow-left"></i> Change details
+          </a>
+        </div>
+      }
 
       <p class="login-card__footer">
         {{ 'register.alreadyHaveAccount' | translate }}

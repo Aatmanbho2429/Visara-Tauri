@@ -1,0 +1,40 @@
+<div class="catalog">
+
+  <header class="catalog__header">
+    <div>
+      <h1 class="catalog__title">Catalogs</h1>
+      <p class="catalog__subtitle">Design multi-page catalogs by hand — drag in your tiles, add text, export a PDF.</p>
+    </div>
+    <button class="catalog__new" (click)="newCatalog()"><i class="pi pi-plus"></i> New catalog</button>
+  </header>
+
+  @if (loading) {
+    <div class="catalog__loading"></div>
+  } @else if (catalogs.length === 0) {
+    <div class="catalog__empty">
+      <i class="pi pi-book"></i>
+      <h3>No catalogs yet</h3>
+      <p>Create one, then drag tiles from your tagged library onto each page.</p>
+      <button class="catalog__cta" (click)="newCatalog()"><i class="pi pi-plus"></i> Create your first catalog</button>
+    </div>
+  } @else {
+    <div class="catalog__grid">
+      <button class="cat-new-card" (click)="newCatalog()">
+        <i class="pi pi-plus"></i><span>New catalog</span>
+      </button>
+      @for (c of catalogs; track c.id) {
+        <div class="cat-card" (click)="openCatalog(c.id)">
+          <div class="cat-card__thumb"><i class="pi pi-book"></i></div>
+          <div class="cat-card__foot">
+            <div class="cat-card__meta">
+              <span class="cat-card__name">{{ c.name }}</span>
+              <span class="cat-card__ago">{{ ago(c.updated_at) }}</span>
+            </div>
+            <button class="cat-card__del" (click)="deleteCatalog(c.id, $event)"><i class="pi pi-trash"></i></button>
+          </div>
+        </div>
+      }
+    </div>
+  }
+
+</div>

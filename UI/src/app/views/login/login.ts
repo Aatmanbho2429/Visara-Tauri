@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
 import { BaseComponent } from '../../core/base.component';
 import { CommonModule } from '@angular/common';
 import {
@@ -13,7 +13,6 @@ import { Router } from '@angular/router';
 import { TranslateModule } from '@ngx-translate/core';
 import { MessageService } from 'primeng/api';
 import { PrimengComponentsModule } from '../../shared/primeng-components-module';
-import { convertFileSrc } from '@tauri-apps/api/core';
 import { AuthService } from '../../services/auth.service';
 import { UserStateService } from '../../services/user-state.service';
 import { SearchStateService } from '../../services/search-state.service';
@@ -49,7 +48,7 @@ function phoneValidator(control: AbstractControl): ValidationErrors | null {
   templateUrl: './login.html',
   styleUrl: './login.scss'
 })
-export class Login extends BaseComponent implements OnInit {
+export class Login extends BaseComponent implements OnInit, OnDestroy {
   showRegister   = false;
   loginSuccess   = false;
   loginFirstName = '';
@@ -60,6 +59,13 @@ export class Login extends BaseComponent implements OnInit {
   registerEmail   = '';
   registerError   = '';
   registerLoading = false;
+
+  // Registration is a 2-step flow: enter details → verify email OTP.
+  registerStep: 'details' | 'otp' = 'details';
+  sendingOtp = false;
+  resendIn   = 0;
+  otpControl = new FormControl('', [Validators.required, Validators.pattern(/^\d{6}$/)]);
+  private resendTimer: ReturnType<typeof setInterval> | null = null;
 
   private redirectMessage = '';
 
@@ -133,9 +139,7 @@ export class Login extends BaseComponent implements OnInit {
         const pendingImage = sessionStorage.getItem(App.PENDING_IMAGE_KEY);
         if (pendingImage) {
           sessionStorage.removeItem(App.PENDING_IMAGE_KEY);
-          this.searchState.imagePath    = pendingImage;
-          this.searchState.imageName    = 'Clipboard image';
-          this.searchState.imagePreview = convertFileSrc(pendingImage);
+          this.searchState.setClipboardImage(pendingImage);
           setTimeout(() => this.router.navigate(['/master/search']), 1500);
         } else {
           setTimeout(() => this.router.navigate(['/master']), 1500);
@@ -146,9 +150,32 @@ export class Login extends BaseComponent implements OnInit {
     });
   }
 
-  submitRegister(): void {
+  /** Step 1 → email a verification code, then move to the OTP step. */
+  sendCode(): void {
     if (this.registerForm.invalid) {
       this.registerForm.markAllAsTouched();
+      return;
+    }
+    this.sendingOtp    = true;
+    this.registerError = '';
+    const email = this.registerForm.get('email')!.value!;
+    this.handle(this.authService.sendOtp(email), res => {
+      this.sendingOtp = false;
+      if (res.success) {
+        this.registerEmail = email;
+        this.registerStep  = 'otp';
+        this.otpControl.reset();
+        this.startCooldown();
+      } else {
+        this.registerError = res.message;
+      }
+    });
+  }
+
+  /** Step 2 → verify the code and create the account. */
+  verifyAndRegister(): void {
+    if (this.otpControl.invalid) {
+      this.otpControl.markAsTouched();
       return;
     }
     this.registerLoading = true;
@@ -160,7 +187,8 @@ export class Login extends BaseComponent implements OnInit {
       email:        v.email!,
       password:     v.password!,
       phone_number: v.phone_number ?? undefined,
-      company_name: v.company_name ?? undefined
+      company_name: v.company_name ?? undefined,
+      otp_code:     this.otpControl.value!,
     }), res => {
       this.registerLoading = false;
       if (res.success) {
@@ -172,11 +200,50 @@ export class Login extends BaseComponent implements OnInit {
     });
   }
 
+  resendOtp(): void {
+    if (this.resendIn > 0 || this.sendingOtp) return;
+    this.sendingOtp    = true;
+    this.registerError = '';
+    this.handle(this.authService.sendOtp(this.registerEmail), res => {
+      this.sendingOtp = false;
+      if (res.success) {
+        this.startCooldown();
+        this.messageService.add({ severity: 'success', summary: 'Code sent', detail: `A new code was sent to ${this.registerEmail}.`, life: 3000 });
+      } else {
+        this.registerError = res.message;
+      }
+    });
+  }
+
+  backToDetails(): void {
+    this.registerStep  = 'details';
+    this.registerError = '';
+  }
+
+  private startCooldown(): void {
+    this.resendIn = 60;
+    if (this.resendTimer) clearInterval(this.resendTimer);
+    this.resendTimer = setInterval(() => {
+      this.resendIn--;
+      if (this.resendIn <= 0) this.clearCooldown();
+      this.cdr.detectChanges();
+    }, 1000);
+  }
+  private clearCooldown(): void {
+    this.resendIn = 0;
+    if (this.resendTimer) { clearInterval(this.resendTimer); this.resendTimer = null; }
+  }
+
+  ngOnDestroy(): void { this.clearCooldown(); }
+
   openRegister(): void {
     this.showRegister    = true;
     this.registerForm.reset();
     this.registerSuccess = false;
     this.registerError   = '';
+    this.registerStep    = 'details';
+    this.otpControl.reset();
+    this.clearCooldown();
   }
 
   closeRegister(): void {
@@ -184,6 +251,7 @@ export class Login extends BaseComponent implements OnInit {
     this.loginForm.reset();
     this.loginSuccess = false;
     this.loginError   = '';
+    this.clearCooldown();
   }
 
   isInvalid(form: FormGroup, field: string): boolean {

@@ -615,3 +615,222 @@
   }
 }
 
+// ── Solo pick-card layout (no folder picker anymore) ─────────────
+.search-hero__solo {
+  display: flex;
+  justify-content: center;
+
+  .pick-card {
+    width: 100%;
+    max-width: 42rem;
+  }
+}
+
+// ── Empty state when no watched folders exist yet ────────────────
+.search-empty {
+  margin: $space-8 auto;
+  max-width: 56rem;
+  padding: $space-12 $space-10;
+  background: rgba(26, 18, 38, 0.55);
+  border: 1px dashed rgba(217, 70, 239, 0.22);
+  border-radius: $border-radius-lg;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: $space-4;
+
+  &__icon {
+    font-size: 4.8rem;
+    color: $primary-400;
+    opacity: 0.75;
+  }
+
+  &__title {
+    margin: 0;
+    font-family: $font-primary;
+    font-size: $font-size-xl;
+    color: $surface-100;
+    font-weight: 500;
+  }
+
+  &__hint {
+    margin: 0;
+    font-family: $font-primary;
+    font-size: $font-size-sm;
+    color: $surface-400;
+    line-height: 1.55;
+  }
+
+  &__cta {
+    margin-top: $space-3;
+    appearance: none;
+    background: linear-gradient(135deg, $primary-500, $primary-700);
+    color: #fff;
+    border: none;
+    border-radius: $border-radius-md;
+    padding: $space-3 $space-6;
+    font-family: $font-primary;
+    font-size: $font-size-sm;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: $space-2;
+    cursor: pointer;
+    box-shadow: 0 6px 18px rgba(217, 70, 239, 0.3);
+
+    &:hover { filter: brightness(1.08); }
+  }
+}
+
+// ── Scope selector ───────────────────────────────────────────────
+.scope-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: $space-3;
+  margin-top: $space-3;
+
+  &__label {
+    font-family: $font-primary;
+    font-size: $font-size-sm;
+    color: $surface-400;
+  }
+}
+
+.scope-picker {
+  position: relative;
+}
+
+.scope-pill {
+  appearance: none;
+  background: rgba(217, 70, 239, 0.08);
+  border: 1px solid rgba(217, 70, 239, 0.22);
+  border-radius: 999px;
+  padding: $space-2 $space-4;
+  display: inline-flex;
+  align-items: center;
+  gap: $space-2;
+  cursor: pointer;
+  font-family: $font-primary;
+  font-size: $font-size-sm;
+  color: $surface-100;
+  transition: background 0.15s ease, border-color 0.15s ease;
+
+  &:hover {
+    background: rgba(217, 70, 239, 0.16);
+    border-color: rgba(217, 70, 239, 0.4);
+  }
+
+  i { color: $primary-400; font-size: 1.2rem; }
+
+  &__chev {
+    margin-left: 0.4rem;
+    transition: transform 0.18s ease;
+    &--open { transform: rotate(180deg); }
+  }
+}
+
+.scope-dropdown {
+  position: absolute;
+  top: calc(100% + 0.6rem);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 28rem;
+  max-width: 38rem;
+  max-height: 38rem;
+  overflow-y: auto;
+  background: rgba(26, 18, 38, 0.96);
+  border: 1px solid rgba(217, 70, 239, 0.22);
+  border-radius: $border-radius-md;
+  padding: $space-2;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+
+  &__all {
+    appearance: none;
+    background: rgba(217, 70, 239, 0.08);
+    border: 1px solid rgba(217, 70, 239, 0.16);
+    border-radius: $border-radius-sm;
+    padding: $space-2 $space-3;
+    color: $surface-100;
+    font-family: $font-primary;
+    font-size: $font-size-sm;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+
+    &:hover {
+      background: rgba(217, 70, 239, 0.16);
+    }
+
+    i { color: $primary-400; }
+  }
+
+  &__sep {
+    margin: 0.4rem 0;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding: $space-2 $space-3;
+    border-radius: $border-radius-sm;
+    cursor: pointer;
+    transition: background 0.12s ease;
+
+    &:hover { background: rgba(255, 255, 255, 0.04); }
+
+    input[type="checkbox"] {
+      flex-shrink: 0;
+      width: 1.6rem;
+      height: 1.6rem;
+      accent-color: $primary-500;
+      cursor: pointer;
+    }
+  }
+
+  &__name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: $font-primary;
+    font-size: $font-size-sm;
+    color: $surface-100;
+  }
+
+  &__count {
+    flex-shrink: 0;
+    font-family: $font-primary;
+    font-size: $font-size-xs;
+    color: $surface-500;
+  }
+}
+
+// ── Per-result folder label ──────────────────────────────────────
+.pin-card__foot-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.pin-card__folder {
+  font-family: $font-primary;
+  font-size: $font-size-xs;
+  color: $surface-500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+

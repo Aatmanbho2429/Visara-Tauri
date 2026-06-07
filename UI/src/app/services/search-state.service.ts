@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { SearchResult, FailedFile, SearchProgress } from '../views/search/search';
 
 @Injectable({ providedIn: 'root' })
@@ -11,7 +12,8 @@ export class SearchStateService {
   /** Base-64 data-URL shown in the pick-card when the query came from
    *  the clipboard via the global hot-key.  Empty for normal file picks. */
   imagePreview = '';
-  folderPath   = '';
+  /** Subset of watched-folder paths to search.  Empty array = all watched. */
+  scopePaths:   string[] = [];
   topK         = 20;
 
   results:      SearchResult[] = [];
@@ -24,12 +26,23 @@ export class SearchStateService {
     current: '', eta_sec: -1, errors: 0, active: false,
   };
 
+  /** Capture a clipboard / hot-key image as the current query.
+   *  A file copied from Finder/Explorer keeps its real name; only a captured
+   *  bitmap (screenshot, browser "Copy Image") lands on the temp file, which we
+   *  still label generically. */
+  setClipboardImage(imagePath: string): void {
+    const base = imagePath.split(/[\\/]/).pop() ?? imagePath;
+    this.imagePath    = imagePath;
+    this.imageName    = base === 'visara_clipboard.png' ? 'Clipboard image' : base;
+    this.imagePreview = convertFileSrc(imagePath);
+  }
+
   reset(): void {
     this.searchState   = 'idle';
     this.imageName     = '';
     this.imagePath     = '';
     this.imagePreview  = '';
-    this.folderPath    = '';
+    this.scopePaths    = [];
     this.results       = [];
     this.failedFiles   = [];
     this.searchError   = '';

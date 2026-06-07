@@ -78,6 +78,31 @@
       </div>
     </div>
 
+    <!-- Preferences -->
+    <div class="prefs-card">
+      <div class="prefs-card__head">
+        <i class="pi pi-cog"></i>
+        <span>Preferences</span>
+      </div>
+
+      <button
+        type="button"
+        class="prefs-row"
+        [class.prefs-row--busy]="autostartBusy"
+        (click)="toggleAutostart()"
+        [disabled]="autostartBusy">
+        <div class="prefs-row__text">
+          <span class="prefs-row__title">Launch when I sign in</span>
+          <span class="prefs-row__hint">
+            Visara starts silently in the system tray, ready for Ctrl+Shift+V.
+          </span>
+        </div>
+        <span class="prefs-toggle" [class.prefs-toggle--on]="autostartEnabled">
+          <span class="prefs-toggle__knob"></span>
+        </span>
+      </button>
+    </div>
+
     <!-- Payment history -->
     <div class="pay-history">
       <div class="pay-history__head">

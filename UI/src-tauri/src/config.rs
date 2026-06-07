@@ -33,6 +33,10 @@ pub const NUM_WORKERS: usize = 8;
 /// Number of bytes read from the start of each file for the fast hash.
 pub const HASH_BYTES: u64 = 65_536; // 64 KiB
 
+/// How often the background watcher streams a progress snapshot to the UI
+/// while a folder is being indexed.
+pub const PROGRESS_EMIT_INTERVAL_MS: u64 = 400;
+
 // ── Supported image extensions ────────────────────────────────────────────
 
 pub const IMAGE_EXTENSIONS: &[&str] =
@@ -40,32 +44,66 @@ pub const IMAGE_EXTENSIONS: &[&str] =
 
 // ── Filesystem paths (resolved once at startup) ───────────────────────────
 
-/// Directory that holds the encrypted ONNX model bundled with the app.
-/// Set at startup from `app.path().resource_dir()` (packaged build) or
-/// falls back to the in-repo dev path when running `cargo tauri dev`.
-static MODELS_DIR: once_cell::sync::OnceCell<PathBuf> =
+/// Resource directory resolved at startup from `app.path().resource_dir()`.
+/// Layout differs between platforms and dev/packaged builds, so we never assume
+/// a single sub-path — `model_enc_path()` probes several candidates below.
+static RESOURCE_DIR: once_cell::sync::OnceCell<PathBuf> =
     once_cell::sync::OnceCell::new();
 
 /// Called from `setup()` once the Tauri `AppHandle` is available.
 pub fn set_resource_dir(resource_dir: PathBuf) {
-    let dir = resource_dir.join("models");
-    let _ = MODELS_DIR.set(dir);
+    let _ = RESOURCE_DIR.set(resource_dir);
 }
 
-/// Resolve the encrypted CLIP model location.
-/// Packaged build → `<resource_dir>/models/clip_vitb32.onnx.enc`
-/// Dev build      → `<repo>/python/models/clip_vitb32.onnx.enc`
+/// Encrypted model file name.
+const MODEL_FILE: &str = "clip_vitb32.onnx.enc";
+
+/// Resolve the encrypted CLIP model by probing every location it could live in
+/// across platforms and build modes, returning the first that exists:
+///   1. `<resource_dir>/models/<file>`  — packaged bundle layout
+///   2. `<resource_dir>/<file>`         — flat layout (Tauri dev copies here)
+///   3. `<crate>/resources/models/<file>` — in-repo resources (dev)
+///   4. `<repo>/python/models/<file>`     — legacy in-repo model (dev)
+///
+/// macOS dev resolved `resource_dir` to `target/debug/`, where Tauri places the
+/// model flat (no `models/` sub-dir) — candidate 2 covers that case, which the
+/// old single-path logic missed (it only checked candidate 1).
 pub fn model_enc_path() -> PathBuf {
-    if let Some(dir) = MODELS_DIR.get() {
-        return dir.join("clip_vitb32.onnx.enc");
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(dir) = RESOURCE_DIR.get() {
+        candidates.push(dir.join("models").join(MODEL_FILE));
+        candidates.push(dir.join(MODEL_FILE));
     }
-    // Dev fallback: CARGO_MANIFEST_DIR = UI/src-tauri
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..") // UI/
-        .join("..") // project root
-        .join("python")
-        .join("models")
-        .join("clip_vitb32.onnx.enc")
+
+    // Dev fallbacks relative to the crate (CARGO_MANIFEST_DIR = UI/src-tauri).
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    candidates.push(manifest.join("resources").join("models").join(MODEL_FILE));
+    candidates.push(
+        manifest
+            .join("..") // UI/
+            .join("..") // project root
+            .join("python")
+            .join("models")
+            .join(MODEL_FILE),
+    );
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            log::info!("[config] model file resolved to {:?}", candidate);
+            return candidate.clone();
+        }
+    }
+
+    log::warn!(
+        "[config] model file '{MODEL_FILE}' not found in any known location; \
+         tried {:?}",
+        candidates
+    );
+    candidates
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| PathBuf::from(MODEL_FILE))
 }
 
 /// User-scoped data directory:  ~/.visara/   (created on first run).
