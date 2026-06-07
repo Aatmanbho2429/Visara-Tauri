@@ -38,6 +38,13 @@ pub fn auth_logout(app: tauri::AppHandle) {
     let _ = app.emit("auth_logout_response", result);
 }
 
+/// Email a one-time verification code for registration.
+#[tauri::command]
+pub async fn auth_send_otp(app: tauri::AppHandle, email: String) {
+    let result = auth::send_otp(&email).await;
+    let _ = app.emit("auth_send_otp_response", result);
+}
+
 #[tauri::command]
 pub async fn auth_request_access(
     app:          tauri::AppHandle,
@@ -47,6 +54,7 @@ pub async fn auth_request_access(
     password:     String,
     phone_number: Option<String>,
     company_name: Option<String>,
+    otp_code:     String,
 ) {
     let result = auth::register_request(
         &first_name,
@@ -55,6 +63,7 @@ pub async fn auth_request_access(
         &password,
         phone_number.as_deref(),
         company_name.as_deref(),
+        &otp_code,
     )
     .await;
     let _ = app.emit("auth_request_access_response", result);

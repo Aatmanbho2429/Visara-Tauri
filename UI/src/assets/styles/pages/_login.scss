@@ -477,3 +477,57 @@
     }
   }
 }
+
+// ── Registration OTP step ──────────────────────────────────────────
+.otp-step {
+  display: flex;
+  flex-direction: column;
+  gap: $space-4;
+
+  &__lead {
+    font-family: $font-primary;
+    font-size: $font-size-sm;
+    color: $surface-300;
+    text-align: center;
+    line-height: 1.6;
+    strong { color: $surface-50; }
+  }
+}
+
+.otp-input {
+  width: 100%;
+  text-align: center;
+  font-size: 2.6rem;
+  letter-spacing: 0.7rem;
+  font-family: $font-primary;
+  font-weight: 600;
+  color: $surface-50;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(217, 70, 239, 0.25);
+  border-radius: $border-radius-md;
+  padding: $space-3;
+  box-sizing: border-box;
+  &:focus { outline: none; border-color: rgba(217, 70, 239, 0.6); }
+  &::placeholder { letter-spacing: 0.7rem; color: $surface-700; }
+}
+
+.otp-resend {
+  text-align: center;
+  font-family: $font-primary;
+  font-size: $font-size-xs;
+  &__timer { color: $surface-500; }
+  a { color: $primary-300; cursor: pointer; &:hover { color: $primary-200; } }
+}
+
+.otp-back {
+  text-align: center;
+  color: $surface-400;
+  font-family: $font-primary;
+  font-size: $font-size-xs;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  &:hover { color: $surface-200; }
+}

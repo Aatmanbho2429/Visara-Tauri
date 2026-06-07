@@ -5,11 +5,9 @@
   display: flex;
   flex-direction: column;
   gap: $space-6;
-  overflow-y: auto;
+  overflow: hidden;            // page itself doesn't scroll — only Payment History does
   padding: $space-10 $space-10 $space-10 calc(8rem + $space-10);
   max-width: 72rem;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(217, 70, 239, 0.2) transparent;
 }
 
 // ── Loading ────────────────────────────────────────────────────
@@ -203,6 +201,8 @@
 
 // ── Payment History ────────────────────────────────────────────
 .pay-history {
+  flex: 1;          // take the remaining height under the fixed sections…
+  min-height: 0;    // …and allow the inner list to scroll
   display: flex;
   flex-direction: column;
   gap: $space-3;
@@ -247,9 +247,15 @@
   }
 
   &__list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: $space-2;
     display: flex;
     flex-direction: column;
     gap: $space-2;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(217, 70, 239, 0.2) transparent;
   }
 }
 

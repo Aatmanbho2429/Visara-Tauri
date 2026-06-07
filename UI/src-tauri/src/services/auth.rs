@@ -206,6 +206,20 @@ pub fn logout() -> Value {
     })
 }
 
+/// Request a one-time verification code be emailed to `email` (registration).
+pub async fn send_otp(email: &str) -> Value {
+    let result = reqwest::Client::new()
+        .post(format!("{SUPABASE_EDGE}/send-otp"))
+        .json(&serde_json::json!({ "email": email }))
+        .send()
+        .await;
+
+    match result {
+        Err(e) => network_error(e),
+        Ok(resp) => resp.json().await.unwrap_or_else(|_| server_error()),
+    }
+}
+
 pub async fn register_request(
     first_name:   &str,
     last_name:    &str,
@@ -213,6 +227,7 @@ pub async fn register_request(
     password:     &str,
     phone_number: Option<&str>,
     company_name: Option<&str>,
+    otp_code:     &str,
 ) -> Value {
     let result = reqwest::Client::new()
         .post(format!("{SUPABASE_EDGE}/register-request"))
@@ -223,6 +238,7 @@ pub async fn register_request(
             "password":     password,
             "phone_number": phone_number,
             "company_name": company_name,
+            "otp_code":     otp_code,
             "device_id":    license::device_id(),
         }))
         .send()

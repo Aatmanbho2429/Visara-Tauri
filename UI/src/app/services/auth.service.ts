@@ -7,7 +7,7 @@ import { LoginData, ValidateTokenData, PlansData, SubscriptionsData } from '../m
 export interface LoginPayload { email: string; password: string; }
 export interface RegisterPayload {
   first_name: string; last_name: string; email: string; password: string;
-  phone_number?: string; company_name?: string;
+  phone_number?: string; company_name?: string; otp_code: string;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -65,6 +65,11 @@ export class AuthService {
     });
   }
 
+  /** Email a one-time verification code for registration. */
+  sendOtp(email: string): Observable<BaseResponse<null>> {
+    return this.tauri.invoke<null>('auth_send_otp', { email });
+  }
+
   requestAccess(payload: RegisterPayload): Observable<BaseResponse<null>> {
     return this.tauri.invoke<null>('auth_request_access', {
       firstName:   payload.first_name,
@@ -73,6 +78,7 @@ export class AuthService {
       password:    payload.password,
       phoneNumber: payload.phone_number ?? null,
       companyName: payload.company_name ?? null,
+      otpCode:     payload.otp_code,
     });
   }
 }

@@ -324,6 +324,7 @@ pub fn run() {
             auth::auth_validate_token,
             auth::auth_check_session,
             auth::auth_logout,
+            auth::auth_send_otp,
             auth::auth_request_access,
             // ── Image search ─────────────────────────────────────────
             search::start_search,

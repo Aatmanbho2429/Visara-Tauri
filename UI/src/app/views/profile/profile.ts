@@ -32,6 +32,13 @@ export class Profile extends BaseComponent implements OnInit {
   autostartBusy     = false;
 
   ngOnInit(): void {
+    // If a guard bounced the user here because their subscription ended, explain why.
+    const redirectMsg = sessionStorage.getItem('sub_redirect_msg');
+    if (redirectMsg) {
+      sessionStorage.removeItem('sub_redirect_msg');
+      this.messages.add({ key: 'app', severity: 'warn', summary: 'Subscription', detail: redirectMsg, life: 6000 });
+    }
+
     this.handle(this.auth.validateToken(), res => {
       this.loading = false;
       if (res.success && res.data?.user) this.userState.set(res.data.user);

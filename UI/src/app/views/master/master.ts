@@ -38,8 +38,16 @@ export class Master implements OnInit, OnDestroy {
   private zone        = inject(NgZone);
   private messages    = inject(MessageService);
   private unlisten:   UnlistenFn[] = [];
+  private updateTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Re-check for updates every 6 hours so long-running tray sessions still
+   *  get notified without a restart. */
+  private static readonly UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
   ngOnInit(): void {
+    // Register the event listeners FIRST, then trigger the check — otherwise the
+    // backend can emit `update_available` before we're listening and the banner
+    // is silently missed.
     Promise.all([
       this.tauri.onUpdateAvailable(info => this.zone.run(() => { this.updateInfo = info; })),
       this.tauri.onUpdateProgress(p    => this.zone.run(() => {
@@ -50,9 +58,12 @@ export class Master implements OnInit, OnDestroy {
         this.installing   = false;
         this.updateError  = msg;
       })),
-    ]).then(fns => { this.unlisten = fns; });
+    ]).then(fns => {
+      this.unlisten = fns;
+      this.tauri.checkForUpdate();
+    });
 
-    this.tauri.checkForUpdate();
+    this.updateTimer = setInterval(() => this.tauri.checkForUpdate(), Master.UPDATE_INTERVAL_MS);
     this.maybeShowMigrationTip();
   }
 
@@ -79,6 +90,7 @@ export class Master implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.unlisten.forEach(fn => fn());
+    if (this.updateTimer) clearInterval(this.updateTimer);
   }
 
   installUpdate(): void {
