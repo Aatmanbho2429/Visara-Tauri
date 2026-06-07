@@ -5,6 +5,8 @@ import { Search } from './views/search/search';
 import { Profile } from './views/profile/profile';
 import { Library } from './views/library/library';
 import { Browse } from './views/browse/browse';
+import { Catalog } from './views/catalog/catalog';
+import { Editor } from './views/catalog/theme-builder';
 import { authGuard } from './guards/auth.guard';
 import { loginGuard } from './guards/login.guard';
 
@@ -15,6 +17,8 @@ export const routes: Routes = [
         { path: 'search', component: Search },
         { path: 'library', component: Library },
         { path: 'browse', component: Browse },
+        { path: 'catalog', component: Catalog },
+        { path: 'catalog/editor', component: Editor },
         { path: 'profile', component: Profile },
     ]},
 ];

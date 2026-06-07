@@ -19,10 +19,10 @@ import {
   styleUrl: './browse.scss',
 })
 export class Browse extends BaseComponent implements OnInit, OnDestroy {
-  private browseSvc = inject(BrowseService);
-  private tagsSvc   = inject(TagsService);
-  private tauri     = inject(TauriService);
-  private messages  = inject(MessageService);
+  private browseSvc  = inject(BrowseService);
+  private tagsSvc    = inject(TagsService);
+  private tauri      = inject(TauriService);
+  private messages   = inject(MessageService);
 
   loading = true;
 

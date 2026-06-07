@@ -97,7 +97,16 @@ fn load_standard(path: &Path) -> Result<DynamicImage> {
 // ── TIFF ──────────────────────────────────────────────────────────────────
 
 fn load_tiff(path: &Path) -> Result<DynamicImage> {
-    // Try the embedded thumbnail in IFD1 first (present in camera / scanner TIFFs).
+    // CMYK TIFFs are device-dependent and need ICC colour management to convert
+    // accurately.  Our in-Rust decode applies only a naive CMYK→RGB formula,
+    // which casts neutral marbles green/pink/yellow.  On macOS, sips is
+    // colour-managed (ColorSync) and cheap, so prefer it for TIFFs.
+    #[cfg(target_os = "macos")]
+    if let Ok(img) = load_via_sips(path) {
+        return Ok(img);
+    }
+
+    // Non-macOS, or sips unavailable: embedded IFD1 thumbnail, then full decode.
     if let Ok(thumb) = try_tiff_thumbnail(path) {
         return Ok(thumb);
     }

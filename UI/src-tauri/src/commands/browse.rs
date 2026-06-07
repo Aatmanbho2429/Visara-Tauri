@@ -28,3 +28,17 @@ pub async fn get_thumbnail(path: String) -> Result<String, String> {
         .map(|p| p.to_string_lossy().to_string())
         .map_err(|e| e.to_string())
 }
+
+/// Higher-resolution, colour-correct render for embedding into a catalog.
+#[tauri::command]
+pub async fn get_catalog_image(path: String) -> Result<String, String> {
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        thumbs::ensure_catalog_image(&PathBuf::from(&path))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    joined
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
+}

@@ -26,13 +26,6 @@ fn norm(p: &str) -> String {
     p.trim_end_matches(MAIN_SEPARATOR).to_string()
 }
 
-fn basename(p: &str) -> String {
-    Path::new(p)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| p.to_string())
-}
-
 fn within_root<'a>(path: &str, roots: &'a [String]) -> Option<&'a String> {
     let p = norm(path);
     roots.iter().find(|r| {

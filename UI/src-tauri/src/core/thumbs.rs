@@ -1,31 +1,47 @@
-//! On-demand thumbnail cache for the Browse grid.
+//! On-demand image cache for the Browse grid and the catalog.
 //!
-//! Thumbnails live in `~/.visara/thumbs/<hash>.jpg` (256 px longest edge).  The
-//! cache key is the source path, so re-browsing is instant.  Generation reuses
-//! the main image loader, so exotic files (CMYK TIFF, PSB) flow through the same
-//! `sips` fallback used during indexing.
+//! Cached renders live in `~/.visara/thumbs/<hash>_v<ver>_<max>.jpg`.  The key
+//! is (source path, version, size), so re-use is instant.  Generation reuses the
+//! main image loader, so exotic files (CMYK TIFF, PSB) flow through the same
+//! colour-managed `sips` path used during indexing.
 
 use crate::{config, error::Result, utils::image_loader};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+/// Grid thumbnail size (longest edge).
 const THUMB_MAX: u32 = 256;
+/// Higher-resolution render embedded into generated catalogs.
+const CATALOG_MAX: u32 = 1100;
+
+/// Bump when the decode pipeline changes so stale renders regenerate instead of
+/// being served from cache (e.g. the TIFF colour-management fix).
+const THUMB_VERSION: u32 = 2;
 
 fn thumbs_dir() -> PathBuf {
     config::DATA_DIR.join("thumbs")
 }
 
-/// Deterministic cache path for a source image (does not create the file).
-pub fn thumb_path(orig: &Path) -> PathBuf {
+fn sized_path(orig: &Path, max: u32) -> PathBuf {
     let mut hasher = Sha256::new();
     hasher.update(orig.to_string_lossy().as_bytes());
     let hex = format!("{:x}", hasher.finalize());
-    thumbs_dir().join(format!("{}.jpg", &hex[..32]))
+    thumbs_dir().join(format!("{}_v{}_{}.jpg", &hex[..32], THUMB_VERSION, max))
 }
 
-/// Return the cached thumbnail path, generating it first if needed.
+/// Grid thumbnail (256 px).
 pub fn ensure_thumb(orig: &Path) -> Result<PathBuf> {
-    let dest = thumb_path(orig);
+    ensure_sized(orig, THUMB_MAX)
+}
+
+/// Catalog-quality render (1100 px).
+pub fn ensure_catalog_image(orig: &Path) -> Result<PathBuf> {
+    ensure_sized(orig, CATALOG_MAX)
+}
+
+/// Return the cached render at `max` px, generating it first if needed.
+pub fn ensure_sized(orig: &Path, max: u32) -> Result<PathBuf> {
+    let dest = sized_path(orig, max);
     if dest.exists() {
         return Ok(dest);
     }
@@ -35,17 +51,16 @@ pub fn ensure_thumb(orig: &Path) -> Result<PathBuf> {
 
     let img = image_loader::load_image(orig)?;
     let (w, h) = (img.width(), img.height());
-    let thumb = if w.max(h) > THUMB_MAX {
-        let factor = (w.max(h) / THUMB_MAX).max(1);
+    let out = if w.max(h) > max {
+        let factor = (w.max(h) / max).max(1);
         img.resize((w / factor).max(1), (h / factor).max(1), image::imageops::FilterType::Triangle)
     } else {
         img
     };
 
-    thumb
-        .to_rgb8()
+    out.to_rgb8()
         .save_with_format(&dest, image::ImageFormat::Jpeg)
-        .map_err(|e| crate::error::VisaraError::Fatal(format!("thumbnail save failed: {e}")))?;
+        .map_err(|e| crate::error::VisaraError::Fatal(format!("render save failed: {e}")))?;
 
     Ok(dest)
 }
