@@ -134,6 +134,13 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
         this.loginFirstName = res.data.user.first_name;
         this.userState.set(res.data.user); // pre-populate so authGuard skips validate
 
+        // authGuard will now skip validateToken(), but that call is also what
+        // fetches the onnx_key, preloads the CLIP model, and notifies the
+        // watcher to reconcile any folders added before the model was ready.
+        // Fire it here so a fresh login doesn't leave indexing stuck until
+        // the next app restart.
+        this.authService.validateToken().subscribe();
+
         // If the user pressed Ctrl+Shift+V before logging in, jump straight
         // to the search view with the captured clipboard image pre-loaded.
         const pendingImage = sessionStorage.getItem(App.PENDING_IMAGE_KEY);
