@@ -91,6 +91,15 @@ once_cell = "1"
 # Structured logging
 log = "0.4"
 
+# OS keychain (macOS Keychain / Windows Credential Manager) for the auth
+# token. Falls back to the existing plaintext file on platforms/setups where
+# no OS credential store is available (see services/auth.rs).
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+
+# Compile-time string obfuscation for sensitive literals (device-fingerprint
+# shell commands, etc.) so they don't show up verbatim in `strings <binary>`.
+obfstr = "0.4"
+
 [profile.dev]
 incremental = true
 

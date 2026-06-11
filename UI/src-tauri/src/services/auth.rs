@@ -1,11 +1,16 @@
 use crate::{
-    config::{SUPABASE_EDGE, TOKEN_FILE},
+    config::{OFFLINE_GRACE_SECS, SUPABASE_EDGE, TOKEN_FILE},
     core::{embedder, watcher},
     services::license,
 };
+use keyring::Entry;
 use once_cell::sync::Lazy;
 use serde_json::Value;
-use std::{fs, sync::Mutex};
+use std::{
+    fs,
+    sync::Mutex,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 // ── In-memory session state ───────────────────────────────────────────────
 //
@@ -33,21 +38,83 @@ pub fn session_user_id() -> Option<String> {
     SESSION.lock().unwrap().as_ref().map(|s| s.user_id.clone())
 }
 
-// ── Token file helpers ────────────────────────────────────────────────────
+// ── Token storage ─────────────────────────────────────────────────────────
+//
+// Preferred: the OS credential store (macOS Keychain / Windows Credential
+// Manager) via the `keyring` crate — the token never sits in a plaintext
+// dotfile readable by any other process running as the same user.
+//
+// Fallback: the original `~/.visara_token` plaintext file. Used on platforms
+// without a native keychain backend compiled in (where `keyring` falls back
+// to a non-persistent in-memory "mock" store that would silently lose the
+// token on every restart) and if a keychain call fails for any reason
+// (locked keychain, headless environment, etc.).
+//
+// Existing installs that already have `~/.visara_token` are migrated into
+// the keychain transparently the first time `saved_token()` runs.
+
+const KEYRING_SERVICE: &str = "com.visara.app";
+const KEYRING_USER:    &str = "auth_token";
+
+/// Whether this platform has a real, persistent keyring backend compiled in
+/// (kept in sync with the `keyring` feature flags in Cargo.toml). On any
+/// other OS the crate transparently falls back to its in-memory "mock"
+/// store, which would appear to work but lose the token on every restart —
+/// so on those platforms we skip the keychain entirely and use the file.
+fn keyring_available() -> bool {
+    cfg!(any(target_os = "macos", target_os = "windows"))
+}
+
+fn keyring_entry() -> Option<Entry> {
+    if !keyring_available() {
+        return None;
+    }
+    Entry::new(KEYRING_SERVICE, KEYRING_USER).ok()
+}
 
 fn save_token(token: &str) {
+    if let Some(entry) = keyring_entry() {
+        if entry.set_password(token).is_ok() {
+            // Stored securely — remove any legacy plaintext copy.
+            let _ = fs::remove_file(TOKEN_FILE.as_path());
+            return;
+        }
+    }
     let _ = fs::write(TOKEN_FILE.as_path(), token);
 }
 
 fn delete_token() {
+    if let Some(entry) = keyring_entry() {
+        let _ = entry.delete_credential();
+    }
     let _ = fs::remove_file(TOKEN_FILE.as_path());
 }
 
 pub fn saved_token() -> Option<String> {
-    fs::read_to_string(TOKEN_FILE.as_path())
+    if let Some(entry) = keyring_entry() {
+        if let Ok(token) = entry.get_password() {
+            let token = token.trim().to_string();
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+    }
+
+    // Not in the keychain (or no keychain on this platform) — fall back to
+    // the legacy file, migrating it into the keychain if possible so this
+    // branch isn't needed again next time.
+    let file_token = fs::read_to_string(TOKEN_FILE.as_path())
         .ok()
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty());
+
+    if let (Some(token), Some(entry)) = (&file_token, keyring_entry()) {
+        if entry.set_password(token).is_ok() {
+            let _ = fs::remove_file(TOKEN_FILE.as_path());
+        }
+    }
+
+    file_token
 }
 
 // ── Public API ────────────────────────────────────────────────────────────
@@ -139,6 +206,7 @@ pub async fn validate_saved_token() -> Value {
             if let Some(uid) = data["user"]["id"].as_str() {
                 set_session(uid, &data["user"]);
             }
+            mark_valid_now();
 
             // If subscription has lapsed, unload the model so it cannot be used
             // even if the UI is bypassed.  Supabase also withholds onnx_key for
@@ -204,6 +272,79 @@ pub fn logout() -> Value {
         "message": "Logged out successfully",
         "data":    null
     })
+}
+
+// ── Periodic re-validation ───────────────────────────────────────────────
+//
+// `validate_saved_token()` runs at cold start and before search, but a long
+// -running session (tray app, left open for days) would otherwise never
+// re-check its subscription status against Supabase. The UI calls
+// `periodic_revalidate()` on a timer (see master.ts) to close that gap.
+//
+// To keep the app usable offline for short periods (flights, spotty wifi)
+// without caching an "expired but still works" session indefinitely, a
+// network failure here is tolerated for up to `OFFLINE_GRACE_SECS` since the
+// last successful validation — after that, the session is torn down and the
+// model unloaded just like an explicit "invalid" response.
+
+/// Unix timestamp (seconds) of the last successful `validate-token-test`
+/// round-trip this session. `None` until the first success.
+static LAST_VALID_AT: Lazy<Mutex<Option<i64>>> = Lazy::new(|| Mutex::new(None));
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn mark_valid_now() {
+    *LAST_VALID_AT.lock().unwrap() = Some(now_secs());
+}
+
+/// Background re-validation tick. Returns `{"success": true, "data": {"action": ..., "user"?: ...}}`
+/// where `action` is one of:
+///   - `"none"`       — not logged in, nothing to do.
+///   - `"ok"`         — re-validated successfully; `user` carries the latest profile.
+///   - `"ok-offline"` — Supabase unreachable, but still inside the offline
+///                       grace window — keep the current session as-is.
+///   - `"logout"`     — session is invalid/expired, or the offline grace
+///                       period has been exceeded; the caller (UI) must log
+///                       the user out.
+pub async fn periodic_revalidate() -> Value {
+    if saved_token().is_none() {
+        return serde_json::json!({ "success": true, "message": "No session", "data": { "action": "none" } });
+    }
+
+    let result = validate_saved_token().await;
+
+    if result["success"].as_bool().unwrap_or(false) {
+        return serde_json::json!({
+            "success": true,
+            "message": "Session re-validated",
+            "data": { "action": "ok", "user": result["data"]["user"] }
+        });
+    }
+
+    // `validate_saved_token()` already deletes the token and tears down the
+    // session/model when Supabase explicitly says the token is invalid. If
+    // that happened, there's nothing left to grace-period — log out now.
+    if saved_token().is_none() {
+        return serde_json::json!({ "success": true, "message": "Session expired", "data": { "action": "logout" } });
+    }
+
+    // Otherwise this was a network-level failure (no internet, DNS, etc.)
+    // with the token still intact. Allow a short offline grace period before
+    // forcing a logout.
+    let last_valid = LAST_VALID_AT.lock().unwrap().unwrap_or_else(now_secs);
+    if now_secs() - last_valid < OFFLINE_GRACE_SECS {
+        return serde_json::json!({ "success": true, "message": "Offline - using cached session", "data": { "action": "ok-offline" } });
+    }
+
+    delete_token();
+    clear_in_memory_session();
+    embedder::reset();
+    serde_json::json!({ "success": true, "message": "Offline grace period exceeded", "data": { "action": "logout" } })
 }
 
 /// Request a one-time verification code be emailed to `email` (registration).

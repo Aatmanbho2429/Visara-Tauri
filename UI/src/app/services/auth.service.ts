@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { TauriService } from './tauri.service';
 import { BaseResponse } from '../models/base-response.model';
-import { LoginData, ValidateTokenData, PlansData, SubscriptionsData } from '../models/auth.model';
+import { LoginData, ValidateTokenData, PeriodicRevalidateData, PlansData, SubscriptionsData } from '../models/auth.model';
 
 export interface LoginPayload { email: string; password: string; }
 export interface RegisterPayload {
@@ -26,6 +26,12 @@ export class AuthService {
 
   validateToken(): Observable<BaseResponse<ValidateTokenData>> {
     return this.tauri.invoke<ValidateTokenData>('auth_validate_token');
+  }
+
+  /** Silent background re-check of the session/subscription against
+   *  Supabase. Runs on a timer (see master.ts) — no loading spinner. */
+  periodicRevalidate(): Observable<BaseResponse<PeriodicRevalidateData>> {
+    return this.tauri.invokeSilent<PeriodicRevalidateData>('auth_periodic_revalidate');
   }
 
   /** Instant file-existence check — no Supabase call. Use in route guards. */

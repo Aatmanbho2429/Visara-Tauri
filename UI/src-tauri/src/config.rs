@@ -37,6 +37,16 @@ pub const HASH_BYTES: u64 = 65_536; // 64 KiB
 /// while a folder is being indexed.
 pub const PROGRESS_EMIT_INTERVAL_MS: u64 = 400;
 
+// ── Licensing ─────────────────────────────────────────────────────────────
+
+/// How long the app may run on a cached "valid" subscription state without
+/// being able to reach Supabase (e.g. no internet) before it forces a fresh
+/// `validate-token-test` round-trip and unloads the AI model if that fails
+/// too. Keeps the app usable offline for short periods (flights, poor
+/// connectivity) without allowing an indefinitely-cached "expired but still
+/// works" session.
+pub const OFFLINE_GRACE_SECS: i64 = 3 * 24 * 3600; // 3 days
+
 // ── Supported image extensions ────────────────────────────────────────────
 
 pub const IMAGE_EXTENSIONS: &[&str] =

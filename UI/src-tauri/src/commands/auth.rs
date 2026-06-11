@@ -19,6 +19,15 @@ pub async fn auth_validate_token(app: tauri::AppHandle) {
     let _ = app.emit("auth_validate_token_response", result);
 }
 
+/// Periodic background re-check of the session/subscription against
+/// Supabase, called on a timer from the UI (see master.ts). See
+/// `services::auth::periodic_revalidate` for the possible `action` values.
+#[tauri::command]
+pub async fn auth_periodic_revalidate(app: tauri::AppHandle) {
+    let result = auth::periodic_revalidate().await;
+    let _ = app.emit("auth_periodic_revalidate_response", result);
+}
+
 /// Instant check — no network call.  Returns success:true if a token file
 /// exists on disk, false if the user has never logged in or has logged out.
 /// Used by route guards to avoid a Supabase round-trip on every navigation.

@@ -322,6 +322,7 @@ pub fn run() {
             // ── Authentication ───────────────────────────────────────
             auth::auth_login,
             auth::auth_validate_token,
+            auth::auth_periodic_revalidate,
             auth::auth_check_session,
             auth::auth_logout,
             auth::auth_send_otp,
