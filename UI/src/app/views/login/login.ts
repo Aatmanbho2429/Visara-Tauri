@@ -10,7 +10,7 @@ import {
   ValidationErrors
 } from '@angular/forms';
 import { Router } from '@angular/router';
-import { TranslateModule } from '@ngx-translate/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { MessageService } from 'primeng/api';
 import { PrimengComponentsModule } from '../../shared/primeng-components-module';
 import { AuthService } from '../../services/auth.service';
@@ -101,7 +101,8 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
     private authService:    AuthService,
     private userState:      UserStateService,
     private searchState:    SearchStateService,
-    private messageService: MessageService
+    private messageService: MessageService,
+    private translate:      TranslateService
   ) {
     super();
     this.redirectMessage = sessionStorage.getItem('auth_redirect_msg') ?? '';
@@ -215,7 +216,7 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
       this.sendingOtp = false;
       if (res.success) {
         this.startCooldown();
-        this.messageService.add({ severity: 'success', summary: 'Code sent', detail: `A new code was sent to ${this.registerEmail}.`, life: 3000 });
+        this.messageService.add({ severity: 'success', summary: this.translate.instant('register.otp.resentTitle'), detail: this.translate.instant('register.otp.resentDetail', { email: this.registerEmail }), life: 3000 });
       } else {
         this.registerError = res.message;
       }

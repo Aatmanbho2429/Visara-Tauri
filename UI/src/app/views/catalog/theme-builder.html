@@ -2,18 +2,18 @@
 
   <!-- Top bar -->
   <header class="ed__top">
-    <button class="ed__icon" (click)="back()" title="Back"><i class="pi pi-arrow-left"></i></button>
-    <input class="ed__name" [(ngModel)]="doc.name" placeholder="Untitled catalog" />
+    <button class="ed__icon" (click)="back()" [title]="'editor.back' | translate"><i class="pi pi-arrow-left"></i></button>
+    <input class="ed__name" [(ngModel)]="doc.name" [placeholder]="'editor.untitled' | translate" />
     <div class="ed__top-right">
       <select class="ed__sel" (change)="setPageSize(pagePresets[$any($event.target).selectedIndex])">
         @for (p of pagePresets; track p.key) {
-          <option [selected]="doc.pageW === p.w && doc.pageH === p.h">{{ p.label }}</option>
+          <option [selected]="doc.pageW === p.w && doc.pageH === p.h">{{ ('editor.preset.' + p.key) | translate }}</option>
         }
       </select>
-      <button class="ed__ghost" (click)="save()"><i class="pi pi-save"></i> Save</button>
+      <button class="ed__ghost" (click)="save()"><i class="pi pi-save"></i> {{ 'editor.save' | translate }}</button>
       <button class="ed__primary" (click)="exportPdf()" [disabled]="exporting">
-        @if (exporting) { <i class="pi pi-spin pi-spinner"></i> Exporting… }
-        @else { <i class="pi pi-file-pdf"></i> Export PDF }
+        @if (exporting) { <i class="pi pi-spin pi-spinner"></i> {{ 'editor.exporting' | translate }} }
+        @else { <i class="pi pi-file-pdf"></i> {{ 'editor.exportPdf' | translate }} }
       </button>
     </div>
   </header>
@@ -22,24 +22,24 @@
 
     <!-- Tool rail -->
     <nav class="ed__rail">
-      <button [class.active]="leftPanel==='elements'" (click)="leftPanel='elements'" title="Elements">
-        <i class="pi pi-objects-column"></i><span>Elements</span>
+      <button [class.active]="leftPanel==='elements'" (click)="leftPanel='elements'" [title]="'editor.elements' | translate">
+        <i class="pi pi-objects-column"></i><span>{{ 'editor.elements' | translate }}</span>
       </button>
-      <button [class.active]="leftPanel==='images'" (click)="leftPanel='images'" title="Your tiles">
-        <i class="pi pi-images"></i><span>Tiles</span>
+      <button [class.active]="leftPanel==='images'" (click)="leftPanel='images'" [title]="'editor.yourTiles' | translate">
+        <i class="pi pi-images"></i><span>{{ 'editor.tiles' | translate }}</span>
       </button>
     </nav>
 
     <!-- Flyout panel -->
     <aside class="ed__panel">
       @if (leftPanel === 'elements') {
-        <h3 class="ed__panel-title">Elements</h3>
-        <button class="ed__add" (click)="addText(true)"><i class="pi pi-bars"></i> Heading</button>
-        <button class="ed__add" (click)="addText(false)"><i class="pi pi-align-left"></i> Text</button>
-        <button class="ed__add" (click)="addBox()"><i class="pi pi-stop"></i> Box</button>
-        <button class="ed__add" (click)="addLine()"><i class="pi pi-minus"></i> Line</button>
+        <h3 class="ed__panel-title">{{ 'editor.elements' | translate }}</h3>
+        <button class="ed__add" (click)="addText(true)"><i class="pi pi-bars"></i> {{ 'editor.heading' | translate }}</button>
+        <button class="ed__add" (click)="addText(false)"><i class="pi pi-align-left"></i> {{ 'editor.text' | translate }}</button>
+        <button class="ed__add" (click)="addBox()"><i class="pi pi-stop"></i> {{ 'editor.box' | translate }}</button>
+        <button class="ed__add" (click)="addLine()"><i class="pi pi-minus"></i> {{ 'editor.line' | translate }}</button>
       } @else {
-        <h3 class="ed__panel-title">Your tiles</h3>
+        <h3 class="ed__panel-title">{{ 'editor.yourTiles' | translate }}</h3>
         <div class="ed__filters">
           @for (g of facetGroups; track g.category) {
             @for (f of g.facets; track f.category + f.value) {
@@ -49,7 +49,7 @@
             }
           }
         </div>
-        @if (libLoading) { <div class="ed__lib-loading">Loading…</div> }
+        @if (libLoading) { <div class="ed__lib-loading">{{ 'editor.loading' | translate }}</div> }
         <div class="ed__lib">
           @for (p of libImages; track p) {
             <button class="ed__tile" (click)="addImage(p)" [title]="shortName(p)">
@@ -97,7 +97,7 @@
           @for (g of guidesV; track g) { <div class="guide guide--v" [style.left.%]="g"></div> }
           @for (g of guidesH; track g) { <div class="guide guide--h" [style.top.%]="g"></div> }
         </div>
-        <span class="ed__page-num">Page {{ pageIndex + 1 }} / {{ doc.pages.length }}</span>
+        <span class="ed__page-num">{{ 'editor.pageOf' | translate:{ n: pageIndex + 1, total: doc.pages.length } }}</span>
       </div>
     </main>
 
@@ -105,19 +105,19 @@
     <aside class="ed__props">
       @if (selected; as s) {
         <div class="ed__props-head">
-          <span>{{ s.type | titlecase }}</span>
+          <span>{{ ('editor.type.' + s.type) | translate }}</span>
           <div class="ed__props-actions">
-            <button (click)="sendBackward()" title="Back"><i class="pi pi-angle-down"></i></button>
-            <button (click)="bringForward()" title="Forward"><i class="pi pi-angle-up"></i></button>
-            <button (click)="deleteSelected()" title="Delete"><i class="pi pi-trash"></i></button>
+            <button (click)="sendBackward()" [title]="'editor.layerBack' | translate"><i class="pi pi-angle-down"></i></button>
+            <button (click)="bringForward()" [title]="'editor.layerForward' | translate"><i class="pi pi-angle-up"></i></button>
+            <button (click)="deleteSelected()" [title]="'editor.delete' | translate"><i class="pi pi-trash"></i></button>
           </div>
         </div>
 
         @if (s.type === 'text') {
           <textarea class="ed__ta" [(ngModel)]="s.content" rows="2"></textarea>
-          <label class="ed__field"><span>Font</span>
+          <label class="ed__field"><span>{{ 'editor.font' | translate }}</span>
             <select [(ngModel)]="s.font">@for (f of fonts; track f.key) { <option [value]="f.key">{{ f.label }}</option> }</select></label>
-          <label class="ed__field"><span>Size</span><input type="number" min="6" max="120" [(ngModel)]="s.size" /></label>
+          <label class="ed__field"><span>{{ 'editor.size' | translate }}</span><input type="number" min="6" max="120" [(ngModel)]="s.size" /></label>
           <div class="ed__row">
             <button class="ed__tg" [class.on]="s.bold" (click)="s.bold = !s.bold"><b>B</b></button>
             <button class="ed__tg" [class.on]="s.italic" (click)="s.italic = !s.italic"><i>I</i></button>
@@ -125,25 +125,25 @@
             <button class="ed__tg" [class.on]="s.align==='center'" (click)="s.align='center'"><i class="pi pi-align-center"></i></button>
             <button class="ed__tg" [class.on]="s.align==='right'" (click)="s.align='right'"><i class="pi pi-align-right"></i></button>
           </div>
-          <label class="ed__field"><span>Color</span><input type="color" [(ngModel)]="s.color" /></label>
+          <label class="ed__field"><span>{{ 'editor.color' | translate }}</span><input type="color" [(ngModel)]="s.color" /></label>
         }
 
         @if (s.type === 'image') {
-          <label class="ed__field"><span>Fit</span>
-            <select [(ngModel)]="s.fit"><option value="cover">Cover</option><option value="contain">Contain</option></select></label>
-          <label class="ed__field"><span>Radius</span><input type="number" min="0" max="60" [(ngModel)]="s.radius" /></label>
+          <label class="ed__field"><span>{{ 'editor.fit' | translate }}</span>
+            <select [(ngModel)]="s.fit"><option value="cover">{{ 'editor.cover' | translate }}</option><option value="contain">{{ 'editor.contain' | translate }}</option></select></label>
+          <label class="ed__field"><span>{{ 'editor.radius' | translate }}</span><input type="number" min="0" max="60" [(ngModel)]="s.radius" /></label>
         }
 
         @if (s.type === 'box') {
-          <label class="ed__field"><span>Fill</span><input type="color" [(ngModel)]="s.fill" /></label>
-          <label class="ed__field"><span>Radius</span><input type="number" min="0" max="60" [(ngModel)]="s.radius" /></label>
-          <label class="ed__field"><span>Border</span><input type="number" min="0" max="12" [(ngModel)]="s.borderWidth" /></label>
-          <label class="ed__field"><span>Border color</span><input type="color" [(ngModel)]="s.borderColor" /></label>
+          <label class="ed__field"><span>{{ 'editor.fill' | translate }}</span><input type="color" [(ngModel)]="s.fill" /></label>
+          <label class="ed__field"><span>{{ 'editor.radius' | translate }}</span><input type="number" min="0" max="60" [(ngModel)]="s.radius" /></label>
+          <label class="ed__field"><span>{{ 'editor.border' | translate }}</span><input type="number" min="0" max="12" [(ngModel)]="s.borderWidth" /></label>
+          <label class="ed__field"><span>{{ 'editor.borderColor' | translate }}</span><input type="color" [(ngModel)]="s.borderColor" /></label>
         }
 
         @if (s.type === 'line') {
-          <label class="ed__field"><span>Thickness</span><input type="number" min="1" max="20" [(ngModel)]="s.thickness" /></label>
-          <label class="ed__field"><span>Color</span><input type="color" [(ngModel)]="s.lineColor" /></label>
+          <label class="ed__field"><span>{{ 'editor.thickness' | translate }}</span><input type="number" min="1" max="20" [(ngModel)]="s.thickness" /></label>
+          <label class="ed__field"><span>{{ 'editor.color' | translate }}</span><input type="color" [(ngModel)]="s.lineColor" /></label>
         }
 
         <div class="ed__pos">
@@ -153,9 +153,9 @@
           <label>H<input type="number" [(ngModel)]="s.h" /></label>
         </div>
       } @else {
-        <div class="ed__props-head"><span>Page</span></div>
-        <label class="ed__field"><span>Background</span><input type="color" [(ngModel)]="page.bg" /></label>
-        <p class="ed__props-empty">Select an element to edit it, or add one from the left.</p>
+        <div class="ed__props-head"><span>{{ 'editor.pageLabel' | translate }}</span></div>
+        <label class="ed__field"><span>{{ 'editor.background' | translate }}</span><input type="color" [(ngModel)]="page.bg" /></label>
+        <p class="ed__props-empty">{{ 'editor.selectHint' | translate }}</p>
       }
     </aside>
   </div>
@@ -167,13 +167,13 @@
         <div class="pg__thumb" [style.background]="p.bg" [style.aspect-ratio]="canvasAspect"></div>
         <span class="pg__n">{{ i + 1 }}</span>
         <div class="pg__tools">
-          <button (click)="movePage(i,-1,$event)" title="Move left"><i class="pi pi-chevron-left"></i></button>
-          <button (click)="movePage(i,1,$event)" title="Move right"><i class="pi pi-chevron-right"></i></button>
-          <button (click)="deletePage(i,$event)" title="Delete"><i class="pi pi-trash"></i></button>
+          <button (click)="movePage(i,-1,$event)" [title]="'editor.moveLeft' | translate"><i class="pi pi-chevron-left"></i></button>
+          <button (click)="movePage(i,1,$event)" [title]="'editor.moveRight' | translate"><i class="pi pi-chevron-right"></i></button>
+          <button (click)="deletePage(i,$event)" [title]="'editor.delete' | translate"><i class="pi pi-trash"></i></button>
         </div>
       </div>
     }
-    <button class="pg-add" (click)="addPage()"><i class="pi pi-plus"></i><span>Add page</span></button>
-    <button class="pg-add" (click)="duplicatePage()"><i class="pi pi-copy"></i><span>Duplicate</span></button>
+    <button class="pg-add" (click)="addPage()"><i class="pi pi-plus"></i><span>{{ 'editor.addPage' | translate }}</span></button>
+    <button class="pg-add" (click)="duplicatePage()"><i class="pi pi-copy"></i><span>{{ 'editor.duplicate' | translate }}</span></button>
   </footer>
 </div>

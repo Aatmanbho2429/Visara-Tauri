@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { MessageService } from 'primeng/api';
 import { BaseComponent } from '../../core/base.component';
 import { BrowseService } from '../../services/browse.service';
@@ -14,7 +15,7 @@ import {
 
 @Component({
   selector: 'app-browse',
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, TranslateModule],
   templateUrl: './browse.html',
   styleUrl: './browse.scss',
 })
@@ -23,6 +24,7 @@ export class Browse extends BaseComponent implements OnInit, OnDestroy {
   private tagsSvc    = inject(TagsService);
   private tauri      = inject(TauriService);
   private messages   = inject(MessageService);
+  private t          = inject(TranslateService);
 
   loading = true;
 
@@ -82,7 +84,7 @@ export class Browse extends BaseComponent implements OnInit, OnDestroy {
         this.images     = res.data.images;
         this.loadThumbs(this.images);
       } else {
-        this.toastErr(res.message || 'Could not open folder.');
+        this.toastErr(res.message || this.t.instant('browse.couldNotOpen'));
       }
     });
   }
@@ -227,15 +229,15 @@ export class Browse extends BaseComponent implements OnInit, OnDestroy {
 
   // ── Misc ────────────────────────────────────────────────────────
   analyzeColors(): void {
-    this.handle(this.tagsSvc.backfillColors(), () => this.toastOk('Analyzing colors in the background…'));
+    this.handle(this.tagsSvc.backfillColors(), () => this.toastOk(this.t.instant('browse.analyzingColors')));
   }
 
   basename(p: string): string { return p.split(/[\\/]/).filter(Boolean).pop() ?? p; }
 
   private toastOk(detail: string): void {
-    this.messages.add({ key: 'app', severity: 'success', summary: 'Tags', detail, life: 3000 });
+    this.messages.add({ key: 'app', severity: 'success', summary: this.t.instant('browse.toastTags'), detail, life: 3000 });
   }
   private toastErr(detail: string): void {
-    this.messages.add({ key: 'app', severity: 'error', summary: 'Browse', detail, life: 4000 });
+    this.messages.add({ key: 'app', severity: 'error', summary: this.t.instant('browse.toastBrowse'), detail, life: 4000 });
   }
 }

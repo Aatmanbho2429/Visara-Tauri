@@ -2,10 +2,10 @@
 
   <header class="catalog__header">
     <div>
-      <h1 class="catalog__title">Catalogs</h1>
-      <p class="catalog__subtitle">Design multi-page catalogs by hand — drag in your tiles, add text, export a PDF.</p>
+      <h1 class="catalog__title">{{ 'catalog.title' | translate }}</h1>
+      <p class="catalog__subtitle">{{ 'catalog.subtitle' | translate }}</p>
     </div>
-    <button class="catalog__new" (click)="newCatalog()"><i class="pi pi-plus"></i> New catalog</button>
+    <button class="catalog__new" (click)="newCatalog()"><i class="pi pi-plus"></i> {{ 'catalog.newCatalog' | translate }}</button>
   </header>
 
   @if (loading) {
@@ -13,14 +13,14 @@
   } @else if (catalogs.length === 0) {
     <div class="catalog__empty">
       <i class="pi pi-book"></i>
-      <h3>No catalogs yet</h3>
-      <p>Create one, then drag tiles from your tagged library onto each page.</p>
-      <button class="catalog__cta" (click)="newCatalog()"><i class="pi pi-plus"></i> Create your first catalog</button>
+      <h3>{{ 'catalog.emptyTitle' | translate }}</h3>
+      <p>{{ 'catalog.emptyHint' | translate }}</p>
+      <button class="catalog__cta" (click)="newCatalog()"><i class="pi pi-plus"></i> {{ 'catalog.createFirst' | translate }}</button>
     </div>
   } @else {
     <div class="catalog__grid">
       <button class="cat-new-card" (click)="newCatalog()">
-        <i class="pi pi-plus"></i><span>New catalog</span>
+        <i class="pi pi-plus"></i><span>{{ 'catalog.newCatalog' | translate }}</span>
       </button>
       @for (c of catalogs; track c.id) {
         <div class="cat-card" (click)="openCatalog(c.id)">

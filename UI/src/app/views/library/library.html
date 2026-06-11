@@ -2,17 +2,15 @@
 
   <header class="library-page__header">
     <div>
-      <h1 class="library-page__title">Library</h1>
-      <p class="library-page__subtitle">
-        Folders watched by Visara. Changes are picked up automatically — no re-scan needed.
-      </p>
+      <h1 class="library-page__title">{{ 'library.title' | translate }}</h1>
+      <p class="library-page__subtitle">{{ 'library.subtitle' | translate }}</p>
     </div>
     <button
       class="library-page__add"
       (click)="addFolder()"
       [disabled]="!!addingPath">
       <i class="pi pi-plus"></i>
-      {{ addingPath ? 'Adding...' : 'Add folder' }}
+      {{ (addingPath ? 'library.adding' : 'library.addFolder') | translate }}
     </button>
   </header>
 
@@ -27,14 +25,11 @@
   @if (!loading && folders.length === 0) {
     <div class="library-empty">
       <i class="pi pi-folder-open library-empty__icon"></i>
-      <h3 class="library-empty__title">No folders watched yet</h3>
-      <p class="library-empty__hint">
-        Add the folders containing your tile images. Visara will index them in the background
-        and keep them current automatically.
-      </p>
+      <h3 class="library-empty__title">{{ 'library.emptyTitle' | translate }}</h3>
+      <p class="library-empty__hint">{{ 'library.emptyHint' | translate }}</p>
       <button class="library-empty__cta" (click)="addFolder()">
         <i class="pi pi-plus"></i>
-        Add your first folder
+        {{ 'library.addFirst' | translate }}
       </button>
     </div>
   }
@@ -53,16 +48,16 @@
             <div class="folder-card__path-wrap">
               <span class="folder-card__path" [title]="f.path">{{ f.path }}</span>
               <span class="folder-card__meta">
-                {{ f.image_count }} {{ f.image_count === 1 ? 'image' : 'images' }}
+                {{ f.image_count }} {{ (f.image_count === 1 ? 'library.image' : 'library.images') | translate }}
                 @if (f.last_event_at > 0) {
-                  · last update {{ agoLabel(f.last_event_at) }}
+                  · {{ 'library.lastUpdate' | translate }} {{ agoLabel(f.last_event_at) }}
                 }
               </span>
             </div>
 
             <span class="folder-status folder-status--{{ f.status }}">
               <span class="folder-status__dot"></span>
-              {{ statusLabel(f.status) }}
+              {{ statusLabel(f.status) | translate }}
             </span>
           </div>
 
@@ -93,10 +88,10 @@
                   }
                   <span class="folder-progress__right">
                     @if (syncProgress[f.path].etaSec > 0) {
-                      <span class="folder-progress__eta">~{{ syncProgress[f.path].etaSec }}s left</span>
+                      <span class="folder-progress__eta">~{{ syncProgress[f.path].etaSec }}{{ 'library.secLeft' | translate }}</span>
                     }
                     @if (syncProgress[f.path].errors > 0) {
-                      <span class="folder-progress__err">{{ syncProgress[f.path].errors }} skipped</span>
+                      <span class="folder-progress__err">{{ syncProgress[f.path].errors }} {{ 'library.skipped' | translate }}</span>
                     }
                   </span>
                 </div>
@@ -114,7 +109,7 @@
                 <span class="folder-error__summary">{{ syncError[f.path] }}</span>
                 @if (syncFailed[f.path]?.length) {
                   <span class="folder-error__toggle">
-                    {{ errorsExpanded[f.path] ? 'Hide details' : 'View details' }}
+                    {{ (errorsExpanded[f.path] ? 'library.hideDetails' : 'library.viewDetails') | translate }}
                     <i class="pi" [ngClass]="errorsExpanded[f.path] ? 'pi-chevron-up' : 'pi-chevron-down'"></i>
                   </span>
                 }
@@ -136,22 +131,22 @@
           <!-- Subfolder tree -->
           <button class="folder-subfolders-toggle" (click)="toggleTree(f)">
             <i class="pi" [ngClass]="treeOpen[f.path] ? 'pi-chevron-down' : 'pi-chevron-right'"></i>
-            {{ treeOpen[f.path] ? 'Hide subfolders' : 'View subfolders' }}
+            {{ (treeOpen[f.path] ? 'library.hideSubfolders' : 'library.viewSubfolders') | translate }}
           </button>
 
           @if (treeOpen[f.path]) {
             <div class="folder-tree">
               @if (treeLoading[f.path]) {
-                <div class="folder-tree__state">Loading subfolders…</div>
+                <div class="folder-tree__state">{{ 'library.loadingSubfolders' | translate }}</div>
               } @else if (tree[f.path]) {
                 @if (tree[f.path]!.direct > 0) {
                   <div class="folder-tree__loose">
                     <i class="pi pi-image"></i>
-                    {{ tree[f.path]!.direct | number }} {{ tree[f.path]!.direct === 1 ? 'image' : 'images' }} directly in this folder
+                    {{ tree[f.path]!.direct | number }} {{ (tree[f.path]!.direct === 1 ? 'library.image' : 'library.images') | translate }} {{ 'library.directlyInFolder' | translate }}
                   </div>
                 }
                 @if (tree[f.path]!.children.length === 0) {
-                  <div class="folder-tree__state">No subfolders — every image sits in this folder.</div>
+                  <div class="folder-tree__state">{{ 'library.noSubfolders' | translate }}</div>
                 } @else {
                   <ul class="folder-tree__list">
                     @for (child of tree[f.path]!.children; track child.rel) {
@@ -160,7 +155,7 @@
                   </ul>
                 }
               } @else {
-                <div class="folder-tree__state">Could not load subfolders.</div>
+                <div class="folder-tree__state">{{ 'library.subfoldersError' | translate }}</div>
               }
             </div>
           }
@@ -170,9 +165,9 @@
               class="folder-btn"
               (click)="rescan(f)"
               [disabled]="busyPath === f.path || f.status === 'paused'"
-              title="Re-scan this folder for changes">
+              [title]="'library.rescanTitle' | translate">
               <i class="pi pi-refresh"></i>
-              Re-scan
+              {{ 'library.rescan' | translate }}
             </button>
 
             <button
@@ -180,25 +175,25 @@
               (click)="togglePause(f)"
               [disabled]="busyPath === f.path">
               <i class="pi" [ngClass]="f.status === 'paused' ? 'pi-play' : 'pi-pause'"></i>
-              {{ f.status === 'paused' ? 'Resume' : 'Pause' }}
+              {{ (f.status === 'paused' ? 'library.resume' : 'library.pause') | translate }}
             </button>
 
             <button
               class="folder-btn folder-btn--danger"
               (click)="removeFolder(f, false)"
               [disabled]="busyPath === f.path"
-              title="Stop watching but keep the index">
+              [title]="'library.stopWatchingTitle' | translate">
               <i class="pi pi-eye-slash"></i>
-              Stop watching
+              {{ 'library.stopWatching' | translate }}
             </button>
 
             <button
               class="folder-btn folder-btn--danger"
               (click)="removeFolder(f, true)"
               [disabled]="busyPath === f.path"
-              title="Stop watching AND delete the index for this folder">
+              [title]="'library.deleteIndexTitle' | translate">
               <i class="pi pi-trash"></i>
-              Delete index
+              {{ 'library.deleteIndex' | translate }}
             </button>
           </div>
         </div>
@@ -206,8 +201,8 @@
     </div>
 
     <div class="library-footer">
-      Total: <strong>{{ totalImages() }}</strong> images across
-      <strong>{{ folders.length }}</strong> {{ folders.length === 1 ? 'folder' : 'folders' }}
+      {{ 'library.total' | translate }} <strong>{{ totalImages() }}</strong> {{ 'library.imagesAcross' | translate }}
+      <strong>{{ folders.length }}</strong> {{ (folders.length === 1 ? 'library.folder' : 'library.folders') | translate }}
     </div>
   }
 

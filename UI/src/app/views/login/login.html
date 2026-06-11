@@ -299,7 +299,7 @@
 
         <p-button
           type="submit"
-          [label]="sendingOtp ? 'Sending code…' : 'Send verification code'"
+          [label]="(sendingOtp ? 'register.otp.sending' : 'register.otp.sendCode') | translate"
           [icon]="sendingOtp ? '' : 'pi pi-envelope'"
           [loading]="sendingOtp"
           [disabled]="sendingOtp" />
@@ -309,7 +309,7 @@
         <!-- ── OTP verification step ────────────────────────────── -->
         <div class="otp-step">
           <p class="otp-step__lead">
-            Enter the 6-digit code we emailed to <strong>{{ registerEmail }}</strong>.
+            {{ 'register.otp.lead' | translate }} <strong>{{ registerEmail }}</strong>.
           </p>
 
           <input class="otp-input"
@@ -319,13 +319,13 @@
                  autocomplete="one-time-code"
                  placeholder="••••••" />
           <span class="field-error-msg" *ngIf="otpControl.touched && otpControl.invalid">
-            Enter the 6-digit code.
+            {{ 'register.otp.invalid' | translate }}
           </span>
 
           <div class="otp-resend">
-            <span *ngIf="resendIn > 0" class="otp-resend__timer">Resend code in {{ resendIn }}s</span>
-            <a *ngIf="resendIn === 0 && !sendingOtp" href="javascript:void(0)" (click)="resendOtp()">Resend code</a>
-            <span *ngIf="resendIn === 0 && sendingOtp" class="otp-resend__timer">Sending…</span>
+            <span *ngIf="resendIn > 0" class="otp-resend__timer">{{ 'register.otp.resendIn' | translate }} {{ resendIn }}s</span>
+            <a *ngIf="resendIn === 0 && !sendingOtp" href="javascript:void(0)" (click)="resendOtp()">{{ 'register.otp.resend' | translate }}</a>
+            <span *ngIf="resendIn === 0 && sendingOtp" class="otp-resend__timer">{{ 'register.otp.sendingShort' | translate }}</span>
           </div>
 
           <div class="login-error" *ngIf="registerError">
@@ -334,14 +334,14 @@
           </div>
 
           <p-button
-            [label]="registerLoading ? 'Creating account…' : 'Verify & create account'"
+            [label]="(registerLoading ? 'register.otp.creating' : 'register.otp.verify') | translate"
             [icon]="registerLoading ? '' : 'pi pi-check'"
             [loading]="registerLoading"
             [disabled]="registerLoading"
             (onClick)="verifyAndRegister()" />
 
           <a class="otp-back" href="javascript:void(0)" (click)="backToDetails()">
-            <i class="pi pi-arrow-left"></i> Change details
+            <i class="pi pi-arrow-left"></i> {{ 'register.otp.changeDetails' | translate }}
           </a>
         </div>
       }
