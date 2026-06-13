@@ -1,6 +1,6 @@
 use crate::{
     config::{model_enc_path, BATCH_SIZE, CLIP_INPUT_SIZE, CLIP_MEAN, CLIP_STD, EMB_DIM},
-    error::{Result, VisaraError},
+    error::{Result, PictoriaError},
 };
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use base64::{engine::general_purpose::URL_SAFE, Engine};
@@ -37,7 +37,7 @@ pub fn load_model(key: &str) -> Result<()> {
     log::info!("Loading CLIP model from {:?}", model_path);
 
     if !model_path.exists() {
-        return Err(VisaraError::Fatal(format!(
+        return Err(PictoriaError::Fatal(format!(
             "Model file not found: {:?}", model_path
         )));
     }
@@ -47,13 +47,13 @@ pub fn load_model(key: &str) -> Result<()> {
     let model_bytes = fernet_decrypt(key, token_str.trim())?;
 
     let session = Session::builder()
-        .map_err(|e| VisaraError::Fatal(e.to_string()))?
+        .map_err(|e| PictoriaError::Fatal(e.to_string()))?
         .with_intra_threads(4)
-        .map_err(|e| VisaraError::Fatal(e.to_string()))?
+        .map_err(|e| PictoriaError::Fatal(e.to_string()))?
         .with_inter_threads(4)
-        .map_err(|e| VisaraError::Fatal(e.to_string()))?
+        .map_err(|e| PictoriaError::Fatal(e.to_string()))?
         .commit_from_memory(&model_bytes)
-        .map_err(|e| VisaraError::Fatal(e.to_string()))?;
+        .map_err(|e| PictoriaError::Fatal(e.to_string()))?;
 
     let input_name = session.inputs()[0].name().to_string();
     let out_name   = session.outputs()[0].name().to_string();
@@ -80,7 +80,7 @@ pub fn embed_batch(images: &[f32], batch_size: usize) -> Result<Vec<Vec<f32>>> {
 
     // Lock once for the entire batch — Session::run() needs &mut self.
     let mut guard = STATE.lock().unwrap();
-    let state = guard.as_mut().ok_or(VisaraError::ModelNotReady)?;
+    let state = guard.as_mut().ok_or(PictoriaError::ModelNotReady)?;
 
     for chunk_start in (0..n).step_by(batch_size) {
         let chunk_end  = (chunk_start + batch_size).min(n);
@@ -95,7 +95,7 @@ pub fn embed_batch(images: &[f32], batch_size: usize) -> Result<Vec<Vec<f32>>> {
         ];
 
         let input_value = Value::from_array((shape, chunk_data))
-            .map_err(|e| VisaraError::Fatal(e.to_string()))?;
+            .map_err(|e| PictoriaError::Fatal(e.to_string()))?;
 
         // inputs! in ort rc.12 returns Vec directly — no ? needed.
         let outputs = state.session.run(
@@ -105,7 +105,7 @@ pub fn embed_batch(images: &[f32], batch_size: usize) -> Result<Vec<Vec<f32>>> {
         // try_extract_tensor returns (&Shape, &[T]) in ort rc.12.
         let (_shape, out_data) = outputs[state.out_name.as_str()]
             .try_extract_tensor::<f32>()
-            .map_err(|e| VisaraError::Fatal(e.to_string()))?;
+            .map_err(|e| PictoriaError::Fatal(e.to_string()))?;
 
         for i in 0..chunk_n {
             let row = out_data[i * EMB_DIM..(i + 1) * EMB_DIM].to_vec();
@@ -143,16 +143,16 @@ pub const EMBED_BATCH_SIZE: usize = BATCH_SIZE;
 // Token  = URL_SAFE_BASE64( 0x80 || Time(8BE) || IV(16) || Ciphertext || HMAC(32) )
 // Key    = URL_SAFE_BASE64( signing_key(16) || encryption_key(16) )
 fn fernet_decrypt(key_b64: &str, token_b64: &str) -> Result<Vec<u8>> {
-    let key_bytes = URL_SAFE.decode(key_b64).map_err(|_| VisaraError::Decryption)?;
+    let key_bytes = URL_SAFE.decode(key_b64).map_err(|_| PictoriaError::Decryption)?;
     if key_bytes.len() != 32 {
-        return Err(VisaraError::Decryption);
+        return Err(PictoriaError::Decryption);
     }
     let signing_key    = &key_bytes[..16];
     let encryption_key = &key_bytes[16..];
 
-    let token = URL_SAFE.decode(token_b64).map_err(|_| VisaraError::Decryption)?;
+    let token = URL_SAFE.decode(token_b64).map_err(|_| PictoriaError::Decryption)?;
     if token.len() < 73 || token[0] != 0x80 {
-        return Err(VisaraError::Decryption);
+        return Err(PictoriaError::Decryption);
     }
 
     let payload    = &token[..token.len() - 32];
@@ -160,14 +160,14 @@ fn fernet_decrypt(key_b64: &str, token_b64: &str) -> Result<Vec<u8>> {
     let iv         = &token[9..25];
     let ciphertext = &token[25..token.len() - 32];
 
-    let mut mac = HmacSha256::new_from_slice(signing_key).map_err(|_| VisaraError::Decryption)?;
+    let mut mac = HmacSha256::new_from_slice(signing_key).map_err(|_| PictoriaError::Decryption)?;
     mac.update(payload);
-    mac.verify_slice(token_hmac).map_err(|_| VisaraError::Decryption)?;
+    mac.verify_slice(token_hmac).map_err(|_| PictoriaError::Decryption)?;
 
     let mut buf = ciphertext.to_vec();
     let plaintext = Aes128CbcDec::new(encryption_key.into(), iv.into())
         .decrypt_padded_mut::<Pkcs7>(&mut buf)
-        .map_err(|_| VisaraError::Decryption)?;
+        .map_err(|_| PictoriaError::Decryption)?;
 
     Ok(plaintext.to_vec())
 }

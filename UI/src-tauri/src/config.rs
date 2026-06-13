@@ -116,11 +116,11 @@ pub fn model_enc_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(MODEL_FILE))
 }
 
-/// User-scoped data directory:  ~/.visara/   (created on first run).
+/// User-scoped data directory:  ~/.pictoria/   (created on first run).
 pub static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".visara")
+        .join(".pictoria")
 });
 
 /// SQLite database that maps file paths ↔ vector IDs.
@@ -136,4 +136,4 @@ pub static VECTOR_STORE_PATH: Lazy<PathBuf> =
 pub static TOKEN_FILE: Lazy<PathBuf> =
     Lazy::new(|| dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".visara_token"));
+        .join(".pictoria_token"));

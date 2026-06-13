@@ -1,6 +1,6 @@
 //! On-demand image cache for the Browse grid and the catalog.
 //!
-//! Cached renders live in `~/.visara/thumbs/<hash>_v<ver>_<max>.jpg`.  The key
+//! Cached renders live in `~/.pictoria/thumbs/<hash>_v<ver>_<max>.jpg`.  The key
 //! is (source path, version, size), so re-use is instant.  Generation reuses the
 //! main image loader, so exotic files (CMYK TIFF, PSB) flow through the same
 //! colour-managed `sips` path used during indexing.
@@ -60,7 +60,7 @@ pub fn ensure_sized(orig: &Path, max: u32) -> Result<PathBuf> {
 
     out.to_rgb8()
         .save_with_format(&dest, image::ImageFormat::Jpeg)
-        .map_err(|e| crate::error::VisaraError::Fatal(format!("render save failed: {e}")))?;
+        .map_err(|e| crate::error::PictoriaError::Fatal(format!("render save failed: {e}")))?;
 
     Ok(dest)
 }

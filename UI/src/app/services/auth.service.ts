@@ -14,7 +14,7 @@ export interface RegisterPayload {
 export class AuthService {
   constructor(private tauri: TauriService) {}
 
-  // Token is stored as a file on PC by Python (~/.visara_token)
+  // Token is stored as a file on PC by Python (~/.pictoria_token)
   // No localStorage involved for token or user data
 
   login(payload: LoginPayload): Observable<BaseResponse<LoginData>> {

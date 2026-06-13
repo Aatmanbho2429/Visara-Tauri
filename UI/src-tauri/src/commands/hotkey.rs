@@ -2,9 +2,9 @@
 //! reusable temp file (overwritten on every hot-key press, never duplicated).
 //!
 //! The path lives inside the OS temp dir, so cleanup is handled by the OS:
-//!   Windows : %LOCALAPPDATA%\Temp\visara_clipboard.png
-//!   macOS   : /var/folders/.../T/visara_clipboard.png
-//!   Linux   : /tmp/visara_clipboard.png
+//!   Windows : %LOCALAPPDATA%\Temp\pictoria_clipboard.png
+//!   macOS   : /var/folders/.../T/pictoria_clipboard.png
+//!   Linux   : /tmp/pictoria_clipboard.png
 
 use std::path::PathBuf;
 
@@ -12,5 +12,5 @@ use std::path::PathBuf;
 /// Always the same path — it is overwritten on each hot-key press, so no
 /// stray files accumulate over time.
 pub fn temp_path() -> PathBuf {
-    std::env::temp_dir().join("visara_clipboard.png")
+    std::env::temp_dir().join("pictoria_clipboard.png")
 }

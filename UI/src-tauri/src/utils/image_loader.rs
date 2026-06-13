@@ -1,10 +1,10 @@
-//! Smart image loading that handles every format Visara indexes:
+//! Smart image loading that handles every format Pictoria indexes:
 //! JPEG, PNG, TIFF (including multi-page), PSD, and PSB.
 //!
 //! All functions return a decoded `image::DynamicImage` in RGB8 colour space,
 //! ready for the CLIP pre-processing pipeline.
 
-use crate::error::{Result, VisaraError};
+use crate::error::{Result, PictoriaError};
 use image::{DynamicImage, ImageReader};
 use std::{
     io::{Cursor, Read, Seek, SeekFrom},
@@ -62,7 +62,7 @@ fn load_via_sips(path: &Path) -> Result<DynamicImage> {
     // Unique temp path per call so parallel sync workers don't clobber each other.
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let tmp = std::env::temp_dir().join(format!(
-        "visara_sips_{}_{}.png",
+        "pictoria_sips_{}_{}.png",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed),
     ));
@@ -76,11 +76,11 @@ fn load_via_sips(path: &Path) -> Result<DynamicImage> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|e| VisaraError::Fatal(format!("sips spawn failed: {e}")))?;
+        .map_err(|e| PictoriaError::Fatal(format!("sips spawn failed: {e}")))?;
 
     if !status.success() {
         let _ = std::fs::remove_file(&tmp);
-        return Err(VisaraError::Fatal("sips could not convert image".into()));
+        return Err(PictoriaError::Fatal("sips could not convert image".into()));
     }
 
     let result = load_standard(&tmp);
@@ -118,21 +118,21 @@ fn try_tiff_thumbnail(path: &Path) -> Result<DynamicImage> {
 
     let file = std::fs::File::open(path)?;
     let mut decoder = Decoder::new(file).map_err(|e| {
-        VisaraError::Fatal(format!("TIFF decoder init failed: {e}"))
+        PictoriaError::Fatal(format!("TIFF decoder init failed: {e}"))
     })?;
 
     // IFD0 is the main image; IFD1 is the thumbnail when present.
     if !decoder.more_images() {
-        return Err(VisaraError::Fatal("No IFD1 thumbnail".into()));
+        return Err(PictoriaError::Fatal("No IFD1 thumbnail".into()));
     }
-    decoder.next_image().map_err(|e| VisaraError::Fatal(e.to_string()))?;
+    decoder.next_image().map_err(|e| PictoriaError::Fatal(e.to_string()))?;
 
-    let (w, h) = decoder.dimensions().map_err(|e| VisaraError::Fatal(e.to_string()))?;
+    let (w, h) = decoder.dimensions().map_err(|e| PictoriaError::Fatal(e.to_string()))?;
     if w.max(h) > 2048 {
-        return Err(VisaraError::Fatal("IFD1 too large".into()));
+        return Err(PictoriaError::Fatal("IFD1 too large".into()));
     }
 
-    let result = decoder.read_image().map_err(|e| VisaraError::Fatal(e.to_string()))?;
+    let result = decoder.read_image().map_err(|e| PictoriaError::Fatal(e.to_string()))?;
     tiff_result_to_dynamic(result, w as u32, h as u32)
 }
 
@@ -162,18 +162,18 @@ fn load_tiff_via_tiff_crate(path: &Path) -> Result<DynamicImage> {
 
     let file = std::fs::File::open(path)?;
     let mut decoder = Decoder::new(file)
-        .map_err(|e| VisaraError::Fatal(format!("TIFF open failed: {e}")))?
+        .map_err(|e| PictoriaError::Fatal(format!("TIFF open failed: {e}")))?
         .with_limits(Limits::unlimited());
 
     let (w, h) = decoder
         .dimensions()
-        .map_err(|e| VisaraError::Fatal(format!("TIFF dimensions failed: {e}")))?;
+        .map_err(|e| PictoriaError::Fatal(format!("TIFF dimensions failed: {e}")))?;
     let color = decoder
         .colortype()
-        .map_err(|e| VisaraError::Fatal(format!("TIFF colortype failed: {e}")))?;
+        .map_err(|e| PictoriaError::Fatal(format!("TIFF colortype failed: {e}")))?;
     let result = decoder
         .read_image()
-        .map_err(|e| VisaraError::Fatal(format!("TIFF read failed: {e}")))?;
+        .map_err(|e| PictoriaError::Fatal(format!("TIFF read failed: {e}")))?;
 
     tiff_to_downscaled_rgb(result, w, h, color, TIFF_TARGET_MAX)
 }
@@ -192,20 +192,20 @@ fn tiff_to_downscaled_rgb(
     use tiff::decoder::DecodingResult;
 
     if w == 0 || h == 0 {
-        return Err(VisaraError::Fatal("TIFF has zero dimensions".into()));
+        return Err(PictoriaError::Fatal("TIFF has zero dimensions".into()));
     }
 
     // Normalise samples to 8-bit (16-bit scaled down by a byte).
     let data: Vec<u8> = match result {
         DecodingResult::U8(d)  => d,
         DecodingResult::U16(d) => d.iter().map(|&v| (v >> 8) as u8).collect(),
-        _ => return Err(VisaraError::Fatal("Unsupported TIFF sample format".into())),
+        _ => return Err(PictoriaError::Fatal("Unsupported TIFF sample format".into())),
     };
 
     let px = (w as usize) * (h as usize);
     let channels = data.len() / px;
     if channels == 0 {
-        return Err(VisaraError::Fatal("TIFF sample/byte count mismatch".into()));
+        return Err(PictoriaError::Fatal("TIFF sample/byte count mismatch".into()));
     }
 
     let stride     = (w.max(h) / target_max).max(1) as usize;
@@ -228,7 +228,7 @@ fn tiff_to_downscaled_rgb(
     }
 
     let buf = ImageBuffer::<Rgb<u8>, _>::from_raw(ow as u32, oh as u32, out)
-        .ok_or_else(|| VisaraError::Fatal("TIFF output buffer mismatch".into()))?;
+        .ok_or_else(|| PictoriaError::Fatal("TIFF output buffer mismatch".into()))?;
     Ok(DynamicImage::ImageRgb8(buf))
 }
 
@@ -280,13 +280,13 @@ fn tiff_result_to_dynamic(
                     .collect();
                 Ok(DynamicImage::ImageRgb8(
                     ImageBuffer::<Rgb<u8>, _>::from_raw(w, h, buf)
-                        .ok_or_else(|| VisaraError::Fatal("TIFF buffer size mismatch".into()))?,
+                        .ok_or_else(|| PictoriaError::Fatal("TIFF buffer size mismatch".into()))?,
                 ))
             } else {
                 let buf: Vec<u8> = data.iter().flat_map(|&v| [v, v, v]).collect();
                 Ok(DynamicImage::ImageRgb8(
                     ImageBuffer::<Rgb<u8>, _>::from_raw(w, h, buf)
-                        .ok_or_else(|| VisaraError::Fatal("TIFF buffer size mismatch".into()))?,
+                        .ok_or_else(|| PictoriaError::Fatal("TIFF buffer size mismatch".into()))?,
                 ))
             }
         }
@@ -308,10 +308,10 @@ fn tiff_result_to_dynamic(
             };
             Ok(DynamicImage::ImageRgb8(
                 ImageBuffer::<Rgb<u8>, _>::from_raw(w, h, buf)
-                    .ok_or_else(|| VisaraError::Fatal("TIFF buffer mismatch".into()))?,
+                    .ok_or_else(|| PictoriaError::Fatal("TIFF buffer mismatch".into()))?,
             ))
         }
-        _ => Err(VisaraError::Fatal("Unsupported TIFF pixel format".into())),
+        _ => Err(PictoriaError::Fatal("Unsupported TIFF pixel format".into())),
     }
 }
 
@@ -334,7 +334,7 @@ fn load_psd_psb(path: &Path) -> Result<DynamicImage> {
     // actionable reason rather than the crate's cryptic "format could not be
     // determined" so the user knows how to fix it.
     load_standard(path).map_err(|_| {
-        VisaraError::Fatal(
+        PictoriaError::Fatal(
             "No embedded preview in this PSD/PSB. Re-save it from Photoshop with \
              'Maximize Compatibility' turned on so a preview thumbnail is stored."
                 .into(),
@@ -350,7 +350,7 @@ fn try_psb_thumbnail(path: &Path) -> Result<DynamicImage> {
     let mut magic = [0u8; 4];
     cur.read_exact(&mut magic)?;
     if &magic != b"8BPS" {
-        return Err(VisaraError::Fatal("Not a PSD/PSB file".into()));
+        return Err(PictoriaError::Fatal("Not a PSD/PSB file".into()));
     }
 
     // Skip: version(2) + reserved(6) + channels(2) + height(4) + width(4) +
@@ -400,7 +400,7 @@ fn try_psb_thumbnail(path: &Path) -> Result<DynamicImage> {
         cur.seek(SeekFrom::Start(data_end))?;
     }
 
-    Err(VisaraError::Fatal("No JPEG thumbnail resource found in PSD/PSB".into()))
+    Err(PictoriaError::Fatal("No JPEG thumbnail resource found in PSD/PSB".into()))
 }
 
 // ── Binary reading helpers ────────────────────────────────────────────────

@@ -9,7 +9,7 @@
 use crate::{
     config::VECTOR_STORE_PATH,
     core::{database, embedder, vector_store::VectorStore},
-    error::{Result, VisaraError},
+    error::{Result, PictoriaError},
     utils::image_loader,
 };
 use serde::Serialize;
@@ -50,10 +50,10 @@ pub fn execute(
 ) -> Result<(Vec<SearchResult>, Vec<FailedFile>)> {
     // ── Fatal pre-checks ──────────────────────────────────────────────
     if !embedder::is_ready() {
-        return Err(VisaraError::ModelNotReady);
+        return Err(PictoriaError::ModelNotReady);
     }
     if !image_path.exists() {
-        return Err(VisaraError::Fatal(
+        return Err(PictoriaError::Fatal(
             "The selected reference image no longer exists.".into(),
         ));
     }
@@ -68,7 +68,7 @@ pub fn execute(
     drop(con);
 
     if scope_paths.is_empty() {
-        return Err(VisaraError::Fatal(
+        return Err(PictoriaError::Fatal(
             "No folders to search.  Add a folder to your Library first.".into(),
         ));
     }
@@ -85,12 +85,12 @@ pub fn execute(
     // command produced the phantom "Indexing…" bar during search.  The search
     // command emits its own lightweight "Searching" snapshot instead.
     let query_img  = image_loader::load_image(image_path)
-        .map_err(|e| VisaraError::Fatal(format!("Could not load reference image: {e}")))?;
+        .map_err(|e| PictoriaError::Fatal(format!("Could not load reference image: {e}")))?;
     let pixels     = embedder::preprocess(query_img);
     let embeddings = embedder::embed_batch(&pixels, 1)
-        .map_err(|e| VisaraError::Fatal(format!("Failed to embed reference image: {e}")))?;
+        .map_err(|e| PictoriaError::Fatal(format!("Failed to embed reference image: {e}")))?;
     let query_emb  = embeddings.into_iter().next().ok_or_else(||
-        VisaraError::Fatal("Embedding returned empty result".into())
+        PictoriaError::Fatal("Embedding returned empty result".into())
     )?;
 
     // ── Build combined id_map across every folder in scope ────────────

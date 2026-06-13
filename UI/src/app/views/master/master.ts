@@ -19,7 +19,7 @@ import type { UnlistenFn } from '@tauri-apps/api/event';
 export class Master implements OnInit, OnDestroy {
   /** Persistent flag — shown once to legacy users with an existing index
    *  but no watched folders so they understand to migrate. */
-  private static readonly LIBRARY_MIGRATE_KEY = 'visara_library_migrate_tip_v1';
+  private static readonly LIBRARY_MIGRATE_KEY = 'pictoria_library_migrate_tip_v1';
 
   expanded  = false;
   userState = inject(UserStateService);

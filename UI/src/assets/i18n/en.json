@@ -44,7 +44,7 @@
   "lblPaymentDate": "Payment Date",
   "lblDescription": "Description",
 
-  "lblISESearchEngine": "Visara",
+  "lblISESearchEngine": "Pictoria",
 
   "lblISETitle": "Visual Image Search",
   "lblISEDescription": "Find visually similar images across your folders using AI-powered similarity matching",
@@ -87,7 +87,7 @@
   "lblInvalidLicenseMessage": "Contact aatmanbhoraniya12@gmail.com for a valid license.",
 
   "login": {
-    "title": "Visara",
+    "title": "Pictoria",
     "subtitle": "Sign in to continue",
     "emailLabel": "Email",
     "emailPlaceholder": "you@gmail.com",
@@ -95,10 +95,10 @@
     "passwordPlaceholder": "••••••••",
     "signIn": "Sign In",
     "signingIn": "Signing in...",
-    "newToVisara": "New to Visara?",
+    "newToPictoria": "New to Pictoria?",
     "requestAccess": "Create Account",
     "successHeading": "Welcome, {{name}}!",
-    "successMessage": "You're signed in. Loading Visara...",
+    "successMessage": "You're signed in. Loading Pictoria...",
     "forgotPasswordLink": "Forgot password?",
     "validation": {
       "emailRequired": "Email is required",
@@ -161,14 +161,14 @@
 
   "search": {
     "title":           "Visual Similarity Search",
-    "subtitle":        "Drop a reference image, select a folder — Visara finds the rest",
+    "subtitle":        "Drop a reference image, select a folder — Pictoria finds the rest",
     "imagePick":       "Reference Image",
     "imageHint":       "Click to browse",
     "imageChange":     "Click to change",
     "folderPick":      "Target Folder",
     "folderHint":      "Select folder to search in",
     "findBtn":         "Find Similar Images",
-    "poweredBy":       "Seeing Beyond Pixels with VISARA AI",
+    "poweredBy":       "Seeing Beyond Pixels with PICTORIA AI",
     "scanning":        "Scanning for similar images",
     "matches":         "matches",
     "newSearch":       "New Search",
@@ -221,7 +221,7 @@
     "requestSentMessage": "Your 45-day free trial has started. Sign in with",
     "backToSignIn": "Sign In Now",
     "deviceLockTitle": "Device-Locked Account",
-    "deviceLockDesc": "Your licence will be bound to this PC. Visara will not work on any other machine unless you request a device reset.",
+    "deviceLockDesc": "Your licence will be bound to this PC. Pictoria will not work on any other machine unless you request a device reset.",
     "validation": {
       "firstNameRequired": "First name is required",
       "firstNameMin": "First name must be at least 2 characters",
@@ -253,11 +253,11 @@
 
   "library": {
     "title": "Library",
-    "subtitle": "Folders watched by Visara. Changes are picked up automatically — no re-scan needed.",
+    "subtitle": "Folders watched by Pictoria. Changes are picked up automatically — no re-scan needed.",
     "addFolder": "Add folder",
     "adding": "Adding...",
     "emptyTitle": "No folders watched yet",
-    "emptyHint": "Add the folders containing your tile images. Visara will index them in the background and keep them current automatically.",
+    "emptyHint": "Add the folders containing your tile images. Pictoria will index them in the background and keep them current automatically.",
     "addFirst": "Add your first folder",
     "image": "image",
     "images": "images",

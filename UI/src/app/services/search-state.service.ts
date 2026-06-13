@@ -33,7 +33,7 @@ export class SearchStateService {
   setClipboardImage(imagePath: string): void {
     const base = imagePath.split(/[\\/]/).pop() ?? imagePath;
     this.imagePath    = imagePath;
-    this.imageName    = base === 'visara_clipboard.png' ? 'Clipboard image' : base;
+    this.imageName    = base === 'pictoria_clipboard.png' ? 'Clipboard image' : base;
     this.imagePreview = convertFileSrc(imagePath);
   }
 

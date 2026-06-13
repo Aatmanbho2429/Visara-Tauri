@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum VisaraError {
+pub enum PictoriaError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -36,7 +36,7 @@ pub enum VisaraError {
     Fatal(String),
 }
 
-impl VisaraError {
+impl PictoriaError {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "success": false,
@@ -46,22 +46,22 @@ impl VisaraError {
     }
 }
 
-impl From<reqwest::Error> for VisaraError {
+impl From<reqwest::Error> for PictoriaError {
     fn from(e: reqwest::Error) -> Self {
         if e.is_connect() || e.is_timeout() {
-            VisaraError::Network(
+            PictoriaError::Network(
                 "No internet connection. Please connect and try again.".into(),
             )
         } else {
-            VisaraError::Network(e.to_string())
+            PictoriaError::Network(e.to_string())
         }
     }
 }
 
-impl From<anyhow::Error> for VisaraError {
+impl From<anyhow::Error> for PictoriaError {
     fn from(e: anyhow::Error) -> Self {
-        VisaraError::Fatal(e.to_string())
+        PictoriaError::Fatal(e.to_string())
     }
 }
 
-pub type Result<T> = std::result::Result<T, VisaraError>;
+pub type Result<T> = std::result::Result<T, PictoriaError>;
