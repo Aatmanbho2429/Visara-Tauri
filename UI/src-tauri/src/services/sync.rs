@@ -1,7 +1,7 @@
 use crate::{
     config::BATCH_SIZE,
     core::{database, embedder, progress, vector_store::VectorStore},
-    error::{Result, VisaraError},
+    error::{Result, PictoriaError},
     utils::{file_utils, image_loader},
 };
 use rayon::prelude::*;
@@ -22,7 +22,7 @@ pub fn sync_folder(
     folder_path: &Path,
 ) -> Result<Vec<FileError>> {
     if !embedder::is_ready() {
-        return Err(VisaraError::ModelNotReady);
+        return Err(PictoriaError::ModelNotReady);
     }
 
     let folder_str = folder_path.to_string_lossy().to_string();
@@ -195,7 +195,7 @@ pub fn sync_folder(
 
             if !flat_pixels.is_empty() {
                 let embeddings = embedder::embed_batch(&flat_pixels, BATCH_SIZE)
-                    .map_err(|e| VisaraError::Fatal(format!("Embedding failed: {e}")))?;
+                    .map_err(|e| PictoriaError::Fatal(format!("Embedding failed: {e}")))?;
 
                 for (emb_idx, chunk_idx) in valid_indices.into_iter().enumerate() {
                     let (path, hash, mtime) = &chunk[chunk_idx];

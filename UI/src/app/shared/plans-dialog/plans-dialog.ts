@@ -69,7 +69,7 @@ export class PlansDialog extends BaseComponent {
         key:         d.key_id,
         amount:      d.amount,
         currency:    d.currency,
-        name:        'Visara',
+        name:        'Pictoria',
         description: `${plan.name} Plan`,
         order_id:    d.order_id,
         prefill: {

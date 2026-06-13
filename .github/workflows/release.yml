@@ -31,8 +31,8 @@ jobs:
               owner: context.repo.owner,
               repo:  context.repo.repo,
               tag_name:   tag,
-              name:       `Visara ${tag}`,
-              body:       `## What's new in ${tag}\n\nSee full changelog in the commit history.\n\n### Download\n- **Windows**: \`Visara_*_x64-setup.exe\`\n- **macOS (Apple Silicon)**: \`Visara_*_aarch64.dmg\`\n- **macOS (Intel)**: \`Visara_*_x64.dmg\` *(may appear later — Intel runners can be queue-starved)*`,
+              name:       `Pictoria ${tag}`,
+              body:       `## What's new in ${tag}\n\nSee full changelog in the commit history.\n\n### Download\n- **Windows**: \`Pictoria_*_x64-setup.exe\`\n- **macOS (Apple Silicon)**: \`Pictoria_*_aarch64.dmg\`\n- **macOS (Intel)**: \`Pictoria_*_x64.dmg\` *(may appear later — Intel runners can be queue-starved)*`,
               draft:      false,
               prerelease: false,
             });

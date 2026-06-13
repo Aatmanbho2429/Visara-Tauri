@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Visara",
+  "productName": "Pictoria",
   "version": "1.1.19",
-  "identifier": "com.visara.app",
+  "identifier": "com.pictoria.app",
   "build": {
     "frontendDist": "../dist/UI/browser",
     "devUrl": "http://localhost:4200",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Visara",
+        "title": "Pictoria",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
@@ -25,7 +25,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope":  ["**", "**/.visara/**"]
+        "scope":  ["**", "**/.pictoria/**"]
       }
     }
   },

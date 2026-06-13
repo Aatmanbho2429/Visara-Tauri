@@ -1,18 +1,18 @@
 [package]
-name         = "visara"
+name         = "pictoria"
 version      = "1.1.19"
-description  = "Visara — AI-powered Visual Image Search"
+description  = "Pictoria — AI-powered Visual Image Search"
 authors      = ["Aatman Stridely"]
 license      = "UNLICENSED"
 edition      = "2021"
 rust-version = "1.77.2"
 
 [lib]
-name       = "visara_lib"
+name       = "pictoria_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "visara"
+name = "pictoria"
 path = "src/main.rs"
 
 [build-dependencies]

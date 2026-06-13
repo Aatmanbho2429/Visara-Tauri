@@ -18,10 +18,10 @@ import { SearchStateService } from './services/search-state.service';
 })
 export class App implements OnInit, OnDestroy {
   /** Key under which we stash a pending clipboard image path while user is logged out. */
-  static readonly PENDING_IMAGE_KEY = 'visara_pending_hotkey_image';
+  static readonly PENDING_IMAGE_KEY = 'pictoria_pending_hotkey_image';
 
   /** Persistent flag — once true, never show the intro tip again. */
-  private static readonly TIP_SEEN_KEY = 'visara_hotkey_tip_seen_v1';
+  private static readonly TIP_SEEN_KEY = 'pictoria_hotkey_tip_seen_v1';
 
   private tauri       = inject(TauriService);
   private userState   = inject(UserStateService);
@@ -65,8 +65,8 @@ export class App implements OnInit, OnDestroy {
       severity: 'info',
       summary: 'New: search from anywhere',
       detail:  isMac
-        ? 'Copy any image, then press ⌘ + Shift + V — Visara captures it and you can search instantly.'
-        : 'Copy any image, then press Ctrl + Shift + V — Visara captures it and you can search instantly.',
+        ? 'Copy any image, then press ⌘ + Shift + V — Pictoria captures it and you can search instantly.'
+        : 'Copy any image, then press Ctrl + Shift + V — Pictoria captures it and you can search instantly.',
       life:    10000,
       sticky:  false,
     });

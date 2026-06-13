@@ -11,7 +11,7 @@ import { ConfigService } from './services/config.service';
 
 import { routes } from './app.routes';
 
-const VisaraPreset = definePreset(Aura, {
+const PictoriaPreset = definePreset(Aura, {
   semantic: {
     primary: {
       50:  '{fuchsia.50}',
@@ -40,7 +40,7 @@ export const appConfig: ApplicationConfig = {
     provideTranslateHttpLoader({ prefix: './assets/i18n/', suffix: '.json' }),
     providePrimeNG({
       theme: {
-        preset: VisaraPreset,
+        preset: PictoriaPreset,
         options: {
           darkModeSelector: '.dark-mode',
           cssLayer: { name: 'primeng', order: 'tailwind-base, primeng, tailwind-utilities' }

@@ -14,7 +14,7 @@ use std::{
 
 // ── In-memory session state ───────────────────────────────────────────────
 //
-// Only the JWT token is persisted to disk (~/.visara_token).
+// Only the JWT token is persisted to disk (~/.pictoria_token).
 // Everything else (user_id, user profile, model key) lives here for the
 // lifetime of the process.  On logout the token file is deleted and this
 // struct is cleared.
@@ -63,16 +63,16 @@ pub fn session_user_id() -> Option<String> {
 // Manager) via the `keyring` crate — the token never sits in a plaintext
 // dotfile readable by any other process running as the same user.
 //
-// Fallback: the original `~/.visara_token` plaintext file. Used on platforms
+// Fallback: the original `~/.pictoria_token` plaintext file. Used on platforms
 // without a native keychain backend compiled in (where `keyring` falls back
 // to a non-persistent in-memory "mock" store that would silently lose the
 // token on every restart) and if a keychain call fails for any reason
 // (locked keychain, headless environment, etc.).
 //
-// Existing installs that already have `~/.visara_token` are migrated into
+// Existing installs that already have `~/.pictoria_token` are migrated into
 // the keychain transparently the first time `saved_token()` runs.
 
-const KEYRING_SERVICE: &str = "com.visara.app";
+const KEYRING_SERVICE: &str = "com.pictoria.app";
 const KEYRING_USER:    &str = "auth_token";
 
 /// Whether this platform has a real, persistent keyring backend compiled in

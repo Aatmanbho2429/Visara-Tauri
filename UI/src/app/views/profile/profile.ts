@@ -120,8 +120,8 @@ export class Profile extends BaseComponent implements OnInit {
           severity: 'success',
           summary:  willBe ? 'Startup launch enabled' : 'Startup launch disabled',
           detail:   willBe
-            ? 'Visara will start silently in the tray when you sign in.'
-            : 'Visara will no longer launch automatically.',
+            ? 'Pictoria will start silently in the tray when you sign in.'
+            : 'Pictoria will no longer launch automatically.',
           life:     4000,
         });
       })

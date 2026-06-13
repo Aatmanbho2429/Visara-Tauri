@@ -1,4 +1,4 @@
-//! Visara — Tauri application root.
+//! Pictoria — Tauri application root.
 //!
 //! All business logic lives in the modules below.  This file only wires
 //! command handlers into the Tauri builder and registers platform plugins.
@@ -79,7 +79,7 @@ fn is_image_file(p: &PathBuf) -> bool {
 /// 1. File list (macOS Finder "Copy", Windows Explorer "Copy")
 ///    → first image file in the list is returned directly, no temp copy
 /// 2. Bitmap (screenshots, "Copy Image" from browser, Photoshop, etc.)
-///    → written to `<temp>/visara_clipboard.png` (overwritten each call)
+///    → written to `<temp>/pictoria_clipboard.png` (overwritten each call)
 ///
 /// The file list is checked FIRST and on purpose.  When the user copies an
 /// actual image file we always want the real, full-resolution file on disk.
@@ -162,9 +162,9 @@ fn show_main_window(app: &AppHandle) {
 /// Build the persistent tray icon with menu: Open, Check Updates, Quit.
 /// Silent failure (logged warning) — tray is a UX enhancement, not critical.
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
-    let show_item   = MenuItem::with_id(app, "tray_show",   "Open Visara",         true, None::<&str>)?;
+    let show_item   = MenuItem::with_id(app, "tray_show",   "Open Pictoria",         true, None::<&str>)?;
     let update_item = MenuItem::with_id(app, "tray_update", "Check for Updates",   true, None::<&str>)?;
-    let quit_item   = MenuItem::with_id(app, "tray_quit",   "Quit Visara",         true, None::<&str>)?;
+    let quit_item   = MenuItem::with_id(app, "tray_quit",   "Quit Pictoria",         true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
 
@@ -180,7 +180,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("main-tray")
         .icon(icon)
-        .tooltip("Visara — AI Image Search")
+        .tooltip("Pictoria — AI Image Search")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -223,14 +223,14 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
 
             if !NOTIFIED_THIS_SESSION.swap(true, Ordering::SeqCst) {
                 let body = if cfg!(target_os = "macos") {
-                    "Click the Visara icon in the menu bar, or press ⌘+Shift+V, to bring it back."
+                    "Click the Pictoria icon in the menu bar, or press ⌘+Shift+V, to bring it back."
                 } else {
-                    "Click the Visara icon in the system tray, or press Ctrl+Shift+V, to bring it back."
+                    "Click the Pictoria icon in the system tray, or press Ctrl+Shift+V, to bring it back."
                 };
                 let _ = window.app_handle()
                     .notification()
                     .builder()
-                    .title("Visara is still running")
+                    .title("Pictoria is still running")
                     .body(body)
                     .show();
             }
@@ -289,7 +289,7 @@ pub fn run() {
 
             // When launched at user login via autostart, the OS passes
             // `--autostart` on the command line.  In that case we keep the
-            // main window hidden so Visara boots silently into the tray.
+            // main window hidden so Pictoria boots silently into the tray.
             let launched_via_autostart = std::env::args().any(|a| a == AUTOSTART_FLAG);
             if launched_via_autostart {
                 log::info!("[autostart] launched via autostart — starting hidden in tray");
@@ -370,5 +370,5 @@ pub fn run() {
             open_file_path,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Visara");
+        .expect("error while running Pictoria");
 }

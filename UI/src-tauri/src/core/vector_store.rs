@@ -10,7 +10,7 @@
 //!
 //! ## File format  (`vectors.bin`)
 //! ```text
-//! [ magic:   8 bytes  "VISARA\x00\x01" ]
+//! [ magic:   8 bytes  "PICTOR\x00\x01" ]
 //! [ version: 4 bytes  u32 little-endian ]
 //! [ dim:     4 bytes  u32 little-endian ]  always 768
 //! [ count:   8 bytes  u64 little-endian ]  live (non-tombstone) entries
@@ -21,7 +21,7 @@
 //! Compaction rewrites the file removing tombstones when the tombstone ratio
 //! exceeds 20 %.
 
-use crate::{config::EMB_DIM, error::{Result, VisaraError}};
+use crate::{config::EMB_DIM, error::{Result, PictoriaError}};
 use once_cell::sync::Lazy;
 use rayon::prelude::*;
 use std::{
@@ -43,7 +43,7 @@ pub fn store_io_guard() -> MutexGuard<'static, ()> {
     STORE_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-const MAGIC:      &[u8; 8] = b"VISARA\x00\x01";
+const MAGIC:      &[u8; 8] = b"PICTOR\x00\x01";
 const VERSION:    u32      = 1;
 const HEADER_LEN: usize    = 32;
 const TOMBSTONE:  i64      = i64::MIN;
@@ -157,7 +157,7 @@ impl VectorStore {
 
     pub fn add(&mut self, id: i64, emb: &[f32]) -> Result<()> {
         if emb.len() != self.dim {
-            return Err(VisaraError::Fatal(format!(
+            return Err(PictoriaError::Fatal(format!(
                 "embedding dim mismatch: expected {}, got {}",
                 self.dim, emb.len()
             )));

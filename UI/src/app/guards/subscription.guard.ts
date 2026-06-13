@@ -19,7 +19,7 @@ export const subscriptionGuard: CanActivateFn = () => {
 
   sessionStorage.setItem(
     'sub_redirect_msg',
-    'Your subscription has ended. Renew to keep using Visara.',
+    'Your subscription has ended. Renew to keep using Pictoria.',
   );
   router.navigate(['/master/profile']);
   return false;
