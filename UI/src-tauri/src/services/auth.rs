@@ -25,6 +25,25 @@ struct Session {
 
 static SESSION: Lazy<Mutex<Option<Session>>> = Lazy::new(|| Mutex::new(None));
 
+// In-memory cache of the auth token.
+//
+// The token lives in the OS keychain, but reading it on macOS pops the
+// "<app> wants to use your confidential information stored in your keychain"
+// prompt whenever the running binary isn't in the item's ACL — which is the
+// case on every unsigned `cargo tauri dev` rebuild, since the code signature
+// (and therefore the ACL entry) changes each build. `saved_token()` is called
+// very frequently (route guards, periodic re-validation, every search, the
+// profile screen), so without this cache the prompt reappears many times per
+// session.
+//
+// Caching the token means the keychain is touched at most ONCE per process
+// launch; every later check is served from memory. The cache is kept in sync
+// by `save_token()` (login) and `delete_token()` (logout / invalid session),
+// so it never goes stale. Only a present token is cached — a `None` result is
+// never cached, so a cold start with a saved token still reads the store once
+// instead of wrongly reporting "logged out".
+static TOKEN_CACHE: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+
 fn set_session(user_id: &str, _user: &Value) {
     *SESSION.lock().unwrap() = Some(Session { user_id: user_id.to_string() });
 }
@@ -73,6 +92,7 @@ fn keyring_entry() -> Option<Entry> {
 }
 
 fn save_token(token: &str) {
+    *TOKEN_CACHE.lock().unwrap() = Some(token.to_string());
     if let Some(entry) = keyring_entry() {
         if entry.set_password(token).is_ok() {
             // Stored securely — remove any legacy plaintext copy.
@@ -84,6 +104,7 @@ fn save_token(token: &str) {
 }
 
 fn delete_token() {
+    *TOKEN_CACHE.lock().unwrap() = None;
     if let Some(entry) = keyring_entry() {
         let _ = entry.delete_credential();
     }
@@ -91,6 +112,23 @@ fn delete_token() {
 }
 
 pub fn saved_token() -> Option<String> {
+    // Fast path: serve the token from memory so the keychain (and its access
+    // prompt) is never hit more than once per process launch.
+    if let Some(token) = TOKEN_CACHE.lock().unwrap().clone() {
+        return Some(token);
+    }
+
+    let token = read_token_from_store();
+    if let Some(token) = &token {
+        *TOKEN_CACHE.lock().unwrap() = Some(token.clone());
+    }
+    token
+}
+
+/// Read the token from the OS keychain (or legacy file fallback). This is the
+/// only place that actually touches the credential store — keep it behind the
+/// `TOKEN_CACHE` so it runs at most once per launch.
+fn read_token_from_store() -> Option<String> {
     if let Some(entry) = keyring_entry() {
         if let Ok(token) = entry.get_password() {
             let token = token.trim().to_string();
@@ -381,6 +419,78 @@ pub async fn register_request(
             "company_name": company_name,
             "otp_code":     otp_code,
             "device_id":    license::device_id(),
+        }))
+        .send()
+        .await;
+
+    match result {
+        Err(e) => network_error(e),
+        Ok(resp) => resp.json().await.unwrap_or_else(|_| server_error()),
+    }
+}
+
+// ── Forgot password ──────────────────────────────────────────────────────
+//
+// Two-step flow, mirroring the registration OTP flow above:
+//   1. `forgot_password_send_otp`   — emails a 6-digit code to a *registered*
+//      address.
+//   2. `forgot_password_verify_otp` — verifies that code, then Supabase
+//      generates a new random password, sets it on the account, and emails
+//      it to the user. Nothing is written to disk here — the user logs in
+//      normally afterwards with the new password.
+
+/// Step 1 — request a one-time code be emailed to `email` for password reset.
+pub async fn forgot_password_send_otp(email: &str) -> Value {
+    let result = reqwest::Client::new()
+        .post(format!("{SUPABASE_EDGE}/forgot-password-send-otp"))
+        .json(&serde_json::json!({ "email": email }))
+        .send()
+        .await;
+
+    match result {
+        Err(e) => network_error(e),
+        Ok(resp) => resp.json().await.unwrap_or_else(|_| server_error()),
+    }
+}
+
+/// Step 2 — verify the code; on success Supabase resets the account's
+/// password to a freshly-generated random value and emails it to the user.
+pub async fn forgot_password_verify_otp(email: &str, otp_code: &str) -> Value {
+    let result = reqwest::Client::new()
+        .post(format!("{SUPABASE_EDGE}/forgot-password-verify-otp"))
+        .json(&serde_json::json!({ "email": email, "otp_code": otp_code }))
+        .send()
+        .await;
+
+    match result {
+        Err(e) => network_error(e),
+        Ok(resp) => resp.json().await.unwrap_or_else(|_| server_error()),
+    }
+}
+
+// ── Change password ───────────────────────────────────────────────────────
+//
+// Authenticated, in-app password change from the profile screen. The user
+// supplies their current password (verified server-side) and a new one. The
+// saved JWT identifies the account — Supabase never trusts a client-supplied
+// user id for this. On success the caller (UI) logs the user out so they must
+// sign in again with the new credentials.
+
+/// Change the logged-in user's password. Sends the saved session token so the
+/// edge function can identify the account and verify `old_password` before
+/// applying `new_password`.
+pub async fn change_password(old_password: &str, new_password: &str) -> Value {
+    let token = match saved_token() {
+        Some(t) => t,
+        None    => return no_session(),
+    };
+
+    let result = reqwest::Client::new()
+        .post(format!("{SUPABASE_EDGE}/change-password"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "old_password": old_password,
+            "new_password": new_password,
         }))
         .send()
         .await;

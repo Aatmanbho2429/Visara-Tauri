@@ -99,11 +99,23 @@
     "requestAccess": "Create Account",
     "successHeading": "Welcome, {{name}}!",
     "successMessage": "You're signed in. Loading Visara...",
+    "forgotPasswordLink": "Forgot password?",
     "validation": {
       "emailRequired": "Email is required",
       "emailInvalid": "Please enter a valid email address",
       "passwordRequired": "Password is required",
       "passwordMin": "Password must be at least 8 characters"
+    },
+    "forgot": {
+      "title": "Reset Password",
+      "subtitle": "We'll email you a new password",
+      "sendCode": "Send verification code",
+      "verify": "Verify & reset password",
+      "resetting": "Resetting password…",
+      "changeEmail": "Use a different email",
+      "rememberPassword": "Remember your password?",
+      "doneTitle": "Check your inbox",
+      "doneMessage": "We've emailed a new password to"
     }
   },
 
@@ -123,7 +135,28 @@
     "trialHint":    "Upgrade anytime to unlock unlimited searches",
     "renewsOn":     "Expires on",
     "expiredMsg":   "Your access has ended. Choose a plan to continue.",
-    "viewPlans":    "View Plans"
+    "viewPlans":    "View Plans",
+    "password": {
+      "section":            "Security",
+      "title":              "Change password",
+      "hint":               "Update your password. You'll be signed out afterwards.",
+      "current":            "Current password",
+      "currentPlaceholder": "Enter current password",
+      "currentRequired":    "Current password is required",
+      "new":                "New password",
+      "newPlaceholder":     "Min. 8 characters",
+      "newRequired":        "New password is required",
+      "newMin":             "New password must be at least 8 characters",
+      "confirm":            "Confirm new password",
+      "confirmPlaceholder": "Re-enter new password",
+      "confirmRequired":    "Please confirm your new password",
+      "mismatch":           "Passwords do not match",
+      "submit":             "Change password",
+      "saving":             "Changing password…",
+      "logoutNote":         "For your security, you'll be signed out once your password is changed.",
+      "changedTitle":       "Password changed",
+      "changedDetail":      "Signing you out — please sign in with your new password."
+    }
   },
 
   "search": {

@@ -54,6 +54,31 @@ pub async fn auth_send_otp(app: tauri::AppHandle, email: String) {
     let _ = app.emit("auth_send_otp_response", result);
 }
 
+/// Forgot-password step 1 — email a one-time verification code to a
+/// registered address.
+#[tauri::command]
+pub async fn auth_forgot_password_send_otp(app: tauri::AppHandle, email: String) {
+    let result = auth::forgot_password_send_otp(&email).await;
+    let _ = app.emit("auth_forgot_password_send_otp_response", result);
+}
+
+/// Forgot-password step 2 — verify the code; on success Supabase resets the
+/// account password and emails the new one to the user.
+#[tauri::command]
+pub async fn auth_forgot_password_verify_otp(app: tauri::AppHandle, email: String, otp_code: String) {
+    let result = auth::forgot_password_verify_otp(&email, &otp_code).await;
+    let _ = app.emit("auth_forgot_password_verify_otp_response", result);
+}
+
+/// Change the logged-in user's password. The saved session token identifies
+/// the account; the edge function verifies `old_password` before applying
+/// `new_password`. On success the UI logs the user out.
+#[tauri::command]
+pub async fn auth_change_password(app: tauri::AppHandle, old_password: String, new_password: String) {
+    let result = auth::change_password(&old_password, &new_password).await;
+    let _ = app.emit("auth_change_password_response", result);
+}
+
 #[tauri::command]
 pub async fn auth_request_access(
     app:          tauri::AppHandle,

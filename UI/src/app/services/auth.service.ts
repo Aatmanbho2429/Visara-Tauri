@@ -76,6 +76,23 @@ export class AuthService {
     return this.tauri.invoke<null>('auth_send_otp', { email });
   }
 
+  /** Forgot-password step 1 — email a one-time code to a registered address. */
+  forgotPasswordSendOtp(email: string): Observable<BaseResponse<null>> {
+    return this.tauri.invoke<null>('auth_forgot_password_send_otp', { email });
+  }
+
+  /** Forgot-password step 2 — verify the code; on success a new password is
+   *  generated and emailed to the user. */
+  forgotPasswordVerifyOtp(email: string, otpCode: string): Observable<BaseResponse<null>> {
+    return this.tauri.invoke<null>('auth_forgot_password_verify_otp', { email, otpCode });
+  }
+
+  /** Change the logged-in user's password. On success the caller should log
+   *  the user out so they re-authenticate with the new password. */
+  changePassword(oldPassword: string, newPassword: string): Observable<BaseResponse<null>> {
+    return this.tauri.invoke<null>('auth_change_password', { oldPassword, newPassword });
+  }
+
   requestAccess(payload: RegisterPayload): Observable<BaseResponse<null>> {
     return this.tauri.invoke<null>('auth_request_access', {
       firstName:   payload.first_name,

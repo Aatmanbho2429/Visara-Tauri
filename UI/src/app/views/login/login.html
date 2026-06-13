@@ -74,6 +74,10 @@
           </span>
         </div>
 
+        <div class="login-forgot">
+          <a href="javascript:void(0)" (click)="openForgotPassword()">{{ 'login.forgotPasswordLink' | translate }}</a>
+        </div>
+
         <div class="login-error" *ngIf="loginError">
           <i class="pi pi-exclamation-circle"></i>
           <span>{{ loginError }}</span>
@@ -349,6 +353,125 @@
       <p class="login-card__footer">
         {{ 'register.alreadyHaveAccount' | translate }}
         <a href="javascript:void(0)" (click)="closeRegister()">{{ 'register.signIn' | translate }}</a>
+      </p>
+    </ng-container>
+  </div>
+</div>
+
+<!-- ══ FORGOT PASSWORD OVERLAY ══ -->
+<div class="login-overlay" *ngIf="showForgotPassword">
+  <div class="login-bg">
+    <div class="login-bg__circle login-bg__circle--1"></div>
+    <div class="login-bg__circle login-bg__circle--2"></div>
+    <div class="login-bg__circle login-bg__circle--3"></div>
+  </div>
+
+  <div class="login-card">
+
+    <!-- Success State -->
+    <div class="login-success" *ngIf="forgotStep === 'done'">
+      <div class="login-success__icon">
+        <i class="pi pi-check"></i>
+      </div>
+      <h3 class="login-success__heading">{{ 'login.forgot.doneTitle' | translate }}</h3>
+      <p class="login-success__message">
+        {{ 'login.forgot.doneMessage' | translate }} <strong>{{ forgotEmail }}</strong>.
+      </p>
+      <p-button
+        [label]="'register.backToSignIn' | translate"
+        icon="pi pi-arrow-left"
+        (onClick)="closeForgotPassword()" />
+    </div>
+
+    <!-- Forgot Password Form -->
+    <ng-container *ngIf="forgotStep !== 'done'">
+      <div class="login-card__brand">
+        <div class="login-card__icon">
+          <i class="pi pi-key"></i>
+        </div>
+        <h2 class="login-card__title">{{ 'login.forgot.title' | translate }}</h2>
+        <p class="login-card__subtitle">{{ 'login.forgot.subtitle' | translate }}</p>
+      </div>
+
+      @if (forgotStep === 'email') {
+        <form (submit)="$event.preventDefault(); sendForgotOtp()" novalidate>
+
+          <div class="login-field">
+            <label class="login-field__label">{{ 'login.emailLabel' | translate }}</label>
+            <div class="login-field__wrap">
+              <i class="pi pi-envelope login-field__icon"></i>
+              <input
+                pInputText
+                type="email"
+                [formControl]="forgotEmailControl"
+                [placeholder]="'login.emailPlaceholder' | translate"
+                autocomplete="email" />
+            </div>
+            <span class="field-error-msg" *ngIf="forgotEmailControl.touched && forgotEmailControl.hasError('required')">
+              {{ 'login.validation.emailRequired' | translate }}
+            </span>
+            <span class="field-error-msg" *ngIf="forgotEmailControl.touched && forgotEmailControl.hasError('email')">
+              {{ 'login.validation.emailInvalid' | translate }}
+            </span>
+          </div>
+
+          <div class="login-error" *ngIf="forgotError">
+            <i class="pi pi-exclamation-circle"></i>
+            <span>{{ forgotError }}</span>
+          </div>
+
+          <p-button
+            type="submit"
+            [label]="(sendingForgotOtp ? 'register.otp.sending' : 'login.forgot.sendCode') | translate"
+            [icon]="sendingForgotOtp ? '' : 'pi pi-envelope'"
+            [loading]="sendingForgotOtp"
+            [disabled]="sendingForgotOtp" />
+
+        </form>
+      } @else {
+        <!-- ── OTP verification step ────────────────────────────── -->
+        <div class="otp-step">
+          <p class="otp-step__lead">
+            {{ 'register.otp.lead' | translate }} <strong>{{ forgotEmail }}</strong>.
+          </p>
+
+          <input class="otp-input"
+                 [formControl]="forgotOtpControl"
+                 maxlength="6"
+                 inputmode="numeric"
+                 autocomplete="one-time-code"
+                 placeholder="••••••" />
+          <span class="field-error-msg" *ngIf="forgotOtpControl.touched && forgotOtpControl.invalid">
+            {{ 'register.otp.invalid' | translate }}
+          </span>
+
+          <div class="otp-resend">
+            <span *ngIf="forgotResendIn > 0" class="otp-resend__timer">{{ 'register.otp.resendIn' | translate }} {{ forgotResendIn }}s</span>
+            <a *ngIf="forgotResendIn === 0 && !sendingForgotOtp" href="javascript:void(0)" (click)="resendForgotOtp()">{{ 'register.otp.resend' | translate }}</a>
+            <span *ngIf="forgotResendIn === 0 && sendingForgotOtp" class="otp-resend__timer">{{ 'register.otp.sendingShort' | translate }}</span>
+          </div>
+
+          <div class="login-error" *ngIf="forgotError">
+            <i class="pi pi-exclamation-circle"></i>
+            <span>{{ forgotError }}</span>
+          </div>
+
+          <p-button
+            [label]="(forgotLoading ? 'login.forgot.resetting' : 'login.forgot.verify') | translate"
+            [icon]="forgotLoading ? '' : 'pi pi-check'"
+            [loading]="forgotLoading"
+            [disabled]="forgotLoading"
+            (onClick)="verifyForgotOtp()" />
+
+          <a class="otp-back" href="javascript:void(0)" (click)="backToForgotEmail()">
+            <i class="pi pi-arrow-left"></i> {{ 'login.forgot.changeEmail' | translate }}
+          </a>
+        </div>
+      }
+
+      <p class="login-card__footer">
+        {{ 'login.forgot.rememberPassword' | translate }}
+        <a href="javascript:void(0)" (click)="closeForgotPassword()">{{ 'register.signIn' | translate }}</a>
       </p>
     </ng-container>
   </div>

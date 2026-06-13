@@ -103,6 +103,96 @@
       </button>
     </div>
 
+    <!-- Security -->
+    <div class="prefs-card">
+      <div class="prefs-card__head">
+        <i class="pi pi-shield"></i>
+        <span>{{ 'profile.password.section' | translate }}</span>
+      </div>
+
+      <button
+        type="button"
+        class="prefs-row"
+        (click)="toggleChangePassword()">
+        <div class="prefs-row__text">
+          <span class="prefs-row__title">{{ 'profile.password.title' | translate }}</span>
+          <span class="prefs-row__hint">{{ 'profile.password.hint' | translate }}</span>
+        </div>
+        <i class="pi pwd-chevron" [ngClass]="showChangePassword ? 'pi-chevron-up' : 'pi-chevron-down'"></i>
+      </button>
+
+      <form
+        *ngIf="showChangePassword"
+        class="pwd-form"
+        [formGroup]="changePasswordForm"
+        (ngSubmit)="submitChangePassword()"
+        novalidate>
+
+        <!-- Current password -->
+        <div class="pwd-field">
+          <label class="pwd-field__label">{{ 'profile.password.current' | translate }}</label>
+          <p-password
+            formControlName="old_password"
+            [feedback]="false"
+            [toggleMask]="true"
+            [placeholder]="'profile.password.currentPlaceholder' | translate"
+            autocomplete="current-password" />
+          <span class="pwd-error" *ngIf="isInvalid('old_password') && hasError('old_password', 'required')">
+            {{ 'profile.password.currentRequired' | translate }}
+          </span>
+        </div>
+
+        <!-- New password -->
+        <div class="pwd-field">
+          <label class="pwd-field__label">{{ 'profile.password.new' | translate }}</label>
+          <p-password
+            formControlName="new_password"
+            [feedback]="false"
+            [toggleMask]="true"
+            [placeholder]="'profile.password.newPlaceholder' | translate"
+            autocomplete="new-password" />
+          <span class="pwd-error" *ngIf="isInvalid('new_password') && hasError('new_password', 'required')">
+            {{ 'profile.password.newRequired' | translate }}
+          </span>
+          <span class="pwd-error" *ngIf="isInvalid('new_password') && hasError('new_password', 'minlength')">
+            {{ 'profile.password.newMin' | translate }}
+          </span>
+        </div>
+
+        <!-- Confirm new password -->
+        <div class="pwd-field">
+          <label class="pwd-field__label">{{ 'profile.password.confirm' | translate }}</label>
+          <p-password
+            formControlName="confirm_password"
+            [feedback]="false"
+            [toggleMask]="true"
+            [placeholder]="'profile.password.confirmPlaceholder' | translate"
+            autocomplete="new-password" />
+          <span class="pwd-error" *ngIf="isInvalid('confirm_password') && hasError('confirm_password', 'required')">
+            {{ 'profile.password.confirmRequired' | translate }}
+          </span>
+          <span class="pwd-error" *ngIf="isInvalid('confirm_password') && hasError('confirm_password', 'passwordMismatch')">
+            {{ 'profile.password.mismatch' | translate }}
+          </span>
+        </div>
+
+        <div class="pwd-server-error" *ngIf="changePasswordError">
+          <i class="pi pi-exclamation-circle"></i>
+          <span>{{ changePasswordError }}</span>
+        </div>
+
+        <p-button
+          type="submit"
+          styleClass="pwd-submit"
+          [label]="(changePasswordLoading ? 'profile.password.saving' : 'profile.password.submit') | translate"
+          [icon]="changePasswordLoading ? '' : 'pi pi-check'"
+          [loading]="changePasswordLoading"
+          [disabled]="changePasswordLoading" />
+
+        <p class="pwd-note">{{ 'profile.password.logoutNote' | translate }}</p>
+      </form>
+    </div>
+
     <!-- Payment history -->
     <div class="pay-history">
       <div class="pay-history__head">

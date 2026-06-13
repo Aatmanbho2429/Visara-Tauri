@@ -67,6 +67,19 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
   otpControl = new FormControl('', [Validators.required, Validators.pattern(/^\d{6}$/)]);
   private resendTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Forgot password is a 2-step flow: enter email → verify OTP → done
+  // (a new password is generated and emailed to the user).
+  showForgotPassword = false;
+  forgotStep: 'email' | 'otp' | 'done' = 'email';
+  forgotEmail        = '';
+  forgotError        = '';
+  forgotLoading      = false;
+  sendingForgotOtp   = false;
+  forgotResendIn     = 0;
+  forgotEmailControl = new FormControl('', [Validators.required, Validators.email]);
+  forgotOtpControl   = new FormControl('', [Validators.required, Validators.pattern(/^\d{6}$/)]);
+  private forgotResendTimer: ReturnType<typeof setInterval> | null = null;
+
   private redirectMessage = '';
 
   loginForm = new FormGroup({
@@ -242,7 +255,102 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
     if (this.resendTimer) { clearInterval(this.resendTimer); this.resendTimer = null; }
   }
 
-  ngOnDestroy(): void { this.clearCooldown(); }
+  // ── Forgot password ─────────────────────────────────────────────
+  openForgotPassword(): void {
+    this.showForgotPassword = true;
+    this.forgotStep    = 'email';
+    this.forgotError   = '';
+    this.forgotEmail   = '';
+    this.forgotEmailControl.reset();
+    this.forgotOtpControl.reset();
+    this.clearForgotCooldown();
+  }
+
+  closeForgotPassword(): void {
+    this.showForgotPassword = false;
+    this.clearForgotCooldown();
+  }
+
+  /** Step 1 → email a verification code to the registered address. */
+  sendForgotOtp(): void {
+    if (this.forgotEmailControl.invalid) {
+      this.forgotEmailControl.markAsTouched();
+      return;
+    }
+    this.sendingForgotOtp = true;
+    this.forgotError      = '';
+    const email = this.forgotEmailControl.value!;
+    this.handle(this.authService.forgotPasswordSendOtp(email), res => {
+      this.sendingForgotOtp = false;
+      if (res.success) {
+        this.forgotEmail = email;
+        this.forgotStep  = 'otp';
+        this.forgotOtpControl.reset();
+        this.startForgotCooldown();
+      } else {
+        this.forgotError = res.message;
+      }
+    });
+  }
+
+  /** Step 2 → verify the code; on success a new password is emailed. */
+  verifyForgotOtp(): void {
+    if (this.forgotOtpControl.invalid) {
+      this.forgotOtpControl.markAsTouched();
+      return;
+    }
+    this.forgotLoading = true;
+    this.forgotError   = '';
+    this.handle(this.authService.forgotPasswordVerifyOtp(this.forgotEmail, this.forgotOtpControl.value!), res => {
+      this.forgotLoading = false;
+      if (res.success) {
+        this.forgotStep = 'done';
+        this.clearForgotCooldown();
+      } else {
+        this.forgotError = res.message;
+      }
+    });
+  }
+
+  resendForgotOtp(): void {
+    if (this.forgotResendIn > 0 || this.sendingForgotOtp) return;
+    this.sendingForgotOtp = true;
+    this.forgotError      = '';
+    this.handle(this.authService.forgotPasswordSendOtp(this.forgotEmail), res => {
+      this.sendingForgotOtp = false;
+      if (res.success) {
+        this.startForgotCooldown();
+        this.messageService.add({ severity: 'success', summary: this.translate.instant('register.otp.resentTitle'), detail: this.translate.instant('register.otp.resentDetail', { email: this.forgotEmail }), life: 3000 });
+      } else {
+        this.forgotError = res.message;
+      }
+    });
+  }
+
+  backToForgotEmail(): void {
+    this.forgotStep  = 'email';
+    this.forgotError = '';
+    this.clearForgotCooldown();
+  }
+
+  private startForgotCooldown(): void {
+    this.forgotResendIn = 60;
+    if (this.forgotResendTimer) clearInterval(this.forgotResendTimer);
+    this.forgotResendTimer = setInterval(() => {
+      this.forgotResendIn--;
+      if (this.forgotResendIn <= 0) this.clearForgotCooldown();
+      this.cdr.detectChanges();
+    }, 1000);
+  }
+  private clearForgotCooldown(): void {
+    this.forgotResendIn = 0;
+    if (this.forgotResendTimer) { clearInterval(this.forgotResendTimer); this.forgotResendTimer = null; }
+  }
+
+  ngOnDestroy(): void {
+    this.clearCooldown();
+    this.clearForgotCooldown();
+  }
 
   openRegister(): void {
     this.showRegister    = true;
