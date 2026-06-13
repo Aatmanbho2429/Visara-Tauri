@@ -5,6 +5,7 @@ import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { MessageService } from 'primeng/api';
 import { BaseComponent } from '../../core/base.component';
 import { BrowseService } from '../../services/browse.service';
@@ -19,7 +20,7 @@ import { blobToDataUrl, imageDims, pdfBase64, resolveDoc } from './catalog-rende
 
 @Component({
   selector: 'app-editor',
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, TranslateModule],
   templateUrl: './theme-builder.html',
   styleUrl: './theme-builder.scss',
 })
@@ -30,6 +31,7 @@ export class Editor extends BaseComponent implements OnInit {
   private route      = inject(ActivatedRoute);
   private router     = inject(Router);
   private messages   = inject(MessageService);
+  private t          = inject(TranslateService);
 
   doc: CatalogDoc = defaultCatalog();
   pageIndex = 0;
@@ -284,8 +286,8 @@ export class Editor extends BaseComponent implements OnInit {
   save(): void {
     if (!this.doc.name?.trim()) this.doc.name = 'Untitled catalog';
     this.handle(this.catalogSvc.saveTheme(this.doc.id, this.doc.name, JSON.stringify(this.doc)), res => {
-      if (res.success) this.toast('success', 'Saved.');
-      else this.toast('error', res.message || 'Save failed.');
+      if (res.success) this.toast('success', this.t.instant('editor.saved'));
+      else this.toast('error', res.message || this.t.instant('editor.saveFailed'));
     });
   }
 
@@ -298,11 +300,11 @@ export class Editor extends BaseComponent implements OnInit {
       const path = await saveDialog({ defaultPath: `${name}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
       if (path) {
         this.handle(this.catalogSvc.savePdf(path, b64), res => {
-          this.toast(res.success ? 'success' : 'error', res.success ? 'Catalog exported.' : (res.message || 'Export failed.'));
+          this.toast(res.success ? 'success' : 'error', res.success ? this.t.instant('editor.exported') : (res.message || this.t.instant('editor.exportFailed')));
         });
       }
     } catch (e) {
-      this.toast('error', 'Export failed: ' + e);
+      this.toast('error', this.t.instant('editor.exportFailed'));
     }
     this.exporting = false; this.cdr.detectChanges();
   }
@@ -319,7 +321,7 @@ export class Editor extends BaseComponent implements OnInit {
   back(): void { this.router.navigate(['/master/catalog']); }
 
   private toast(severity: string, detail: string): void {
-    this.messages.add({ key: 'app', severity, summary: 'Catalog', detail, life: 3000 });
+    this.messages.add({ key: 'app', severity, summary: this.t.instant('editor.toastTitle'), detail, life: 3000 });
   }
 }
 

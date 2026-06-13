@@ -506,9 +506,12 @@ pub fn tag_facets(con: &Connection) -> Result<Vec<TagFacet>> {
     Ok(rows)
 }
 
-/// Paths matching ALL of the given (category, value) filters (AND semantics).
-/// With no filters, returns every indexed image (capped) — used by the catalog
-/// editor's image-library panel to show the whole library.
+/// Paths matching the given (category, value) filters. Filters in the *same*
+/// category are OR'd together (e.g. color = "Light Grey" OR "Beige" OR "Green"
+/// shows tiles in any of those colors), while different categories are AND'd
+/// (e.g. color must match AND finish must match). With no filters, returns
+/// every indexed image (capped) — used by the catalog editor's image-library
+/// panel to show the whole library.
 pub fn query_paths_by_tags(con: &Connection, filters: &[(String, String)]) -> Result<Vec<String>> {
     if filters.is_empty() {
         let mut stmt = con.prepare("SELECT path FROM files ORDER BY path LIMIT 5000")?;
@@ -523,12 +526,16 @@ pub fn query_paths_by_tags(con: &Connection, filters: &[(String, String)]) -> Re
         .map(|_| "(category = ? AND value = ?)")
         .collect::<Vec<_>>()
         .join(" OR ");
-    // The match count is `filters.len()` — a trusted integer, inlined directly.
-    // Binding it as a parameter makes it TEXT, and SQLite's `COUNT(*) = '1'`
-    // (integer vs text) is always false, which silently returned zero rows.
+    // A path qualifies once it has at least one matching tag in EVERY distinct
+    // category requested — i.e. AND across categories, OR within a category.
+    // The required count is the number of *distinct* categories — a trusted
+    // integer, inlined directly. Binding it as a parameter makes it TEXT, and
+    // SQLite's `COUNT(*) = '1'` (integer vs text) is always false, which
+    // silently returned zero rows.
+    let distinct_categories = filters.iter().map(|(c, _)| c.as_str()).collect::<HashSet<_>>().len();
     let sql = format!(
-        "SELECT path FROM file_tags WHERE {clause} GROUP BY path HAVING COUNT(*) = {}",
-        filters.len()
+        "SELECT path FROM file_tags WHERE {clause} GROUP BY path HAVING COUNT(DISTINCT category) = {}",
+        distinct_categories
     );
 
     let mut stmt = con.prepare(&sql)?;
@@ -685,6 +692,18 @@ mod tests {
         // AND with no match
         assert!(query_paths_by_tags(&con,
                   &[("color".into(), "grey".into()), ("finish".into(), "glossy".into())]).unwrap().is_empty());
+
+        // OR within the same category: color=beige OR color=grey -> both a and b
+        let mut or_result = query_paths_by_tags(&con,
+            &[("color".into(), "beige".into()), ("color".into(), "grey".into())]).unwrap();
+        or_result.sort();
+        assert_eq!(or_result, vec!["/lib/a.jpg".to_string(), "/lib/b.jpg".to_string()]);
+
+        // OR within category combined with AND across category:
+        // (color=beige OR color=grey) AND finish=glossy -> only a (b has no finish tag)
+        assert_eq!(query_paths_by_tags(&con,
+                     &[("color".into(), "beige".into()), ("color".into(), "grey".into()), ("finish".into(), "glossy".into())]).unwrap(),
+                   vec!["/lib/a.jpg".to_string()]);
 
         remove_tag(&con, "/lib/a.jpg", "custom", "bestseller").unwrap();
         assert!(!tags_for_paths(&con, &["/lib/a.jpg".into()]).unwrap().iter().any(|t| t.value == "bestseller"));

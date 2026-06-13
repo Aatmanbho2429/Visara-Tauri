@@ -189,6 +189,20 @@
   margin-top: $space-1;
 }
 
+// ── Forgot-password link ───────────────────────────────────────
+.login-forgot {
+  text-align: right;
+  margin: -$space-3 0 $space-5;
+  font-size: $font-size-xs;
+
+  a {
+    color: $secondary-400;
+    text-decoration: none;
+    font-weight: $font-weight-medium;
+    &:hover { text-decoration: underline; }
+  }
+}
+
 // ── Error banner ──────────────────────────────────────────────
 .login-error {
   display: flex;

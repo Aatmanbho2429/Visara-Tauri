@@ -1,6 +1,6 @@
 import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { TranslateModule } from '@ngx-translate/core';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { MessageService } from 'primeng/api';
@@ -30,6 +30,7 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
   private libSvc   = inject(LibraryService);
   private tauri    = inject(TauriService);
   private messages = inject(MessageService);
+  private t        = inject(TranslateService);
 
   folders: WatchedFolder[] = [];
   loading                  = true;
@@ -94,14 +95,15 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
           last_event_at: Date.now() / 1000,
         });
         if (errors > 0) {
-          this.syncError[path]  = `${errors} ${errors === 1 ? 'file' : 'files'} could not be indexed.`;
+          const noun = this.t.instant(errors === 1 ? 'library.file' : 'library.files');
+          this.syncError[path]  = this.t.instant('library.filesCouldNotIndex', { count: errors, noun });
           this.syncFailed[path] = failed ?? [];
-          this.toastWarn(`${this.shortName(path)}: ${errors} ${errors === 1 ? 'file' : 'files'} skipped.`);
+          this.toastWarn(this.t.instant('library.folderSkipped', { name: this.shortName(path), count: errors, noun }));
         } else {
           delete this.syncError[path];
           delete this.syncFailed[path];
           delete this.errorsExpanded[path];
-          this.toastSuccess(`${this.shortName(path)} is up to date.`);
+          this.toastSuccess(this.t.instant('library.upToDate', { name: this.shortName(path) }));
         }
         this.cdr.detectChanges();
       },
@@ -109,7 +111,7 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
         delete this.syncProgress[path];
         this.syncError[path] = message;
         this.patchFolder(path, { status: 'error' });
-        this.toastError(`${this.shortName(path)}: ${message}`);
+        this.toastError(this.shortName(path) + ': ' + message);
         this.cdr.detectChanges();
       },
     }).then(fn => this.unlistenSync = fn);
@@ -149,7 +151,7 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
       this.handle(this.libSvc.folderTree(path), res => {
         this.treeLoading[path] = false;
         this.tree[path] = (res.success && res.data) ? res.data.tree : null;
-        if (!res.success) this.toastError(res.message || 'Could not load subfolders.');
+        if (!res.success) this.toastError(res.message || this.t.instant('library.couldNotLoadSubfolders'));
         this.cdr.detectChanges();
       });
     }
@@ -169,7 +171,7 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
         this.folders = res.data.folders;
       } else {
         this.folders = [];
-        this.toastError(res.message || 'Could not load folders.');
+        this.toastError(res.message || this.t.instant('library.couldNotLoad'));
       }
     });
   }
@@ -180,7 +182,7 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
     const path = picked as string;
 
     if (this.folders.some(f => f.path === path)) {
-      this.toastWarn('That folder is already being watched.');
+      this.toastWarn(this.t.instant('library.alreadyWatched'));
       return;
     }
 
@@ -189,28 +191,26 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
       this.addingPath = null;
       if (res.success) {
         // Backend message may note that redundant subfolders were merged in.
-        this.toastSuccess(res.message || 'Folder added — indexing has started.');
+        this.toastSuccess(res.message || this.t.instant('library.addedDefault'));
         this.refresh();
       } else {
-        this.toastError(res.message || 'Could not add folder.');
+        this.toastError(res.message || this.t.instant('library.couldNotAdd'));
       }
     });
   }
 
   removeFolder(folder: WatchedFolder, purge: boolean): void {
-    const confirmMsg = purge
-      ? `Remove "${folder.path}" and delete its index? This cannot be undone.`
-      : `Stop watching "${folder.path}"? Index data will be kept.`;
+    const confirmMsg = this.t.instant(purge ? 'library.removeConfirmPurge' : 'library.removeConfirm', { path: folder.path });
     if (!confirm(confirmMsg)) return;
 
     this.busyPath = folder.path;
     this.handle(this.libSvc.remove(folder.path, purge), res => {
       this.busyPath = null;
       if (res.success) {
-        this.toastSuccess(purge ? 'Folder and index removed.' : 'Folder removed.');
+        this.toastSuccess(this.t.instant(purge ? 'library.removedPurge' : 'library.removed'));
         this.refresh();
       } else {
-        this.toastError(res.message || 'Could not remove folder.');
+        this.toastError(res.message || this.t.instant('library.couldNotRemove'));
       }
     });
   }
@@ -221,7 +221,7 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
     this.handle(this.libSvc.setPaused(folder.path, willPause), res => {
       this.busyPath = null;
       if (res.success) this.refresh();
-      else this.toastError(res.message || 'Could not change folder state.');
+      else this.toastError(res.message || this.t.instant('library.couldNotChangeState'));
     });
   }
 
@@ -230,11 +230,11 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
     this.handle(this.libSvc.rescan(folder.path), res => {
       this.busyPath = null;
       if (res.success) {
-        this.toastSuccess('Re-scan started.');
+        this.toastSuccess(this.t.instant('library.rescanStarted'));
         // Refresh after a short delay so the status flips to "indexing".
         setTimeout(() => this.refresh(), 800);
       } else {
-        this.toastError(res.message || 'Could not start re-scan.');
+        this.toastError(res.message || this.t.instant('library.couldNotRescan'));
       }
     });
   }
@@ -245,36 +245,30 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
     return this.folders.reduce((sum, f) => sum + f.image_count, 0);
   }
 
+  /** Returns a translation key; the template pipes it through `translate`. */
   statusLabel(status: WatchedFolderStatus): string {
-    const map: Record<WatchedFolderStatus, string> = {
-      watching: 'Watching',
-      indexing: 'Indexing',
-      paused:   'Paused',
-      error:    'Error',
-      missing:  'Path missing',
-    };
-    return map[status] ?? status;
+    return 'library.status.' + status;
   }
 
   /** Relative-time helper for "last update X ago". */
   agoLabel(timestampSec: number): string {
     if (!timestampSec) return '';
     const diff = Date.now() / 1000 - timestampSec;
-    if (diff < 60)        return `${Math.floor(diff)}s ago`;
-    if (diff < 3600)      return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400)     return `${Math.floor(diff / 3600)}h ago`;
-    return `${Math.floor(diff / 86400)}d ago`;
+    if (diff < 60)    return `${Math.floor(diff)}${this.t.instant('library.agoSec')}`;
+    if (diff < 3600)  return `${Math.floor(diff / 60)}${this.t.instant('library.agoMin')}`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}${this.t.instant('library.agoHour')}`;
+    return `${Math.floor(diff / 86400)}${this.t.instant('library.agoDay')}`;
   }
 
   // ── Toast helpers ────────────────────────────────────────────────
 
   private toastSuccess(detail: string): void {
-    this.messages.add({ key: 'app', severity: 'success', summary: 'Library', detail, life: 3500 });
+    this.messages.add({ key: 'app', severity: 'success', summary: this.t.instant('library.toastTitle'), detail, life: 3500 });
   }
   private toastWarn(detail: string): void {
-    this.messages.add({ key: 'app', severity: 'warn', summary: 'Library', detail, life: 4000 });
+    this.messages.add({ key: 'app', severity: 'warn', summary: this.t.instant('library.toastTitle'), detail, life: 4000 });
   }
   private toastError(detail: string): void {
-    this.messages.add({ key: 'app', severity: 'error', summary: 'Library', detail, life: 5000 });
+    this.messages.add({ key: 'app', severity: 'error', summary: this.t.instant('library.toastTitle'), detail, life: 5000 });
   }
 }

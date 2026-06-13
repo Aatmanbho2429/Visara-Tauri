@@ -1,25 +1,57 @@
 import { Component, OnInit, ViewChild, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { TranslateModule } from '@ngx-translate/core';
+import {
+  ReactiveFormsModule,
+  FormGroup,
+  FormControl,
+  Validators,
+  AbstractControl,
+  ValidationErrors,
+} from '@angular/forms';
+import { Router } from '@angular/router';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { MessageService } from 'primeng/api';
+import { PrimengComponentsModule } from '../../shared/primeng-components-module';
 import { BaseComponent } from '../../core/base.component';
 import { AuthService } from '../../services/auth.service';
 import { TauriService } from '../../services/tauri.service';
 import { UserStateService } from '../../services/user-state.service';
+import { SearchStateService } from '../../services/search-state.service';
 import { PlansDialog } from '../../shared/plans-dialog/plans-dialog';
 import { Subscription } from '../../models/auth.model';
 
+/** confirm_password must match new_password. */
+function passwordMatchValidator(group: AbstractControl): ValidationErrors | null {
+  const pw      = group.get('new_password')?.value;
+  const confirm = group.get('confirm_password')?.value;
+  if (confirm && pw !== confirm) {
+    group.get('confirm_password')?.setErrors({ passwordMismatch: true });
+    return { passwordMismatch: true };
+  }
+  if (confirm && pw === confirm) {
+    const existing = group.get('confirm_password')?.errors;
+    if (existing) {
+      const { passwordMismatch, ...rest } = existing;
+      group.get('confirm_password')?.setErrors(Object.keys(rest).length ? rest : null);
+    }
+  }
+  return null;
+}
+
 @Component({
   selector: 'app-profile',
-  imports: [CommonModule, TranslateModule, PlansDialog],
+  imports: [CommonModule, ReactiveFormsModule, TranslateModule, PrimengComponentsModule, PlansDialog],
   templateUrl: './profile.html',
   styleUrl: './profile.scss',
 })
 export class Profile extends BaseComponent implements OnInit {
   userState = inject(UserStateService);
-  private auth     = inject(AuthService);
-  private tauri    = inject(TauriService);
-  private messages = inject(MessageService);
+  private auth        = inject(AuthService);
+  private tauri       = inject(TauriService);
+  private messages    = inject(MessageService);
+  private router      = inject(Router);
+  private searchState = inject(SearchStateService);
+  private translate   = inject(TranslateService);
 
   @ViewChild(PlansDialog) plansDialog!: PlansDialog;
 
@@ -30,6 +62,19 @@ export class Profile extends BaseComponent implements OnInit {
   /** Reflects the real OS-level autostart state. */
   autostartEnabled  = false;
   autostartBusy     = false;
+
+  // ── Change password ─────────────────────────────────────────────
+  showChangePassword     = false;
+  changePasswordLoading  = false;
+  changePasswordError    = '';
+  changePasswordForm = new FormGroup(
+    {
+      old_password:     new FormControl('', [Validators.required]),
+      new_password:     new FormControl('', [Validators.required, Validators.minLength(8)]),
+      confirm_password: new FormControl('', [Validators.required]),
+    },
+    { validators: passwordMatchValidator }
+  );
 
   ngOnInit(): void {
     // If a guard bounced the user here because their subscription ended, explain why.
@@ -96,6 +141,57 @@ export class Profile extends BaseComponent implements OnInit {
   }
 
   openPlans(): void { this.plansDialog.open(); }
+
+  // ── Change password ─────────────────────────────────────────────
+  toggleChangePassword(): void {
+    this.showChangePassword = !this.showChangePassword;
+    this.changePasswordError = '';
+    this.changePasswordForm.reset();
+  }
+
+  submitChangePassword(): void {
+    if (this.changePasswordForm.invalid) {
+      this.changePasswordForm.markAllAsTouched();
+      return;
+    }
+    this.changePasswordLoading = true;
+    this.changePasswordError   = '';
+    const { old_password, new_password } = this.changePasswordForm.value;
+
+    this.handle(this.auth.changePassword(old_password!, new_password!), res => {
+      this.changePasswordLoading = false;
+      if (res.success) {
+        this.messages.add({
+          key: 'app',
+          severity: 'success',
+          summary: this.translate.instant('profile.password.changedTitle'),
+          detail:  this.translate.instant('profile.password.changedDetail'),
+          life: 4000,
+        });
+        // Force re-authentication with the new credentials.
+        setTimeout(() => this.logout(), 1500);
+      } else {
+        this.changePasswordError = res.message;
+      }
+    });
+  }
+
+  /** Tear down the session and return to the login screen. */
+  private logout(): void {
+    this.auth.logout().subscribe();
+    this.userState.clear();
+    this.searchState.reset();
+    this.router.navigate(['/']);
+  }
+
+  isInvalid(field: string): boolean {
+    const ctrl = this.changePasswordForm.get(field);
+    return !!(ctrl?.invalid && ctrl.touched);
+  }
+
+  hasError(field: string, error: string): boolean {
+    return !!this.changePasswordForm.get(field)?.hasError(error);
+  }
 
   get statusLabel(): string {
     const map: Record<string, string> = {

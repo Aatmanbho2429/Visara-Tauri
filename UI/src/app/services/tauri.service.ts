@@ -68,6 +68,38 @@ export class TauriService {
     });
   }
 
+  // ── Generic invoke — silent (no global loader) ─────────────────────
+  /**
+   * Same plumbing as `invoke()` but never touches the global loading
+   * spinner. Used for background/periodic checks (e.g. the silent license
+   * re-validation timer) that shouldn't visibly interrupt the UI.
+   */
+  invokeSilent<T>(command: string, args?: Record<string, unknown>): Observable<BaseResponse<T>> {
+    const eventName = `${command}_response`;
+    return new Observable(observer => {
+      let unlistenFn: (() => void) | null = null;
+
+      this.zone.runOutsideAngular(() => {
+        listen<BaseResponse<T>>(eventName, event => {
+          this.zone.run(() => {
+            observer.next(event.payload);
+            observer.complete();
+            unlistenFn?.();
+          });
+        }).then(unlisten => {
+          unlistenFn = unlisten;
+          invoke(command, args ?? {}).catch(err => {
+            this.zone.run(() => {
+              observer.next({ success: false, message: String(err), data: null as T });
+              observer.complete();
+              unlistenFn?.();
+            });
+          });
+        });
+      });
+    });
+  }
+
   // ── Search stream — emits progress/complete/error events ──────────
   /**
    * @param scopePaths Watched-folder paths to restrict the search to.  Empty

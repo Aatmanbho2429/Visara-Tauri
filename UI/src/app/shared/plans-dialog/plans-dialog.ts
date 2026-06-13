@@ -160,23 +160,23 @@ export class PlansDialog extends BaseComponent {
   }
 
   durationLabel(plan: Plan): string {
-    if (plan.duration === 7)   return '7 Days';
-    if (plan.duration === 30)  return '1 Month';
+    if (plan.duration === 30)   return '1 Month';
+    if (plan.duration === 90)  return '3 Months';
     if (plan.duration === 365) return '1 Year';
     return `${plan.duration} Days`;
   }
 
-  isRecommended(plan: Plan): boolean { return plan.duration === 30; }
+  isRecommended(plan: Plan): boolean { return plan.duration === 90; }
 
   planTagline(plan: Plan): string {
-    if (plan.duration <= 7)  return 'No commitment. Full AI power for 7 days — perfect for a quick project.';
-    if (plan.duration <= 30) return `The professional's choice. Search as much as you want, every single day.`;
+    if (plan.duration <= 30)  return 'No commitment. Full AI power for 30 days — perfect for a quick project.';
+    if (plan.duration <= 90) return `The professional's choice. Search as much as you want, every single day.`;
     return 'Go all in. A full year of unlimited access and you save 33% vs monthly.';
   }
 
   planIcon(plan: Plan): string {
-    if (plan.duration <= 7)  return 'pi-bolt';
-    if (plan.duration <= 30) return 'pi-star';
+    if (plan.duration <= 30)  return 'pi-bolt';
+    if (plan.duration <= 90) return 'pi-star';
     return 'pi-crown';
   }
 }

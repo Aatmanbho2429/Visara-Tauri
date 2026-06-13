@@ -39,10 +39,16 @@ export class Master implements OnInit, OnDestroy {
   private messages    = inject(MessageService);
   private unlisten:   UnlistenFn[] = [];
   private updateTimer: ReturnType<typeof setInterval> | null = null;
+  private revalidateTimer: ReturnType<typeof setInterval> | null = null;
 
   /** Re-check for updates every 6 hours so long-running tray sessions still
    *  get notified without a restart. */
   private static readonly UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+  /** Silently re-check the session/subscription against Supabase every 30
+   *  minutes so a long-running tray session notices an expired/revoked
+   *  subscription without needing a restart. */
+  private static readonly REVALIDATE_INTERVAL_MS = 30 * 60 * 1000;
 
   ngOnInit(): void {
     // Register the event listeners FIRST, then trigger the check — otherwise the
@@ -64,7 +70,33 @@ export class Master implements OnInit, OnDestroy {
     });
 
     this.updateTimer = setInterval(() => this.tauri.checkForUpdate(), Master.UPDATE_INTERVAL_MS);
+    this.revalidateTimer = setInterval(() => this.revalidateSession(), Master.REVALIDATE_INTERVAL_MS);
     this.maybeShowMigrationTip();
+  }
+
+  /** Background re-check of the session/subscription against Supabase.
+   *  Silent (no loading spinner) — only acts when the session must end or
+   *  the user's subscription info has changed. */
+  private revalidateSession(): void {
+    this.auth.periodicRevalidate().subscribe(res => {
+      if (!res.success || !res.data) return;
+      const { action, user } = res.data;
+
+      if (action === 'logout') {
+        this.messages.add({
+          key: 'app',
+          severity: 'warn',
+          summary: 'Session ended',
+          detail: 'Your session has expired. Please sign in again.',
+          life: 6000,
+        });
+        this.userState.clear();
+        this.searchState.reset();
+        this.router.navigate(['/']);
+      } else if (action === 'ok' && user) {
+        this.userState.set(user);
+      }
+    });
   }
 
   /** Detect legacy users (rows in `files` but no `watched_folders` row).
@@ -91,6 +123,7 @@ export class Master implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.unlisten.forEach(fn => fn());
     if (this.updateTimer) clearInterval(this.updateTimer);
+    if (this.revalidateTimer) clearInterval(this.revalidateTimer);
   }
 
   installUpdate(): void {

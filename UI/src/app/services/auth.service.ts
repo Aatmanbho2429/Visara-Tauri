@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { TauriService } from './tauri.service';
 import { BaseResponse } from '../models/base-response.model';
-import { LoginData, ValidateTokenData, PlansData, SubscriptionsData } from '../models/auth.model';
+import { LoginData, ValidateTokenData, PeriodicRevalidateData, PlansData, SubscriptionsData } from '../models/auth.model';
 
 export interface LoginPayload { email: string; password: string; }
 export interface RegisterPayload {
@@ -26,6 +26,12 @@ export class AuthService {
 
   validateToken(): Observable<BaseResponse<ValidateTokenData>> {
     return this.tauri.invoke<ValidateTokenData>('auth_validate_token');
+  }
+
+  /** Silent background re-check of the session/subscription against
+   *  Supabase. Runs on a timer (see master.ts) — no loading spinner. */
+  periodicRevalidate(): Observable<BaseResponse<PeriodicRevalidateData>> {
+    return this.tauri.invokeSilent<PeriodicRevalidateData>('auth_periodic_revalidate');
   }
 
   /** Instant file-existence check — no Supabase call. Use in route guards. */
@@ -68,6 +74,23 @@ export class AuthService {
   /** Email a one-time verification code for registration. */
   sendOtp(email: string): Observable<BaseResponse<null>> {
     return this.tauri.invoke<null>('auth_send_otp', { email });
+  }
+
+  /** Forgot-password step 1 — email a one-time code to a registered address. */
+  forgotPasswordSendOtp(email: string): Observable<BaseResponse<null>> {
+    return this.tauri.invoke<null>('auth_forgot_password_send_otp', { email });
+  }
+
+  /** Forgot-password step 2 — verify the code; on success a new password is
+   *  generated and emailed to the user. */
+  forgotPasswordVerifyOtp(email: string, otpCode: string): Observable<BaseResponse<null>> {
+    return this.tauri.invoke<null>('auth_forgot_password_verify_otp', { email, otpCode });
+  }
+
+  /** Change the logged-in user's password. On success the caller should log
+   *  the user out so they re-authenticate with the new password. */
+  changePassword(oldPassword: string, newPassword: string): Observable<BaseResponse<null>> {
+    return this.tauri.invoke<null>('auth_change_password', { oldPassword, newPassword });
   }
 
   requestAccess(payload: RegisterPayload): Observable<BaseResponse<null>> {

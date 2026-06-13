@@ -2,11 +2,11 @@
 
   <header class="browse-page__header">
     <div>
-      <h1 class="browse-page__title">Browse &amp; Tag</h1>
-      <p class="browse-page__subtitle">Navigate folders or filter by tag, select tiles, then categorize them.</p>
+      <h1 class="browse-page__title">{{ 'browse.title' | translate }}</h1>
+      <p class="browse-page__subtitle">{{ 'browse.subtitle' | translate }}</p>
     </div>
     <button class="browse-page__analyze" (click)="analyzeColors()">
-      <i class="pi pi-palette"></i> Analyze colors
+      <i class="pi pi-palette"></i> {{ 'browse.analyzeColors' | translate }}
     </button>
   </header>
 
@@ -15,19 +15,19 @@
     <!-- ── Tag filter sidebar ───────────────────────────────── -->
     <aside class="filter-sidebar">
       <div class="filter-sidebar__head">
-        <span>Filter by tag</span>
+        <span>{{ 'browse.filterByTag' | translate }}</span>
         @if (filtering) {
-          <button class="filter-sidebar__clear" (click)="clearFilters()">Clear</button>
+          <button class="filter-sidebar__clear" (click)="clearFilters()">{{ 'browse.clear' | translate }}</button>
         }
       </div>
 
       @if (facetGroups.length === 0) {
-        <p class="filter-sidebar__empty">No tags yet. Select tiles and use <strong>Categorize</strong>.</p>
+        <p class="filter-sidebar__empty">{{ 'browse.noTags' | translate }}</p>
       }
 
       @for (group of facetGroups; track group.category) {
         <div class="facet-group">
-          <span class="facet-group__label">{{ group.label }}</span>
+          <span class="facet-group__label">{{ ('browse.cat.' + group.category) | translate }}</span>
           <div class="facet-group__chips">
             @for (f of group.facets; track f.category + f.value) {
               <button class="facet-chip"
@@ -48,7 +48,7 @@
       @if (!filtering) {
         <nav class="crumbs">
           <button class="crumbs__item" (click)="openPath('')">
-            <i class="pi pi-home"></i> Library
+            <i class="pi pi-home"></i> {{ 'browse.libraryRoot' | translate }}
           </button>
           @for (c of breadcrumb; track c.path) {
             <i class="pi pi-angle-right crumbs__sep"></i>
@@ -57,11 +57,11 @@
         </nav>
       } @else {
         <div class="filter-summary">
-          <span>Showing tiles tagged</span>
+          <span>{{ 'browse.showingTagged' | translate }}</span>
           @for (a of activeFilters; track a.category + a.value) {
             <span class="filter-summary__chip">{{ a.value }}</span>
           }
-          <span class="filter-summary__count">· {{ filterImages.length }} results</span>
+          <span class="filter-summary__count">· {{ filterImages.length }} {{ 'browse.results' | translate }}</span>
         </div>
       }
 
@@ -73,8 +73,8 @@
         <!-- Toolbar -->
         @if (visibleImages.length > 0) {
           <div class="grid-toolbar">
-            <span>{{ visibleImages.length }} images</span>
-            <button class="grid-toolbar__btn" (click)="selectAllVisible()">Select all</button>
+            <span>{{ visibleImages.length }} {{ 'browse.images' | translate }}</span>
+            <button class="grid-toolbar__btn" (click)="selectAllVisible()">{{ 'browse.selectAll' | translate }}</button>
           </div>
         }
 
@@ -109,7 +109,7 @@
               </div>
               <div class="tile-card__foot">
                 <span class="tile-card__name" [title]="img.path">{{ img.name }}</span>
-                <button class="tile-card__open" (click)="openFile(img.path); $event.stopPropagation()" title="Open in Finder">
+                <button class="tile-card__open" (click)="openFile(img.path); $event.stopPropagation()" [title]="'browse.openInFinder' | translate">
                   <i class="pi pi-external-link"></i>
                 </button>
               </div>
@@ -120,7 +120,7 @@
         @if (visibleImages.length === 0 && folders.length === 0) {
           <div class="browse-empty">
             <i class="pi pi-inbox"></i>
-            <p>{{ filtering ? 'No tiles match these tags.' : 'This folder is empty.' }}</p>
+            <p>{{ (filtering ? 'browse.noMatch' : 'browse.folderEmpty') | translate }}</p>
           </div>
         }
       }
@@ -130,12 +130,12 @@
   <!-- ── Selection action bar ───────────────────────────────── -->
   @if (selected.size > 0) {
     <div class="selection-bar">
-      <span class="selection-bar__count">{{ selected.size }} selected</span>
+      <span class="selection-bar__count">{{ selected.size }} {{ 'browse.selectedCount' | translate }}</span>
       <div class="selection-bar__actions">
         <button class="selection-bar__btn selection-bar__btn--primary" (click)="openCategorize()">
-          <i class="pi pi-tag"></i> Categorize
+          <i class="pi pi-tag"></i> {{ 'browse.categorize' | translate }}
         </button>
-        <button class="selection-bar__btn selection-bar__btn--ghost" (click)="clearSelection()">Clear</button>
+        <button class="selection-bar__btn selection-bar__btn--ghost" (click)="clearSelection()">{{ 'browse.clear' | translate }}</button>
       </div>
     </div>
   }
@@ -146,8 +146,8 @@
     <div class="cat-panel">
       <div class="cat-panel__head">
         <div>
-          <h2>Categorize</h2>
-          <span>{{ selected.size }} tile{{ selected.size === 1 ? '' : 's' }} selected</span>
+          <h2>{{ 'browse.categorize' | translate }}</h2>
+          <span>{{ selected.size }} {{ (selected.size === 1 ? 'browse.tile' : 'browse.tiles') | translate }} {{ 'browse.selectedCount' | translate }}</span>
         </div>
         <button class="cat-panel__close" (click)="closePanel()"><i class="pi pi-times"></i></button>
       </div>
@@ -156,13 +156,13 @@
 
         @if (suggestions.length > 0) {
           <div class="cat-section">
-            <span class="cat-section__label">Suggested from filenames</span>
+            <span class="cat-section__label">{{ 'browse.suggestedFromFilenames' | translate }}</span>
             <div class="cat-chips">
               @for (s of suggestions; track s.category + s.value) {
                 <button class="cat-chip cat-chip--suggest"
                         [class.cat-chip--active]="isSuggestionApplied(s)"
                         (click)="applySuggestion(s)">
-                  {{ s.value }} <small>{{ catLabel[s.category] }}</small>
+                  {{ s.value }} <small>{{ ('browse.cat.' + s.category) | translate }}</small>
                 </button>
               }
             </div>
@@ -171,7 +171,7 @@
 
         @for (cat of panelCategories; track cat) {
           <div class="cat-section">
-            <span class="cat-section__label">{{ catLabel[cat] }}</span>
+            <span class="cat-section__label">{{ ('browse.cat.' + cat) | translate }}</span>
             <div class="cat-chips">
               @for (val of presets[cat]; track val) {
                 <button class="cat-chip"
@@ -186,7 +186,7 @@
         }
 
         <div class="cat-section">
-          <span class="cat-section__label">My Tags</span>
+          <span class="cat-section__label">{{ 'browse.cat.custom' | translate }}</span>
           @if (customTags().length > 0) {
             <div class="cat-chips">
               @for (v of customTags(); track v) {
@@ -201,8 +201,8 @@
             <input class="cat-custom__input" type="text"
                    [(ngModel)]="customInput"
                    (keyup.enter)="addCustom()"
-                   placeholder="e.g. aatmans tile, bestseller…" />
-            <button class="cat-custom__add" (click)="addCustom()">Add</button>
+                   [placeholder]="'browse.customPlaceholder' | translate" />
+            <button class="cat-custom__add" (click)="addCustom()">{{ 'browse.add' | translate }}</button>
           </div>
         </div>
 

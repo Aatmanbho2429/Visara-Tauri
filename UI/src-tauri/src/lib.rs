@@ -322,9 +322,13 @@ pub fn run() {
             // ── Authentication ───────────────────────────────────────
             auth::auth_login,
             auth::auth_validate_token,
+            auth::auth_periodic_revalidate,
             auth::auth_check_session,
             auth::auth_logout,
             auth::auth_send_otp,
+            auth::auth_forgot_password_send_otp,
+            auth::auth_forgot_password_verify_otp,
+            auth::auth_change_password,
             auth::auth_request_access,
             // ── Image search ─────────────────────────────────────────
             search::start_search,
