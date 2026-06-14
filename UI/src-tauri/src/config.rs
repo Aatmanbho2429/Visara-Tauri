@@ -6,7 +6,7 @@ use once_cell::sync::Lazy;
 
 // ── App identity ───────────────────────────────────────────────────────────
 
-pub const APP_VERSION:   &str = "1.1.20";
+pub const APP_VERSION:   &str = "1.1.21";
 pub const SUPABASE_EDGE: &str =
     "https://qpxvwdxuhgbthzbcppye.supabase.co/functions/v1";
 
