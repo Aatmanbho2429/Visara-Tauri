@@ -66,7 +66,10 @@ jobs:
             blocking: false
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # Apple's notarization queue has no SLA and can take well over 90
+    # minutes during load spikes — give it room so the job isn't killed
+    # mid-wait after build+sign already succeeded.
+    timeout-minutes: 300
     continue-on-error: ${{ !matrix.blocking }}
 
     steps:
