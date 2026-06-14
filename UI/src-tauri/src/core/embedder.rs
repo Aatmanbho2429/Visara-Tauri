@@ -55,8 +55,8 @@ pub fn load_model(key: &str) -> Result<()> {
         .commit_from_memory(&model_bytes)
         .map_err(|e| PictoriaError::Fatal(e.to_string()))?;
 
-    let input_name = session.inputs()[0].name().to_string();
-    let out_name   = session.outputs()[0].name().to_string();
+    let input_name = session.inputs[0].name.clone();
+    let out_name   = session.outputs[0].name.clone();
 
     log::info!("CLIP model ready  input={input_name}  output={out_name}");
 
