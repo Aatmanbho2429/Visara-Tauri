@@ -287,6 +287,17 @@ pub fn run() {
             // and `reconcile_all`.
             crate::core::watcher::init(app.handle().clone());
 
+            // One-time sweep of tag rows orphaned by earlier folder deletes /
+            // renames, so the Browse facets don't keep showing files that are
+            // no longer indexed.  Cheap and idempotent; safe to run every boot.
+            if let Ok(con) = crate::core::database::open() {
+                match crate::core::database::sweep_orphan_tags(&con) {
+                    Ok(n) if n > 0 => log::info!("[db] swept {n} orphaned tag row(s)"),
+                    Ok(_)          => {}
+                    Err(e)         => log::warn!("[db] orphan tag sweep failed: {e}"),
+                }
+            }
+
             // When launched at user login via autostart, the OS passes
             // `--autostart` on the command line.  In that case we keep the
             // main window hidden so Pictoria boots silently into the tray.

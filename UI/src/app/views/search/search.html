@@ -196,13 +196,17 @@
               @for (item of col; track item.rank) {
                 <div class="pin-card" (click)="openFile(item.path)">
                   <div class="pin-card__img-wrap">
-                    @if (!item.imgError) {
+                    @if (item.thumbnailUrl && !item.imgError) {
                       <img [src]="item.thumbnailUrl" [alt]="item.name"
                            class="pin-card__img" loading="lazy"
                            (error)="onImgError(item)" />
-                    } @else {
+                    } @else if (item.imgError) {
                       <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
                         <i class="pi pi-image"></i>
+                      </div>
+                    } @else {
+                      <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
+                        <i class="pi pi-spin pi-spinner"></i>
                       </div>
                     }
                     <div class="pin-card__overlay">

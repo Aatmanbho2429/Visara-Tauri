@@ -9,6 +9,7 @@ import { BaseComponent } from '../../core/base.component';
 import { TauriService } from '../../services/tauri.service';
 import { AuthService } from '../../services/auth.service';
 import { LibraryService } from '../../services/library.service';
+import { BrowseService } from '../../services/browse.service';
 import { UserStateService } from '../../services/user-state.service';
 import { SearchStateService } from '../../services/search-state.service';
 import { PlansDialog } from '../../shared/plans-dialog/plans-dialog';
@@ -51,6 +52,7 @@ export class Search extends BaseComponent implements OnInit {
   private tauri     = inject(TauriService);
   private auth      = inject(AuthService);
   private libSvc    = inject(LibraryService);
+  private browseSvc = inject(BrowseService);
   private userState = inject(UserStateService);
   private router    = inject(Router);
   state             = inject(SearchStateService);
@@ -221,8 +223,16 @@ export class Search extends BaseComponent implements OnInit {
         } else if (event.type === 'complete') {
           this.state.results = (event.data?.results ?? []).map((r: any) => {
             const safe = this.isBrowserSafe(r.path);
-            return { ...r, thumbnailUrl: safe ? convertFileSrc(r.path) : '', imgError: !safe };
+            // Browser-safe formats load straight from disk; everything else
+            // (PSB, PSD, TIFF…) has no thumbnail yet — leave it in the loading
+            // state and generate one below, mirroring the Browse page.
+            return { ...r, thumbnailUrl: safe ? convertFileSrc(r.path) : '', imgError: false };
           });
+          // Kick off thumbnail generation for the non-browser-safe results so
+          // they render as real previews instead of a gradient fallback.
+          for (const item of this.state.results) {
+            if (!item.thumbnailUrl) this.loadThumb(item);
+          }
           this.state.failedFiles = event.data?.failed_files ?? [];
           this.state.searchState = 'results';
         } else if (event.type === 'error') {
@@ -235,6 +245,14 @@ export class Search extends BaseComponent implements OnInit {
   }
 
   newSearch(): void { this.state.reset(); this.cdr.detectChanges(); }
+
+  /** Generate (or fetch the cached) thumbnail for a non-browser-safe format,
+   *  then point the tile at it.  Falls back to the gradient on failure. */
+  private loadThumb(item: SearchResult): void {
+    this.browseSvc.thumbnail(item.path)
+      .then(tp => { item.thumbnailUrl = convertFileSrc(tp); this.cdr.detectChanges(); })
+      .catch(() => { item.imgError = true; this.cdr.detectChanges(); });
+  }
 
   onImgError(item: SearchResult): void { item.imgError = true; this.cdr.detectChanges(); }
 

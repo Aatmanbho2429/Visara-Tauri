@@ -170,22 +170,22 @@
               {{ 'library.rescan' | translate }}
             </button>
 
-            <button
+            <!-- <button
               class="folder-btn"
               (click)="togglePause(f)"
               [disabled]="busyPath === f.path">
               <i class="pi" [ngClass]="f.status === 'paused' ? 'pi-play' : 'pi-pause'"></i>
               {{ (f.status === 'paused' ? 'library.resume' : 'library.pause') | translate }}
-            </button>
+            </button> -->
 
-            <button
+            <!-- <button
               class="folder-btn folder-btn--danger"
               (click)="removeFolder(f, false)"
               [disabled]="busyPath === f.path"
               [title]="'library.stopWatchingTitle' | translate">
               <i class="pi pi-eye-slash"></i>
               {{ 'library.stopWatching' | translate }}
-            </button>
+            </button> -->
 
             <button
               class="folder-btn folder-btn--danger"

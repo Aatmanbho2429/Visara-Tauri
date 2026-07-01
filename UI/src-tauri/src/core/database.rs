@@ -71,6 +71,18 @@ pub fn open() -> Result<Connection> {
     Ok(con)
 }
 
+/// One-shot cleanup of `file_tags` rows whose file no longer exists in `files`
+/// (left behind by folder deletes / renames before tag cleanup was wired up).
+/// Call once at startup — NOT from `open()`, which runs per-file during sync.
+/// Returns the number of orphaned tag rows removed.
+pub fn sweep_orphan_tags(con: &Connection) -> Result<usize> {
+    let removed = con.execute(
+        "DELETE FROM file_tags WHERE path NOT IN (SELECT path FROM files)",
+        [],
+    )?;
+    Ok(removed)
+}
+
 // ── Watched folders queries ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -212,11 +224,19 @@ pub fn move_file(con: &Connection, old_path: &str, new_path: &str) -> Result<()>
         "UPDATE files SET path = ?1 WHERE path = ?2",
         params![new_path, old_path],
     )?;
+    // Keep the tags attached to the file under its new path.
+    con.execute(
+        "UPDATE file_tags SET path = ?1 WHERE path = ?2",
+        params![new_path, old_path],
+    )?;
     Ok(())
 }
 
 pub fn delete_file(con: &Connection, path: &str) -> Result<()> {
     con.execute("DELETE FROM files WHERE path = ?1", params![path])?;
+    // Tags are keyed by path with no FK cascade, so purge them here too —
+    // otherwise the Browse facets keep showing a file that no longer exists.
+    con.execute("DELETE FROM file_tags WHERE path = ?1", params![path])?;
     Ok(())
 }
 
@@ -238,6 +258,7 @@ pub fn cleanup_missing_in_folder(con: &Connection, folder: &str) -> Result<Vec<i
     for (path, id) in rows {
         if !Path::new(&path).exists() {
             con.execute("DELETE FROM files WHERE path = ?1", params![path])?;
+            con.execute("DELETE FROM file_tags WHERE path = ?1", params![path])?;
             removed_ids.push(id);
         }
     }
