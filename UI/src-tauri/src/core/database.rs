@@ -47,14 +47,18 @@ pub fn open() -> Result<Connection> {
 
         CREATE TABLE IF NOT EXISTS file_tags (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            path       TEXT NOT NULL,
+            file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
             category   TEXT NOT NULL,   -- color | material | finish | size | design | collection | custom
             value      TEXT NOT NULL,
             source     TEXT NOT NULL DEFAULT 'manual',  -- auto | manual | filename
             created_at REAL NOT NULL DEFAULT 0,
-            UNIQUE(path, category, value)
+            UNIQUE(file_id, category, value)
         );
-        CREATE INDEX IF NOT EXISTS idx_file_tags_path    ON file_tags(path);
+        -- NOTE: the file_id index is created by migrate_file_tags_to_file_id(),
+        -- NOT here: on a legacy database file_tags still has the old path-based
+        -- schema with no file_id column, so an index on it would fail this whole
+        -- batch (and block the very migration that fixes it).  idx on
+        -- (category, value) is safe — those columns exist in both schemas.
         CREATE INDEX IF NOT EXISTS idx_file_tags_cat_val ON file_tags(category, value);
 
         CREATE TABLE IF NOT EXISTS catalog_themes (
@@ -71,13 +75,80 @@ pub fn open() -> Result<Connection> {
     Ok(con)
 }
 
-/// One-shot cleanup of `file_tags` rows whose file no longer exists in `files`
-/// (left behind by folder deletes / renames before tag cleanup was wired up).
-/// Call once at startup — NOT from `open()`, which runs per-file during sync.
+// ── Schema / embedding version helpers ─────────────────────────────────────
+
+/// SQLite `PRAGMA user_version` — repurposed as the *embedding schema* version so
+/// a change to how vectors are produced (model / preprocessing / colour) can be
+/// detected on startup and turned into a one-time re-index.
+pub fn user_version(con: &Connection) -> Result<i64> {
+    Ok(con.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+}
+
+pub fn set_user_version(con: &Connection, v: i64) -> Result<()> {
+    // PRAGMA does not accept bound parameters; v is a trusted integer constant.
+    con.execute_batch(&format!("PRAGMA user_version = {v};"))?;
+    Ok(())
+}
+
+/// One-time schema upgrade: convert the legacy path-keyed `file_tags` table to
+/// reference `files(id)` with `ON DELETE CASCADE`.  Idempotent — it detects the
+/// old `path` column and rebuilds, copying tags across by joining on the file
+/// path.  Orphan tags (whose path is no longer in `files`) are dropped by the
+/// join, which is exactly the cleanup the old `sweep_orphan_tags` hack did.
+/// Call once at startup, before any tag read/write.
+pub fn migrate_file_tags_to_file_id(con: &Connection) -> Result<()> {
+    let has_path = {
+        let mut stmt = con.prepare("PRAGMA table_info(file_tags)")?;
+        let cols = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<String>>();
+        cols.iter().any(|c| c == "path")
+    };
+    if !has_path {
+        // Already migrated, or a fresh install whose file_tags was created on the
+        // new schema by `open()` (which deliberately does not build the file_id
+        // index).  Ensure that index exists, then we're done.
+        con.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_file_tags_file ON file_tags(file_id);",
+        )?;
+        return Ok(());
+    }
+
+    log::info!("[db] migrating file_tags to file_id-based schema…");
+    con.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         BEGIN;
+         CREATE TABLE file_tags_new (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id    INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+            category   TEXT NOT NULL,
+            value      TEXT NOT NULL,
+            source     TEXT NOT NULL DEFAULT 'manual',
+            created_at REAL NOT NULL DEFAULT 0,
+            UNIQUE(file_id, category, value)
+         );
+         INSERT OR IGNORE INTO file_tags_new (file_id, category, value, source, created_at)
+            SELECT f.id, t.category, t.value, t.source, t.created_at
+            FROM file_tags t JOIN files f ON f.path = t.path;
+         DROP TABLE file_tags;
+         ALTER TABLE file_tags_new RENAME TO file_tags;
+         CREATE INDEX IF NOT EXISTS idx_file_tags_file    ON file_tags(file_id);
+         CREATE INDEX IF NOT EXISTS idx_file_tags_cat_val ON file_tags(category, value);
+         COMMIT;
+         PRAGMA foreign_keys = ON;",
+    )?;
+    log::info!("[db] file_tags migration complete");
+    Ok(())
+}
+
+/// Cleanup of `file_tags` rows whose file no longer exists in `files`.  With the
+/// `ON DELETE CASCADE` foreign key these should never accumulate, but this stays
+/// as a cheap belt-and-suspenders sweep for rows left by pre-migration builds.
 /// Returns the number of orphaned tag rows removed.
 pub fn sweep_orphan_tags(con: &Connection) -> Result<usize> {
     let removed = con.execute(
-        "DELETE FROM file_tags WHERE path NOT IN (SELECT path FROM files)",
+        "DELETE FROM file_tags WHERE file_id NOT IN (SELECT id FROM files)",
         [],
     )?;
     Ok(removed)
@@ -220,23 +291,18 @@ pub fn insert_file(
 }
 
 pub fn move_file(con: &Connection, old_path: &str, new_path: &str) -> Result<()> {
+    // Tags reference files(id), which is stable across a rename — updating the
+    // path alone keeps every tag attached automatically.
     con.execute(
         "UPDATE files SET path = ?1 WHERE path = ?2",
-        params![new_path, old_path],
-    )?;
-    // Keep the tags attached to the file under its new path.
-    con.execute(
-        "UPDATE file_tags SET path = ?1 WHERE path = ?2",
         params![new_path, old_path],
     )?;
     Ok(())
 }
 
 pub fn delete_file(con: &Connection, path: &str) -> Result<()> {
+    // ON DELETE CASCADE purges the file's tags automatically.
     con.execute("DELETE FROM files WHERE path = ?1", params![path])?;
-    // Tags are keyed by path with no FK cascade, so purge them here too —
-    // otherwise the Browse facets keep showing a file that no longer exists.
-    con.execute("DELETE FROM file_tags WHERE path = ?1", params![path])?;
     Ok(())
 }
 
@@ -257,8 +323,8 @@ pub fn cleanup_missing_in_folder(con: &Connection, folder: &str) -> Result<Vec<i
     let mut removed_ids = Vec::new();
     for (path, id) in rows {
         if !Path::new(&path).exists() {
+            // ON DELETE CASCADE removes this file's tags with the row.
             con.execute("DELETE FROM files WHERE path = ?1", params![path])?;
-            con.execute("DELETE FROM file_tags WHERE path = ?1", params![path])?;
             removed_ids.push(id);
         }
     }
@@ -452,10 +518,12 @@ fn now_secs() -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Add a tag (no-op if the exact (path, category, value) already exists).
+/// Add a tag (no-op if the exact (file, category, value) already exists, or if
+/// the path is not an indexed file).
 pub fn add_tag(con: &Connection, path: &str, category: &str, value: &str, source: &str) -> Result<()> {
     con.execute(
-        "INSERT OR IGNORE INTO file_tags (path, category, value, source, created_at) VALUES (?1,?2,?3,?4,?5)",
+        "INSERT OR IGNORE INTO file_tags (file_id, category, value, source, created_at) \
+         SELECT id, ?2, ?3, ?4, ?5 FROM files WHERE path = ?1",
         params![path, category, value, source, now_secs()],
     )?;
     Ok(())
@@ -464,13 +532,18 @@ pub fn add_tag(con: &Connection, path: &str, category: &str, value: &str, source
 /// Replace every value in a single-valued category for a path (color, size,
 /// material, finish, design).
 pub fn set_single_tag(con: &Connection, path: &str, category: &str, value: &str, source: &str) -> Result<()> {
-    con.execute("DELETE FROM file_tags WHERE path = ?1 AND category = ?2", params![path, category])?;
+    con.execute(
+        "DELETE FROM file_tags WHERE category = ?2 \
+           AND file_id = (SELECT id FROM files WHERE path = ?1)",
+        params![path, category],
+    )?;
     add_tag(con, path, category, value, source)
 }
 
 pub fn remove_tag(con: &Connection, path: &str, category: &str, value: &str) -> Result<()> {
     con.execute(
-        "DELETE FROM file_tags WHERE path = ?1 AND category = ?2 AND value = ?3",
+        "DELETE FROM file_tags WHERE category = ?2 AND value = ?3 \
+           AND file_id = (SELECT id FROM files WHERE path = ?1)",
         params![path, category, value],
     )?;
     Ok(())
@@ -478,7 +551,8 @@ pub fn remove_tag(con: &Connection, path: &str, category: &str, value: &str) -> 
 
 pub fn path_has_category(con: &Connection, path: &str, category: &str) -> Result<bool> {
     let n: i64 = con.query_row(
-        "SELECT COUNT(*) FROM file_tags WHERE path = ?1 AND category = ?2",
+        "SELECT COUNT(*) FROM file_tags t JOIN files f ON f.id = t.file_id \
+          WHERE f.path = ?1 AND t.category = ?2",
         params![path, category],
         |r| r.get(0),
     )?;
@@ -490,7 +564,9 @@ pub fn tags_for_paths(con: &Connection, paths: &[String]) -> Result<Vec<FileTag>
     if paths.is_empty() { return Ok(Vec::new()); }
     let placeholders = (0..paths.len()).map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
-        "SELECT path, category, value, source FROM file_tags WHERE path IN ({placeholders}) ORDER BY category, value"
+        "SELECT f.path, t.category, t.value, t.source \
+           FROM file_tags t JOIN files f ON f.id = t.file_id \
+          WHERE f.path IN ({placeholders}) ORDER BY t.category, t.value"
     );
     let mut stmt = con.prepare(&sql)?;
     let rows = stmt
@@ -511,8 +587,8 @@ pub fn tags_for_paths(con: &Connection, paths: &[String]) -> Result<Vec<FileTag>
 /// the filter chips.
 pub fn tag_facets(con: &Connection) -> Result<Vec<TagFacet>> {
     let mut stmt = con.prepare(
-        "SELECT category, value, COUNT(DISTINCT path) FROM file_tags \
-         GROUP BY category, value ORDER BY category ASC, COUNT(DISTINCT path) DESC",
+        "SELECT category, value, COUNT(DISTINCT file_id) FROM file_tags \
+         GROUP BY category, value ORDER BY category ASC, COUNT(DISTINCT file_id) DESC",
     )?;
     let rows = stmt
         .query_map([], |r| {
@@ -544,7 +620,7 @@ pub fn query_paths_by_tags(con: &Connection, filters: &[(String, String)]) -> Re
     }
 
     let clause = (0..filters.len())
-        .map(|_| "(category = ? AND value = ?)")
+        .map(|_| "(t.category = ? AND t.value = ?)")
         .collect::<Vec<_>>()
         .join(" OR ");
     // A path qualifies once it has at least one matching tag in EVERY distinct
@@ -555,7 +631,8 @@ pub fn query_paths_by_tags(con: &Connection, filters: &[(String, String)]) -> Re
     // silently returned zero rows.
     let distinct_categories = filters.iter().map(|(c, _)| c.as_str()).collect::<HashSet<_>>().len();
     let sql = format!(
-        "SELECT path FROM file_tags WHERE {clause} GROUP BY path HAVING COUNT(DISTINCT category) = {}",
+        "SELECT f.path FROM file_tags t JOIN files f ON f.id = t.file_id \
+          WHERE {clause} GROUP BY t.file_id HAVING COUNT(DISTINCT t.category) = {}",
         distinct_categories
     );
 
@@ -580,7 +657,7 @@ pub fn paths_missing_category_in_folder(con: &Connection, folder: &str, category
     let mut stmt = con.prepare(
         "SELECT f.path FROM files f \
          WHERE f.path LIKE ?1 \
-           AND NOT EXISTS (SELECT 1 FROM file_tags t WHERE t.path = f.path AND t.category = ?2)",
+           AND NOT EXISTS (SELECT 1 FROM file_tags t WHERE t.file_id = f.id AND t.category = ?2)",
     )?;
     let rows = stmt
         .query_map(params![format!("{prefix}%"), category], |r| r.get::<_, String>(0))?
@@ -666,10 +743,11 @@ mod tests {
 
     fn mem() -> Connection {
         let con = Connection::open_in_memory().unwrap();
+        con.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         con.execute_batch(
             "CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, faiss_id INTEGER UNIQUE NOT NULL, mtime REAL NOT NULL DEFAULT 0);
              CREATE TABLE watched_folders (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, status TEXT NOT NULL DEFAULT 'watching', added_at REAL NOT NULL, last_event_at REAL NOT NULL DEFAULT 0);
-             CREATE TABLE file_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL, category TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', created_at REAL NOT NULL DEFAULT 0, UNIQUE(path,category,value));
+             CREATE TABLE file_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, category TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', created_at REAL NOT NULL DEFAULT 0, UNIQUE(file_id,category,value));
              CREATE TABLE catalog_themes (id TEXT PRIMARY KEY, name TEXT NOT NULL, json TEXT NOT NULL, updated_at REAL NOT NULL DEFAULT 0);",
         ).unwrap();
         con
@@ -728,6 +806,38 @@ mod tests {
 
         remove_tag(&con, "/lib/a.jpg", "custom", "bestseller").unwrap();
         assert!(!tags_for_paths(&con, &["/lib/a.jpg".into()]).unwrap().iter().any(|t| t.value == "bestseller"));
+    }
+
+    /// Simulates a legacy customer DB (path-keyed file_tags, no file_id column)
+    /// upgrading in place — the exact path an existing `.pictoria` takes.
+    #[test]
+    fn migrates_legacy_path_keyed_file_tags() {
+        let con = Connection::open_in_memory().unwrap();
+        con.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        con.execute_batch(
+            "CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, faiss_id INTEGER UNIQUE NOT NULL, mtime REAL NOT NULL DEFAULT 0);
+             CREATE TABLE file_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT NOT NULL, category TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', created_at REAL NOT NULL DEFAULT 0, UNIQUE(path,category,value));",
+        ).unwrap();
+        seed_files(&con, &["/lib/a.jpg", "/lib/b.jpg"]);
+        con.execute("INSERT INTO file_tags (path,category,value,source,created_at) VALUES ('/lib/a.jpg','color','beige','auto',0)", []).unwrap();
+        con.execute("INSERT INTO file_tags (path,category,value,source,created_at) VALUES ('/lib/a.jpg','finish','glossy','manual',0)", []).unwrap();
+        // An orphan tag (path not in files) — must be dropped by the migration.
+        con.execute("INSERT INTO file_tags (path,category,value,source,created_at) VALUES ('/gone/x.jpg','color','grey','auto',0)", []).unwrap();
+
+        migrate_file_tags_to_file_id(&con).unwrap();
+
+        // Valid tags survived, keyed by file_id now; orphan dropped.
+        let ta = tags_for_paths(&con, &["/lib/a.jpg".into()]).unwrap();
+        assert_eq!(ta.len(), 2);
+        assert!(ta.iter().any(|t| t.category == "color" && t.value == "beige"));
+        assert!(!tag_facets(&con).unwrap().iter().any(|f| f.value == "grey"));
+
+        // The new ON DELETE CASCADE removes tags when the file row goes.
+        delete_file(&con, "/lib/a.jpg").unwrap();
+        assert!(tags_for_paths(&con, &["/lib/a.jpg".into()]).unwrap().is_empty());
+
+        // Idempotent: a second run is a harmless no-op.
+        migrate_file_tags_to_file_id(&con).unwrap();
     }
 
     #[test]

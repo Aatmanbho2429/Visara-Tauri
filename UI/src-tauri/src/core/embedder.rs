@@ -118,19 +118,37 @@ pub fn embed_batch(images: &[f32], batch_size: usize) -> Result<Vec<Vec<f32>>> {
 }
 
 pub fn preprocess(img: image::DynamicImage) -> Vec<f32> {
-    let size = CLIP_INPUT_SIZE as usize;
-    let resized = img
-        .resize_exact(CLIP_INPUT_SIZE, CLIP_INPUT_SIZE, image::imageops::FilterType::Triangle)
-        .to_rgb8();
+    let size = CLIP_INPUT_SIZE;   // 224
+    let sz   = size as usize;
 
-    let mut output = vec![0.0_f32; 3 * size * size];
-    for (i, pixel) in resized.pixels().enumerate() {
-        let row = i / size;
-        let col = i % size;
+    // Canonical CLIP recipe: resize so the *shorter* side == 224 (preserving
+    // aspect ratio), then centre-crop to 224×224.  The old code squashed every
+    // image to a square with `resize_exact`, which distorted rectangular tiles
+    // (plank / subway formats) and pushed their embeddings off the distribution
+    // CLIP was trained on — weakening similarity for exactly those designs.
+    let (w, h) = (img.width(), img.height());
+    let (nw, nh) = if w <= h {
+        (size, ((h as u64 * size as u64) / w.max(1) as u64) as u32)
+    } else {
+        (((w as u64 * size as u64) / h.max(1) as u64) as u32, size)
+    };
+    let resized = img.resize_exact(
+        nw.max(size),
+        nh.max(size),
+        image::imageops::FilterType::Triangle,
+    );
+    let x = resized.width().saturating_sub(size) / 2;
+    let y = resized.height().saturating_sub(size) / 2;
+    let cropped = resized.crop_imm(x, y, size, size).to_rgb8();
+
+    let mut output = vec![0.0_f32; 3 * sz * sz];
+    for (i, pixel) in cropped.pixels().enumerate() {
+        let row = i / sz;
+        let col = i % sz;
         for c in 0..3 {
             let val        = pixel[c] as f32 / 255.0;
             let normalised = (val - CLIP_MEAN[c]) / CLIP_STD[c];
-            output[c * size * size + row * size + col] = normalised;
+            output[c * sz * sz + row * sz + col] = normalised;
         }
     }
     output

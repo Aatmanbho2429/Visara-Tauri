@@ -829,8 +829,10 @@
   font-family: $font-primary;
   font-size: $font-size-xs;
   color: $surface-500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  // Show the full absolute path — wrap instead of truncating so nothing hides.
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.35;
+  user-select: text;
 }
 

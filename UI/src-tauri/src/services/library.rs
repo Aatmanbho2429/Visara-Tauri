@@ -224,12 +224,10 @@ fn purge_folder_rows(con: &rusqlite::Connection, folder: &str) -> rusqlite::Resu
     } else {
         format!("{folder}{}", std::path::MAIN_SEPARATOR)
     };
-    // Drop the tag rows for this folder too — Browse facets read file_tags
-    // directly, so leaving them behind keeps deleted files visible there.
-    con.execute(
-        "DELETE FROM file_tags WHERE path LIKE ?1",
-        rusqlite::params![format!("{prefix}%")],
-    )?;
+    // Deleting the file rows cascades to their tags (file_tags → files, ON
+    // DELETE CASCADE), so Browse facets update automatically — no separate tag
+    // delete needed.  The connection is opened via database::open(), which sets
+    // PRAGMA foreign_keys = ON, so the cascade actually fires.
     con.execute(
         "DELETE FROM files WHERE path LIKE ?1",
         rusqlite::params![format!("{prefix}%")],

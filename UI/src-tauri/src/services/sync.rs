@@ -166,24 +166,32 @@ pub fn sync_folder(
             let first_name = chunk[0].0.file_name().and_then(|n| n.to_str()).unwrap_or("");
             progress::set_progress(None, None, None, Some(first_name), None);
 
-            // Pre-process images in parallel.
-            let preprocess_results: Vec<(usize, Result<Vec<f32>>)> = chunk
+            // Pre-process images in parallel.  Each worker loads the image once
+            // and derives BOTH vectors from it: the CLIP pixel tensor (design)
+            // and the HSV colour histogram (palette).
+            let preprocess_results: Vec<(usize, Result<(Vec<f32>, Vec<f32>)>)> = chunk
                 .par_iter()
                 .enumerate()
                 .map(|(i, (path, _, _))| {
-                    let res = image_loader::load_image(path).map(embedder::preprocess);
+                    let res = image_loader::load_image(path).map(|img| {
+                        let color  = crate::core::color::histogram(&img);
+                        let pixels = embedder::preprocess(img);
+                        (pixels, color)
+                    });
                     (i, res)
                 })
                 .collect();
 
-            let mut flat_pixels: Vec<f32>   = Vec::new();
-            let mut valid_indices: Vec<usize> = Vec::new();
+            let mut flat_pixels: Vec<f32> = Vec::new();
+            // (chunk index, colour vector) for every successfully pre-processed
+            // image, in the same order their pixels were appended to flat_pixels.
+            let mut valid: Vec<(usize, Vec<f32>)> = Vec::new();
 
             for (i, result) in preprocess_results {
                 match result {
-                    Ok(pixels) => {
+                    Ok((pixels, color)) => {
                         flat_pixels.extend(pixels);
-                        valid_indices.push(i);
+                        valid.push((i, color));
                     }
                     Err(e) => {
                         let path_str = chunk[i].0.to_string_lossy().to_string();
@@ -197,7 +205,7 @@ pub fn sync_folder(
                 let embeddings = embedder::embed_batch(&flat_pixels, BATCH_SIZE)
                     .map_err(|e| PictoriaError::Fatal(format!("Embedding failed: {e}")))?;
 
-                for (emb_idx, chunk_idx) in valid_indices.into_iter().enumerate() {
+                for (emb_idx, (chunk_idx, color)) in valid.into_iter().enumerate() {
                     let (path, hash, mtime) = &chunk[chunk_idx];
                     let path_str = path.to_string_lossy().to_string();
 
@@ -213,7 +221,7 @@ pub fn sync_folder(
                             continue;
                         }
                     };
-                    if let Err(e) = store.add(vector_id, &embeddings[emb_idx]) {
+                    if let Err(e) = store.add(vector_id, &embeddings[emb_idx], &color) {
                         errors.push(FileError { file: path_str, reason: format!("Index add failed: {e}") });
                         progress::increment_errors();
                         continue;
@@ -264,4 +272,103 @@ fn file_mtime(path: &Path) -> f64 {
         .and_then(|m| m.modified())
         .map(|t| t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs_f64())
         .unwrap_or(0.0)
+}
+
+/// Rebuild vectors **in place** for a folder's already-indexed files, keyed by
+/// their existing `faiss_id`.  Used by the startup re-index migration: the
+/// preprocessing / colour vector (or model) changed, so every stored vector must
+/// be recomputed — but WITHOUT touching the `files` rows, whose ids anchor the
+/// Browse tags via the `ON DELETE CASCADE` foreign key.
+///
+/// Idempotent: it first tombstones the folder's existing vectors, so a re-run
+/// after an interrupted migration doesn't duplicate entries.
+pub fn reembed_folder(
+    store:       &mut VectorStore,
+    folder_path: &Path,
+) -> Result<Vec<FileError>> {
+    if !embedder::is_ready() {
+        return Err(PictoriaError::ModelNotReady);
+    }
+
+    let folder_str = folder_path.to_string_lossy().to_string();
+    let con        = database::open()?;
+
+    // faiss_id → path for every indexed file under this folder.
+    let id_map = database::folder_id_map(&con, &folder_str)?;
+    let mut errors: Vec<FileError> = Vec::new();
+    if id_map.is_empty() {
+        return Ok(errors);
+    }
+
+    // Drop any stale vectors for this folder so a re-run is idempotent.
+    let existing_ids: Vec<i64> = id_map.keys().copied().collect();
+    store.remove(&existing_ids);
+
+    let items: Vec<(i64, PathBuf)> = id_map
+        .into_iter()
+        .map(|(id, p)| (id, PathBuf::from(p)))
+        .collect();
+    let total = items.len();
+
+    progress::set_progress(Some("Rebuilding index"), Some(0), Some(total), Some(""), Some(0));
+    let mut done = 0usize;
+
+    for chunk in items.chunks(BATCH_SIZE) {
+        let first_name = chunk[0].1.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        progress::set_progress(None, None, None, Some(first_name), None);
+
+        // Load once, derive both vectors, in parallel.
+        let pre: Vec<(usize, Result<(Vec<f32>, Vec<f32>)>)> = chunk
+            .par_iter()
+            .enumerate()
+            .map(|(i, (_, path))| {
+                let res = image_loader::load_image(path).map(|img| {
+                    let color  = crate::core::color::histogram(&img);
+                    let pixels = embedder::preprocess(img);
+                    (pixels, color)
+                });
+                (i, res)
+            })
+            .collect();
+
+        let mut flat_pixels: Vec<f32> = Vec::new();
+        let mut valid: Vec<(usize, Vec<f32>)> = Vec::new();
+
+        for (i, res) in pre {
+            match res {
+                Ok((pixels, color)) => {
+                    flat_pixels.extend(pixels);
+                    valid.push((i, color));
+                }
+                Err(e) => {
+                    errors.push(FileError {
+                        file:   chunk[i].1.to_string_lossy().to_string(),
+                        reason: e.to_string(),
+                    });
+                    progress::increment_errors();
+                }
+            }
+        }
+
+        if !flat_pixels.is_empty() {
+            let embeddings = embedder::embed_batch(&flat_pixels, BATCH_SIZE)
+                .map_err(|e| PictoriaError::Fatal(format!("Embedding failed: {e}")))?;
+
+            for (emb_idx, (chunk_idx, color)) in valid.into_iter().enumerate() {
+                let (faiss_id, path) = &chunk[chunk_idx];
+                if let Err(e) = store.add(*faiss_id, &embeddings[emb_idx], &color) {
+                    errors.push(FileError {
+                        file:   path.to_string_lossy().to_string(),
+                        reason: format!("Index add failed: {e}"),
+                    });
+                    progress::increment_errors();
+                }
+            }
+        }
+
+        done += chunk.len();
+        progress::set_progress(None, Some(done), None, None, None);
+    }
+
+    Ok(errors)
 }

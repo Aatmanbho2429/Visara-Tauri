@@ -219,7 +219,7 @@
                   <div class="pin-card__foot">
                     <div class="pin-card__foot-text">
                       <span class="pin-card__name" [title]="item.path">{{ item.name }}</span>
-                      <span class="pin-card__folder" [title]="item.folder">from: {{ shortName(item.folder) }}</span>
+                      <span class="pin-card__folder" [title]="item.path">{{ item.path }}</span>
                     </div>
                     <span class="pin-card__badge pin-card__badge--{{ similarityClass(item.similarity) }}">
                       {{ item.similarity | number:'1.2-2' }}%

@@ -287,6 +287,12 @@ pub fn run() {
             // and `reconcile_all`.
             crate::core::watcher::init(app.handle().clone());
 
+            // Run one-time migrations before anything reads the DB or index:
+            //  • normalise file_tags to reference files(id) with ON DELETE CASCADE
+            //  • if the embedding schema changed, arm a one-time re-index (the
+            //    watcher's post-login reconcile rebuilds every folder's vectors).
+            crate::core::migrate::run_startup();
+
             // One-time sweep of tag rows orphaned by earlier folder deletes /
             // renames, so the Browse facets don't keep showing files that are
             // no longer indexed.  Cheap and idempotent; safe to run every boot.

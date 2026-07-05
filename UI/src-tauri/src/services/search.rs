@@ -84,9 +84,11 @@ pub fn execute(
     // corrupt a concurrent folder index — and reading it back in the search
     // command produced the phantom "Indexing…" bar during search.  The search
     // command emits its own lightweight "Searching" snapshot instead.
-    let query_img  = image_loader::load_image(image_path)
+    let query_img   = image_loader::load_image(image_path)
         .map_err(|e| PictoriaError::Fatal(format!("Could not load reference image: {e}")))?;
-    let pixels     = embedder::preprocess(query_img);
+    // Derive the colour vector from the same image before preprocessing consumes it.
+    let query_color = crate::core::color::histogram(&query_img);
+    let pixels      = embedder::preprocess(query_img);
     let embeddings = embedder::embed_batch(&pixels, 1)
         .map_err(|e| PictoriaError::Fatal(format!("Failed to embed reference image: {e}")))?;
     let query_emb  = embeddings.into_iter().next().ok_or_else(||
@@ -108,7 +110,11 @@ pub fn execute(
     //    enough rows to fill top_k when the store contains unwatched legacy
     //    vectors.  4× buffer is plenty in practice.
     let raw_k     = top_k.saturating_mul(4).max(top_k);
-    let scores    = store.search(&query_emb, raw_k);
+    let scores    = store.search(&query_emb, &query_color, raw_k);
+
+    // Guard against a store that somehow holds the same id/path more than once —
+    // never show the same file twice in one result set.
+    let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let results: Vec<SearchResult> = scores
         .into_iter()
@@ -119,6 +125,9 @@ pub fn execute(
             // dead path in results in the meantime.
             if !Path::new(&path).exists() {
                 return None;
+            }
+            if !seen_paths.insert(path.clone()) {
+                return None; // duplicate path already emitted
             }
             let name = Path::new(&path)
                 .file_name()

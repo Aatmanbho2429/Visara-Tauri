@@ -195,6 +195,10 @@ pub fn reconcile_all() {
     for path in paths {
         sync_one(&PathBuf::from(path));
     }
+
+    // A full pass has re-embedded every folder — retire the migration marker so
+    // subsequent launches don't re-index again.
+    crate::core::migrate::clear_reembed_pending();
 }
 
 /// Reconcile a single folder.  Used by the Library service when a folder is
@@ -328,6 +332,15 @@ fn sync_one(folder: &PathBuf) {
             }
         })
     };
+
+    // One-time re-index after an embedding-schema change: rebuild this folder's
+    // vectors in place (keyed by existing faiss_id, so Browse tags are kept)
+    // before running the normal reconcile.
+    if crate::core::migrate::reembed_pending() {
+        if let Err(e) = sync::reembed_folder(&mut store, folder) {
+            log::warn!("[watcher] re-embed failed for {folder:?}: {e}");
+        }
+    }
 
     let sync_result = sync::sync_folder(&mut store, folder);
 

@@ -42,6 +42,75 @@ pub fn dominant(img: &DynamicImage) -> Vec<String> {
     out
 }
 
+// ── Colour similarity vector ────────────────────────────────────────────────
+
+/// Fixed bucket order for the colour histogram vector.  MUST list every string
+/// `classify` can return, and MUST NOT be reordered once shipped — the index of
+/// each bucket is the dimension it occupies in the stored colour vector, so a
+/// reorder would silently invalidate every persisted vector.
+pub const COLOR_BUCKETS: [&str; 16] = [
+    "white", "light grey", "grey", "charcoal", "black",
+    "cream", "beige",
+    "red", "brown", "terracotta", "gold",
+    "green", "teal", "blue", "purple", "pink",
+];
+
+/// Dimensionality of the colour vector produced by [`histogram`].
+pub const COLOR_DIM: usize = COLOR_BUCKETS.len();
+
+/// Longest edge used when building the colour histogram.  Slightly larger than
+/// `SAMPLE_MAX` so the palette is well sampled without being expensive.
+const HIST_MAX: u32 = 64;
+
+/// Build an L2-normalised colour histogram over [`COLOR_BUCKETS`] for one image.
+///
+/// The image is white-balanced (gray-world) before bucketing so that the same
+/// design photographed/rendered under a warm vs cool light lands in the same
+/// palette buckets — otherwise "beige under warm light" and "beige under neutral
+/// light" would look like different colours to the search.
+///
+/// Returns a `COLOR_DIM`-length vector; the zero vector when the image is empty
+/// (its inner product with any query is 0, i.e. it simply contributes no colour
+/// signal rather than corrupting the score).
+pub fn histogram(img: &DynamicImage) -> Vec<f32> {
+    let small = img.resize(HIST_MAX, HIST_MAX, image::imageops::FilterType::Triangle);
+    let rgb = small.to_rgb8();
+
+    // ── Gray-world white balance ──────────────────────────────────────────
+    let (mut sum_r, mut sum_g, mut sum_b) = (0f64, 0f64, 0f64);
+    let n = rgb.pixels().len().max(1) as f64;
+    for p in rgb.pixels() {
+        sum_r += p[0] as f64;
+        sum_g += p[1] as f64;
+        sum_b += p[2] as f64;
+    }
+    let (mr, mg, mb) = (sum_r / n, sum_g / n, sum_b / n);
+    let gray = (mr + mg + mb) / 3.0;
+    let scale = |mean: f64| if mean > 1.0 { gray / mean } else { 1.0 };
+    let (kr, kg, kb) = (scale(mr), scale(mg), scale(mb));
+
+    let mut hist = vec![0f32; COLOR_DIM];
+    for p in rgb.pixels() {
+        let r = ((p[0] as f64 * kr).round() as i64).clamp(0, 255) as u8;
+        let g = ((p[1] as f64 * kg).round() as i64).clamp(0, 255) as u8;
+        let b = ((p[2] as f64 * kb).round() as i64).clamp(0, 255) as u8;
+        let bucket = classify(r, g, b);
+        if let Some(idx) = COLOR_BUCKETS.iter().position(|&name| name == bucket) {
+            hist[idx] += 1.0;
+        }
+    }
+
+    // L2-normalise so the colour vector's inner product is a cosine in [0, 1],
+    // matching how the design (CLIP) vector is compared.
+    let norm = hist.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for v in hist.iter_mut() {
+            *v /= norm;
+        }
+    }
+    hist
+}
+
 /// Map one RGB sample to a named bucket via HSV rules.
 fn classify(r: u8, g: u8, b: u8) -> &'static str {
     let (h, s, v) = rgb_to_hsv(r, g, b);
