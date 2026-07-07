@@ -30,7 +30,8 @@ use std::{
 
 /// Bump this whenever embeddings change so existing installs re-index once.
 /// v2: centre-crop preprocessing + dual design/colour vectors.
-pub const EMBED_SCHEMA_VERSION: i64 = 2;
+/// v3: grayscale CLIP input for pattern-only design vectors; weights 0.85/0.15.
+pub const EMBED_SCHEMA_VERSION: i64 = 3;
 
 static REEMBED_PENDING: AtomicBool = AtomicBool::new(false);
 

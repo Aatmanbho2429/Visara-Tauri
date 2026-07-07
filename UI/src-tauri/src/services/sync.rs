@@ -174,8 +174,10 @@ pub fn sync_folder(
                 .enumerate()
                 .map(|(i, (path, _, _))| {
                     let res = image_loader::load_image(path).map(|img| {
+                        // colour histogram from full-colour image; design embedding
+                        // from grayscale so the vector captures pattern only, not hue.
                         let color  = crate::core::color::histogram(&img);
-                        let pixels = embedder::preprocess(img);
+                        let pixels = embedder::preprocess_grayscale(img);
                         (pixels, color)
                     });
                     (i, res)
@@ -324,7 +326,7 @@ pub fn reembed_folder(
             .map(|(i, (_, path))| {
                 let res = image_loader::load_image(path).map(|img| {
                     let color  = crate::core::color::histogram(&img);
-                    let pixels = embedder::preprocess(img);
+                    let pixels = embedder::preprocess_grayscale(img);
                     (pixels, color)
                 });
                 (i, res)

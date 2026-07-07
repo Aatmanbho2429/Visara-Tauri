@@ -16,13 +16,15 @@ import { PlansDialog } from '../../shared/plans-dialog/plans-dialog';
 import { WatchedFolder } from '../../models/library.model';
 
 export interface SearchResult {
-  rank:         number;
-  path:         string;
-  name:         string;
-  similarity:   number;
-  folder:       string;
-  thumbnailUrl: string;
-  imgError:     boolean;
+  rank:          number;
+  path:          string;
+  name:          string;
+  similarity:    number;
+  pattern_match: number;
+  color_match:   number;
+  folder:        string;
+  thumbnailUrl:  string;
+  imgError:      boolean;
 }
 
 export interface FailedFile {
@@ -271,6 +273,12 @@ export class Search extends BaseComponent implements OnInit {
   similarityClass(sim: number): string {
     if (sim >= 88) return 'high';
     if (sim >= 72) return 'mid';
+    return 'low';
+  }
+
+  colorMatchClass(sim: number): string {
+    if (sim >= 70) return 'high';
+    if (sim >= 45) return 'mid';
     return 'low';
   }
 

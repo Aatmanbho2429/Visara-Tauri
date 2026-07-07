@@ -7,7 +7,7 @@
 use crate::error::{Result, PictoriaError};
 use image::{DynamicImage, ImageReader};
 use std::{
-    io::{Cursor, Read, Seek, SeekFrom},
+    io::{BufReader, Cursor, Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -106,10 +106,22 @@ fn load_tiff(path: &Path) -> Result<DynamicImage> {
         return Ok(img);
     }
 
-    // Non-macOS, or sips unavailable: embedded IFD1 thumbnail, then full decode.
+    // Non-macOS path: try sources in order of colour accuracy.
+    //
+    // 1. Photoshop JPEG preview (TIFF tag 34377) — Photoshop renders this with
+    //    ICC-managed colour conversion, so CMYK → sRGB is perceptually correct
+    //    without needing an ICC library on our side.
+    if let Ok(img) = try_tiff_photoshop_preview(path) {
+        return Ok(img);
+    }
+
+    // 2. IFD1 thumbnail — usually RGB, small, accurate enough.
     if let Ok(thumb) = try_tiff_thumbnail(path) {
         return Ok(thumb);
     }
+
+    // 3. Full pixel decode with our naive CMYK → RGB formula (colour may drift
+    //    vs. the OS for CMYK files, but this is the last resort).
     load_tiff_main(path)
 }
 
@@ -136,6 +148,108 @@ fn try_tiff_thumbnail(path: &Path) -> Result<DynamicImage> {
     tiff_result_to_dynamic(result, w as u32, h as u32)
 }
 
+/// Extract the Photoshop-embedded JPEG preview from a TIFF file.
+///
+/// Photoshop stores a JPEG thumbnail in TIFF tag 34377 (the "Photoshop" private
+/// tag) using exactly the same 8BIM image-resources format as PSD/PSB files.
+/// Crucially, Photoshop renders this thumbnail *with ICC colour management*, so
+/// the CMYK → sRGB conversion is perceptually correct — no colour drift.
+fn try_tiff_photoshop_preview(path: &Path) -> Result<DynamicImage> {
+    let f = std::fs::File::open(path)?;
+    let mut r = BufReader::new(f);
+    let ps_data = tiff_read_tag_34377(&mut r)?;
+    parse_8bim_jpeg_preview(&ps_data)
+}
+
+/// Walk the TIFF IFD0 looking for tag 34377 and return its raw bytes.
+fn tiff_read_tag_34377<R: Read + Seek>(r: &mut R) -> Result<Vec<u8>> {
+    r.seek(SeekFrom::Start(0))?;
+
+    let mut bo = [0u8; 2];
+    r.read_exact(&mut bo)?;
+    let le = match &bo {
+        b"II" => true,
+        b"MM" => false,
+        _ => return Err(PictoriaError::Fatal("Not a TIFF".into())),
+    };
+
+    if tiff_ru16(r, le)? != 42 {
+        return Err(PictoriaError::Fatal("TIFF magic mismatch".into()));
+    }
+
+    let ifd0_off = tiff_ru32(r, le)?;
+    r.seek(SeekFrom::Start(ifd0_off as u64))?;
+    let n = tiff_ru16(r, le)?;
+
+    for _ in 0..n {
+        let tag   = tiff_ru16(r, le)?;
+        let _ty   = tiff_ru16(r, le)?;
+        let count = tiff_ru32(r, le)?;
+        let mut val = [0u8; 4];
+        r.read_exact(&mut val)?;
+
+        if tag == 34377 && count > 4 {
+            let offset = if le { u32::from_le_bytes(val) } else { u32::from_be_bytes(val) };
+            r.seek(SeekFrom::Start(offset as u64))?;
+            let mut data = vec![0u8; count as usize];
+            r.read_exact(&mut data)?;
+            return Ok(data);
+        }
+    }
+
+    Err(PictoriaError::Fatal("Tag 34377 not found in TIFF IFD0".into()))
+}
+
+fn tiff_ru16<R: Read>(r: &mut R, le: bool) -> Result<u16> {
+    let mut b = [0u8; 2];
+    r.read_exact(&mut b)?;
+    Ok(if le { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) })
+}
+
+fn tiff_ru32<R: Read>(r: &mut R, le: bool) -> Result<u32> {
+    let mut b = [0u8; 4];
+    r.read_exact(&mut b)?;
+    Ok(if le { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) })
+}
+
+/// Parse a sequence of Photoshop 8BIM resource blocks and return the first
+/// JPEG thumbnail found (resource IDs 1033 or 1036).  Used for both the TIFF
+/// tag-34377 path and the PSD/PSB image-resources section.
+fn parse_8bim_jpeg_preview(data: &[u8]) -> Result<DynamicImage> {
+    let mut cur = Cursor::new(data);
+
+    while cur.position() + 12 <= data.len() as u64 {
+        let mut bim = [0u8; 4];
+        if cur.read_exact(&mut bim).is_err() { break; }
+        if &bim != b"8BIM" { break; }
+
+        let res_id   = read_u16_be(&mut cur)?;
+        let name_len = read_u8(&mut cur)? as u64;
+        let pad      = if (name_len + 1) % 2 != 0 { 1u64 } else { 0u64 };
+        cur.seek(SeekFrom::Current((name_len + pad) as i64))?;
+
+        let data_len = read_u32_be(&mut cur)? as u64;
+        let data_end = cur.position() + data_len + (data_len % 2);
+
+        if (res_id == 1033 || res_id == 1036) && data_len > 28 {
+            cur.seek(SeekFrom::Current(28))?;
+            let jpeg_len = (data_len - 28) as usize;
+            let mut jpeg_bytes = vec![0u8; jpeg_len];
+            cur.read_exact(&mut jpeg_bytes)?;
+            let img = image::load_from_memory_with_format(
+                &jpeg_bytes,
+                image::ImageFormat::Jpeg,
+            )?;
+            return Ok(img);
+        }
+
+        if data_end > data.len() as u64 { break; }
+        cur.seek(SeekFrom::Start(data_end))?;
+    }
+
+    Err(PictoriaError::Fatal("No JPEG thumbnail in Photoshop 8BIM blocks".into()))
+}
+
 /// Down-scaled longest edge fed toward the CLIP pipeline (which finally wants
 /// 224px).  Sampling to this size straight out of the decoded TIFF buffer avoids
 /// allocating a second full-resolution image.
@@ -158,7 +272,9 @@ fn load_tiff_main(path: &Path) -> Result<DynamicImage> {
 }
 
 fn load_tiff_via_tiff_crate(path: &Path) -> Result<DynamicImage> {
-    use tiff::decoder::{Decoder, Limits};
+    use image::{ImageBuffer, Rgb};
+    use tiff::decoder::{DecodingResult, Decoder, Limits};
+    use tiff::ColorType;
 
     let file = std::fs::File::open(path)?;
     let mut decoder = Decoder::new(file)
@@ -168,9 +284,71 @@ fn load_tiff_via_tiff_crate(path: &Path) -> Result<DynamicImage> {
     let (w, h) = decoder
         .dimensions()
         .map_err(|e| PictoriaError::Fatal(format!("TIFF dimensions failed: {e}")))?;
-    let color = decoder
-        .colortype()
-        .map_err(|e| PictoriaError::Fatal(format!("TIFF colortype failed: {e}")))?;
+
+    // colortype() fails for multi-channel CMYK variants (e.g. CMYK + spot-color
+    // channels from Photoshop/Illustrator).  Treat unknown as CMYK(8); sample_to_rgb
+    // takes only the first 4 channels (C,M,Y,K) and ignores any extras.
+    let color = decoder.colortype().unwrap_or(ColorType::CMYK(8));
+
+    // ── Fast path: partial strip reading for large strip-based TIFFs ──────
+    // Decompressing an 8 000 × 16 000 CMYK TIFF at full resolution takes several
+    // seconds.  For a pattern/texture embedding we only need TIFF_TARGET_MAX rows —
+    // tile designs repeat, so the first 512 rows carry the full design signal.
+    // strip_count() fails (returns Err) for tile-based TIFFs; that falls through
+    // to the full read_image() path below, which is fine because tiles are usually
+    // smaller files.
+    if w.max(h) > TIFF_TARGET_MAX * 2 {
+        if let Ok(n_strips) = decoder.strip_count() {
+            if n_strips > 1 {
+                let (_, rows_per_strip) = decoder.chunk_dimensions();
+                let strips_needed = ((TIFF_TARGET_MAX / rows_per_strip.max(1)) + 1)
+                    .min(n_strips);
+
+                let mut raw: Vec<u8> = Vec::new();
+                let mut partial_ok = true;
+
+                for i in 0..strips_needed {
+                    match decoder.read_chunk(i) {
+                        Ok(DecodingResult::U8(d))  => raw.extend(d),
+                        Ok(DecodingResult::U16(d)) => {
+                            raw.extend(d.iter().map(|&v| (v >> 8) as u8));
+                        }
+                        _ => { partial_ok = false; break; }
+                    }
+                }
+
+                if partial_ok && !raw.is_empty() {
+                    let avail_h  = (rows_per_strip * strips_needed).min(h);
+                    let total_px = w as usize * avail_h as usize;
+                    let channels = (raw.len() / total_px.max(1)).max(1);
+
+                    let mut rgb = Vec::with_capacity(total_px * 3);
+                    for py in 0..avail_h as usize {
+                        for px in 0..w as usize {
+                            let base = (py * w as usize + px) * channels;
+                            let (r, g, b) = if base + channels <= raw.len() {
+                                sample_to_rgb(&raw[base..base + channels], channels, color)
+                            } else {
+                                (0, 0, 0)
+                            };
+                            rgb.extend_from_slice(&[r, g, b]);
+                        }
+                    }
+
+                    if let Some(buf) =
+                        ImageBuffer::<Rgb<u8>, _>::from_raw(w, avail_h, rgb)
+                    {
+                        // Return the partial-height RGB image.  Downstream
+                        // preprocess_grayscale / color::histogram both resize to
+                        // their own targets, so the reduced height is fine.
+                        return Ok(DynamicImage::ImageRgb8(buf));
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Full decode: small TIFFs, tile-based, or partial-strip fallback ───
     let result = decoder
         .read_image()
         .map_err(|e| PictoriaError::Fatal(format!("TIFF read failed: {e}")))?;
@@ -361,46 +539,13 @@ fn try_psb_thumbnail(path: &Path) -> Result<DynamicImage> {
     let color_mode_len = read_u32_be(&mut cur)?;
     cur.seek(SeekFrom::Current(color_mode_len as i64))?;
 
-    // Image resources section
-    let resources_len = read_u32_be(&mut cur)? as u64;
-    let resources_end = cur.position() + resources_len;
+    // Image resources section — extract the slice and let the shared parser handle it.
+    let resources_len = read_u32_be(&mut cur)? as usize;
+    let start = cur.position() as usize;
+    let end   = start.saturating_add(resources_len).min(data.len());
 
-    while cur.position() < resources_end {
-        let mut bim = [0u8; 4];
-        if cur.read_exact(&mut bim).is_err() { break; }
-        if &bim != b"8BIM" { break; }
-
-        let res_id   = read_u16_be(&mut cur)?;
-        let name_len = read_u8(&mut cur)? as u64;
-        // Name is padded to an even total length (name_len byte + name_len bytes).
-        let pad = if (name_len + 1) % 2 != 0 { 1u64 } else { 0u64 };
-        cur.seek(SeekFrom::Current((name_len + pad) as i64))?;
-
-        let data_len = read_u32_be(&mut cur)? as u64;
-        let data_end = cur.position() + data_len + (data_len % 2);
-
-        // Resource IDs 1033 and 1036 contain JPEG thumbnail data.
-        if res_id == 1033 || res_id == 1036 {
-            // 28-byte thumbnail header: format(4) + width(4) + height(4) +
-            //   widthbytes(4) + total_size(4) + compressedsize(4) + bpp(2) + planes(2)
-            if data_len > 28 {
-                cur.seek(SeekFrom::Current(28))?;
-                let jpeg_len = (data_len - 28) as usize;
-                let mut jpeg_bytes = vec![0u8; jpeg_len];
-                cur.read_exact(&mut jpeg_bytes)?;
-
-                let img = image::load_from_memory_with_format(
-                    &jpeg_bytes,
-                    image::ImageFormat::Jpeg,
-                )?;
-                return Ok(img);
-            }
-        }
-
-        cur.seek(SeekFrom::Start(data_end))?;
-    }
-
-    Err(PictoriaError::Fatal("No JPEG thumbnail resource found in PSD/PSB".into()))
+    parse_8bim_jpeg_preview(&data[start..end])
+        .map_err(|_| PictoriaError::Fatal("No JPEG thumbnail resource found in PSD/PSB".into()))
 }
 
 // ── Binary reading helpers ────────────────────────────────────────────────

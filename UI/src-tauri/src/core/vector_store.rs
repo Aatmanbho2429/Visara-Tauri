@@ -55,15 +55,16 @@ pub fn store_io_guard() -> MutexGuard<'static, ()> {
 }
 
 const MAGIC:      &[u8; 8] = b"PICTOR\x00\x01";
-const VERSION:    u32      = 2;
+const VERSION:    u32      = 3;
 const HEADER_LEN: usize    = 32;
 const TOMBSTONE:  i64      = i64::MIN;
 
 /// Blend weights for the design (CLIP) and colour (histogram) similarities.
-/// Design leads — "same pattern" matters more than "same palette" — with colour
-/// as a strong secondary so results stay within a compatible colour family.
-const DESIGN_WEIGHT: f32 = 0.7;
-const COLOR_WEIGHT:  f32 = 0.3;
+/// Design is heavily dominant: the grayscale CLIP embedding captures pattern and
+/// structure; colour is a secondary tiebreaker so that "same pattern, red vs blue"
+/// sorts ahead of "different pattern, same palette".
+pub const DESIGN_WEIGHT: f32 = 0.85;
+pub const COLOR_WEIGHT:  f32 = 0.15;
 
 /// In-memory representation of the vector store.
 pub struct VectorStore {
@@ -260,18 +261,19 @@ impl VectorStore {
 
     // ── Query ─────────────────────────────────────────────────────────
 
-    /// Return top-`k` `(id, score)` by the blended design+colour similarity,
-    /// descending.  Both query vectors must be L2-normalised (same convention as
-    /// the stored ones).  When `query_color` is all-zero the colour term simply
-    /// drops out and ranking falls back to pure design similarity.
-    pub fn search(&self, query_design: &[f32], query_color: &[f32], k: usize) -> Vec<(i64, f32)> {
+    /// Return top-`k` `(id, design_sim, color_sim)` sorted by blended score
+    /// descending.  Both query vectors must be L2-normalised.  Callers receive the
+    /// individual sub-scores so the UI can display pattern match % and color match %
+    /// separately; blending for ranking is done internally.
+    pub fn search(&self, query_design: &[f32], query_color: &[f32], k: usize) -> Vec<(i64, f32, f32)> {
         if self.ids.is_empty() || k == 0 {
             return Vec::new();
         }
 
         let use_color = query_color.len() == self.color_dim;
 
-        let mut scores: Vec<(i64, f32)> = self
+        // (id, blended_score, design_sim, color_sim) — blended used only for sort.
+        let mut scores: Vec<(i64, f32, f32, f32)> = self
             .ids
             .par_iter()
             .enumerate()
@@ -288,8 +290,8 @@ impl VectorStore {
                     0.0
                 };
 
-                let score = DESIGN_WEIGHT * design_sim + COLOR_WEIGHT * color_sim;
-                Some((id, score))
+                let blended = DESIGN_WEIGHT * design_sim + COLOR_WEIGHT * color_sim;
+                Some((id, blended, design_sim, color_sim))
             })
             .collect();
 
@@ -297,7 +299,7 @@ impl VectorStore {
             b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
         });
         scores.truncate(k);
-        scores
+        scores.into_iter().map(|(id, _, d, c)| (id, d, c)).collect()
     }
 
     pub fn live_count(&self) -> usize {

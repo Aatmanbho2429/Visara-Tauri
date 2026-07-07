@@ -22,13 +22,17 @@ use std::{
 
 #[derive(Debug, Serialize, Clone)]
 pub struct SearchResult {
-    pub rank:       usize,
-    pub path:       String,
-    pub name:       String,
-    pub similarity: f32,
-    /// Watched-folder root this result belongs to — handy for the UI to
-    /// show "from: 2024" alongside each card.
-    pub folder:     String,
+    pub rank:          usize,
+    pub path:          String,
+    pub name:          String,
+    /// Blended score (pattern × 0.85 + color × 0.15), scaled 0–100.
+    pub similarity:    f32,
+    /// Design/pattern cosine similarity, scaled 0–100.  Primary match signal.
+    pub pattern_match: f32,
+    /// Colour histogram cosine similarity, scaled 0–100.  Secondary signal.
+    pub color_match:   f32,
+    /// Watched-folder root this result belongs to.
+    pub folder:        String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -86,12 +90,13 @@ pub fn execute(
     // command emits its own lightweight "Searching" snapshot instead.
     let query_img   = image_loader::load_image(image_path)
         .map_err(|e| PictoriaError::Fatal(format!("Could not load reference image: {e}")))?;
-    // Derive the colour vector from the same image before preprocessing consumes it.
+    // Colour histogram from full-colour image; design embedding from grayscale so
+    // the query vector matches the grayscale-encoded stored vectors (v3 schema).
     let query_color = crate::core::color::histogram(&query_img);
-    let pixels      = embedder::preprocess(query_img);
-    let embeddings = embedder::embed_batch(&pixels, 1)
+    let pixels      = embedder::preprocess_grayscale(query_img);
+    let embeddings  = embedder::embed_batch(&pixels, 1)
         .map_err(|e| PictoriaError::Fatal(format!("Failed to embed reference image: {e}")))?;
-    let query_emb  = embeddings.into_iter().next().ok_or_else(||
+    let query_emb   = embeddings.into_iter().next().ok_or_else(||
         PictoriaError::Fatal("Embedding returned empty result".into())
     )?;
 
@@ -116,31 +121,32 @@ pub fn execute(
     // never show the same file twice in one result set.
     let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+    let scale = |v: f32| (v.clamp(0.0, 1.0) * 100.0 * 10.0).round() / 10.0;
+
     let results: Vec<SearchResult> = scores
         .into_iter()
-        .filter_map(|(id, score)| {
+        .filter_map(|(id, design_sim, color_sim)| {
             let (path, folder) = id_map.get(&id)?.clone();
-            // Skip stale hits whose file was renamed/deleted since indexing —
-            // the watcher reconciles these eventually, but never surface a
-            // dead path in results in the meantime.
             if !Path::new(&path).exists() {
                 return None;
             }
             if !seen_paths.insert(path.clone()) {
-                return None; // duplicate path already emitted
+                return None;
             }
             let name = Path::new(&path)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(&path)
                 .to_string();
-            // Score is a cosine similarity in [-1, 1]; clamp and scale to [0, 100].
-            let similarity = (score.clamp(-1.0, 1.0) * 100.0 * 10.0).round() / 10.0;
+            let blended = crate::core::vector_store::DESIGN_WEIGHT * design_sim
+                        + crate::core::vector_store::COLOR_WEIGHT  * color_sim;
             Some(SearchResult {
-                rank: 0, // filled in after truncation
+                rank:          0,
                 path,
                 name,
-                similarity,
+                similarity:    scale(blended),
+                pattern_match: scale(design_sim),
+                color_match:   scale(color_sim),
                 folder,
             })
         })

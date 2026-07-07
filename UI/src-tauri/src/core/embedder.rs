@@ -117,6 +117,15 @@ pub fn embed_batch(images: &[f32], batch_size: usize) -> Result<Vec<Vec<f32>>> {
     Ok(all_embeddings)
 }
 
+/// Preprocess for pattern/design embedding: convert to grayscale first so the
+/// resulting CLIP vector encodes structure and texture only, not hue.  When
+/// replicated across all three channels, luma passes through CLIP's normalization
+/// unchanged — the model sees a neutral-grey version of every tile, making "same
+/// pattern, different color" produce nearly identical design vectors.
+pub fn preprocess_grayscale(img: image::DynamicImage) -> Vec<f32> {
+    preprocess(image::DynamicImage::ImageLuma8(img.into_luma8()))
+}
+
 pub fn preprocess(img: image::DynamicImage) -> Vec<f32> {
     let size = CLIP_INPUT_SIZE;   // 224
     let sz   = size as usize;

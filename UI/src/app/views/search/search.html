@@ -221,9 +221,20 @@
                       <span class="pin-card__name" [title]="item.path">{{ item.name }}</span>
                       <span class="pin-card__folder" [title]="item.path">{{ item.path }}</span>
                     </div>
-                    <span class="pin-card__badge pin-card__badge--{{ similarityClass(item.similarity) }}">
-                      {{ item.similarity | number:'1.2-2' }}%
-                    </span>
+                    <div class="pin-card__scores">
+                      <span class="pin-card__badge pin-card__badge--{{ similarityClass(item.pattern_match) }}"
+                            title="Pattern match">
+                        <i class="pi pi-th-large"></i>
+                        <span class="pin-card__badge-label">Pattern</span>
+                        {{ item.pattern_match | number:'1.0-0' }}%
+                      </span>
+                      <span class="pin-card__badge pin-card__badge--clr-{{ colorMatchClass(item.color_match) }}"
+                            title="Color match">
+                        <i class="pi pi-palette"></i>
+                        <span class="pin-card__badge-label">Color</span>
+                        {{ item.color_match | number:'1.0-0' }}%
+                      </span>
+                    </div>
                   </div>
                 </div>
               }
