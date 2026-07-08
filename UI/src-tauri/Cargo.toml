@@ -1,6 +1,6 @@
 [package]
 name         = "pictoria"
-version      = "1.1.26"
+version      = "1.1.27"
 description  = "Pictoria — AI-powered Visual Image Search"
 authors      = ["Aatman Stridely"]
 license      = "UNLICENSED"
