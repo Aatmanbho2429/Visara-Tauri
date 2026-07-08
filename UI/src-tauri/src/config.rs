@@ -12,14 +12,14 @@ pub const SUPABASE_EDGE: &str =
 
 // ── Embedding model ────────────────────────────────────────────────────────
 
-/// CLIP ViT-B/32 embedding dimension.
-pub const EMB_DIM: usize = 768;
+/// DINOv2 ViT-B/14 embedding dimension: 768-dim CLS token + 768-dim patch mean.
+pub const EMB_DIM: usize = 1536;
 
-/// ImageNet mean / std used for CLIP pre-processing (RGB order).
-pub const CLIP_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
-pub const CLIP_STD:  [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
+/// Standard ImageNet mean / std used for DINOv2 pre-processing (RGB order).
+pub const CLIP_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
+pub const CLIP_STD:  [f32; 3] = [0.229, 0.224, 0.225];
 
-/// Input resolution expected by the CLIP ViT-B/32 image encoder.
+/// Input resolution expected by the DINOv2 ViT-B/14 image encoder.
 pub const CLIP_INPUT_SIZE: u32 = 224;
 
 // ── Processing ────────────────────────────────────────────────────────────

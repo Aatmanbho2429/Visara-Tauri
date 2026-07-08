@@ -31,7 +31,9 @@ use std::{
 /// Bump this whenever embeddings change so existing installs re-index once.
 /// v2: centre-crop preprocessing + dual design/colour vectors.
 /// v3: grayscale CLIP input for pattern-only design vectors; weights 0.85/0.15.
-pub const EMBED_SCHEMA_VERSION: i64 = 3;
+/// v4: DINOv2 ViT-B/14 replaces CLIP; 1536-dim design vector; ranking is
+///     pure design similarity (color stored for display only, weight 0.0).
+pub const EMBED_SCHEMA_VERSION: i64 = 4;
 
 static REEMBED_PENDING: AtomicBool = AtomicBool::new(false);
 

@@ -34,7 +34,7 @@ pub fn load_model(key: &str) -> Result<()> {
     }
 
     let model_path = model_enc_path();
-    log::info!("Loading CLIP model from {:?}", model_path);
+    log::info!("Loading DINOv2 model from {:?}", model_path);
 
     if !model_path.exists() {
         return Err(PictoriaError::Fatal(format!(
@@ -58,7 +58,7 @@ pub fn load_model(key: &str) -> Result<()> {
     let input_name = session.inputs[0].name.clone();
     let out_name   = session.outputs[0].name.clone();
 
-    log::info!("CLIP model ready  input={input_name}  output={out_name}");
+    log::info!("DINOv2 model ready  input={input_name}  output={out_name}");
 
     *STATE.lock().unwrap() = Some(EmbedderState { session, input_name, out_name });
     Ok(())

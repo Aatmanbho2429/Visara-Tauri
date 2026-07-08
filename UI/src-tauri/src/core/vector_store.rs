@@ -14,11 +14,11 @@
 //! sandboxed by macOS App Store.  For our workload (<=500 k images) a
 //! brute-force dot-product over a rayon thread pool is fast enough.
 //!
-//! ## File format  (`vectors.bin`, version 2)
+//! ## File format  (`vectors.bin`, version 4)
 //! ```text
 //! [ magic:      8 bytes  "PICTOR\x00\x01" ]
-//! [ version:    4 bytes  u32 little-endian ]  == 2
-//! [ design_dim: 4 bytes  u32 little-endian ]  always 768
+//! [ version:    4 bytes  u32 little-endian ]  == 4
+//! [ design_dim: 4 bytes  u32 little-endian ]  always 1536  (DINOv2 CLS+patch)
 //! [ count:      8 bytes  u64 little-endian ]  live (non-tombstone) entries
 //! [ color_dim:  4 bytes  u32 little-endian ]  always COLOR_DIM
 //! [ padding:    4 bytes                    ]  reserved, must be 0
@@ -55,16 +55,15 @@ pub fn store_io_guard() -> MutexGuard<'static, ()> {
 }
 
 const MAGIC:      &[u8; 8] = b"PICTOR\x00\x01";
-const VERSION:    u32      = 3;
+const VERSION:    u32      = 4;
 const HEADER_LEN: usize    = 32;
 const TOMBSTONE:  i64      = i64::MIN;
 
-/// Blend weights for the design (CLIP) and colour (histogram) similarities.
-/// Design is heavily dominant: the grayscale CLIP embedding captures pattern and
-/// structure; colour is a secondary tiebreaker so that "same pattern, red vs blue"
-/// sorts ahead of "different pattern, same palette".
-pub const DESIGN_WEIGHT: f32 = 0.85;
-pub const COLOR_WEIGHT:  f32 = 0.15;
+/// Search ranks purely on design pattern similarity (DINOv2 embedding).
+/// Color is computed and stored for display purposes (color_match % in UI and
+/// Browse page filtering) but does not affect result ordering.
+pub const DESIGN_WEIGHT: f32 = 1.0;
+pub const COLOR_WEIGHT:  f32 = 0.0;
 
 /// In-memory representation of the vector store.
 pub struct VectorStore {
