@@ -2,6 +2,8 @@ use crate::{
     config::{model_enc_path, BATCH_SIZE, CLIP_INPUT_SIZE, CLIP_MEAN, CLIP_STD, EMB_DIM},
     error::{Result, PictoriaError},
 };
+#[cfg(target_os = "macos")]
+use ort::execution_providers::CoreMLExecutionProvider;
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use hmac::{Hmac, Mac};
@@ -46,12 +48,21 @@ pub fn load_model(key: &str) -> Result<()> {
     let token_str   = String::from_utf8_lossy(&encrypted);
     let model_bytes = fernet_decrypt(key, token_str.trim())?;
 
-    let session = Session::builder()
+    let builder = Session::builder()
         .map_err(|e| PictoriaError::Fatal(e.to_string()))?
         .with_intra_threads(4)
         .map_err(|e| PictoriaError::Fatal(e.to_string()))?
         .with_inter_threads(4)
-        .map_err(|e| PictoriaError::Fatal(e.to_string()))?
+        .map_err(|e| PictoriaError::Fatal(e.to_string()))?;
+
+    // On macOS, try CoreML first (Neural Engine on Apple Silicon, Metal on Intel).
+    // If the hardware/OS doesn't support it, ort falls back to CPU automatically.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .with_execution_providers([CoreMLExecutionProvider::default().build()])
+        .map_err(|e| PictoriaError::Fatal(e.to_string()))?;
+
+    let session = builder
         .commit_from_memory(&model_bytes)
         .map_err(|e| PictoriaError::Fatal(e.to_string()))?;
 
