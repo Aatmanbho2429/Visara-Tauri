@@ -69,8 +69,9 @@ pub fn open() -> Result<Connection> {
         );
     ")?;
 
-    // Idempotent column addition for databases created before mtime existed.
+    // Idempotent column additions for databases created before these columns existed.
     let _ = con.execute("ALTER TABLE files ADD COLUMN mtime REAL NOT NULL DEFAULT 0", []);
+    let _ = con.execute("ALTER TABLE watched_folders ADD COLUMN network_url TEXT", []);
 
     Ok(con)
 }
@@ -230,6 +231,41 @@ pub fn set_watched_folder_status(con: &Connection, path: &str, status: &str) -> 
         params![status, now, path],
     )?;
     Ok(())
+}
+
+pub fn set_network_url(con: &Connection, path: &str, url: &str) -> Result<()> {
+    con.execute(
+        "UPDATE watched_folders SET network_url = ?1 WHERE path = ?2",
+        params![url, path],
+    )?;
+    Ok(())
+}
+
+/// Folders currently marked missing that have a stored network URL — used by
+/// the NAS recovery loop to attempt programmatic remounting.
+pub fn missing_folders_with_network_url(con: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = con.prepare_cached(
+        "SELECT path, network_url FROM watched_folders \
+         WHERE status = 'missing' AND network_url IS NOT NULL",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+/// Folders that have no network_url stored yet — used at startup to backfill
+/// URLs for folders added before this feature existed.
+pub fn watched_folders_without_network_url(con: &Connection) -> Result<Vec<String>> {
+    let mut stmt = con.prepare_cached(
+        "SELECT path FROM watched_folders WHERE network_url IS NULL",
+    )?;
+    let v = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(v)
 }
 
 /// Total rows in `files` — used to detect legacy users with an existing index

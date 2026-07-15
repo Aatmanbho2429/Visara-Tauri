@@ -40,18 +40,35 @@ use std::{
     fs::{self, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
-    sync::{Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
-/// Global lock around any load → mutate → save sequence touching `vectors.bin`.
-/// Both the search pipeline and the watcher's reconciler acquire this to
-/// prevent lost-update races when two threads load+modify+save concurrently.
-pub static STORE_IO_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+/// Serialises concurrent load → modify → save cycles so two sync workers
+/// starting simultaneously cannot race to write stale data (lost-update).
+/// Held by `sync_one` for its full duration.
+static SYNC_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
-/// Grab the global vector-store I/O lock.  Hold the returned guard for the
-/// duration of any load-modify-save sequence.
+/// Separates readers (search) from the brief file-write step (save).
+/// Many read guards can be held at once; a write guard is exclusive and is
+/// only held for the 1–2 seconds of `store.save()`.
+static STORE_RW_LOCK: Lazy<RwLock<()>> = Lazy::new(|| RwLock::new(()));
+
+/// Serialise concurrent `sync_one` runs.  Hold for the entire load → embed
+/// → save sequence so two watcher threads never produce a lost update.
 pub fn store_io_guard() -> MutexGuard<'static, ()> {
-    STORE_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    SYNC_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Shared read lock for search.  Multiple searches can hold this at the same
+/// time.  Only blocked for the ~2 seconds while a save is in progress.
+pub fn store_io_read_guard() -> RwLockReadGuard<'static, ()> {
+    STORE_RW_LOCK.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Exclusive write lock held only during `store.save()`.  Prevents a search
+/// from reading a half-written file while a save is in progress.
+pub fn store_io_write_guard() -> RwLockWriteGuard<'static, ()> {
+    STORE_RW_LOCK.write().unwrap_or_else(|e| e.into_inner())
 }
 
 const MAGIC:      &[u8; 8] = b"PICTOR\x00\x01";

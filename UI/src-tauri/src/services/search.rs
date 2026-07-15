@@ -77,11 +77,9 @@ pub fn execute(
         ));
     }
 
-    // ── Load vector store (acquire IO lock to serialize with watcher) ─
-    let _store_guard = crate::core::vector_store::store_io_guard();
-    let store = VectorStore::load(VECTOR_STORE_PATH.as_path())?;
-
     // ── Embed query image ─────────────────────────────────────────────
+    // Done BEFORE acquiring the store lock so ONNX inference (which has its
+    // own embedder mutex) never holds the read guard.
     // NOTE: search deliberately does not touch the global progress state.
     // That state is owned by the sync/index pipeline and drives the Library
     // page's progress bar; writing "Searching" here (or calling reset()) would
@@ -99,6 +97,12 @@ pub fn execute(
     let query_emb   = embeddings.into_iter().next().ok_or_else(||
         PictoriaError::Fatal("Embedding returned empty result".into())
     )?;
+
+    // ── Load vector store ─────────────────────────────────────────────
+    // Shared read lock — multiple searches can run in parallel and indexing
+    // is never blocked.  Only waits if a save is in progress (~2 seconds).
+    let _store_guard = crate::core::vector_store::store_io_read_guard();
+    let store = VectorStore::load(VECTOR_STORE_PATH.as_path())?;
 
     // ── Build combined id_map across every folder in scope ────────────
     let con = database::open()?;

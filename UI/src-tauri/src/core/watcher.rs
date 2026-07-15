@@ -202,9 +202,181 @@ pub fn reconcile_all() {
 }
 
 /// Reconcile a single folder.  Used by the Library service when a folder is
-/// freshly added or the user clicks "Re-scan".
+/// freshly added or the user clicks "Re-scan".  Re-subscribes the OS watcher
+/// afterward so a previously-missing (NAS) path is picked up again.
 pub fn reconcile_all_path(path: &str) {
     sync_one(&PathBuf::from(path));
+    refresh_active_watches();
+}
+
+// ── NAS auto-recovery ──────────────────────────────────────────────────────
+
+/// Parse `mount` output to find the network URL backing the given path.
+/// Handles nested mounts by keeping the longest matching mount point.
+/// Only compiled on macOS where `/Volumes/` NAS mounts are the concern.
+#[cfg(target_os = "macos")]
+fn find_network_url_for_path(path: &str) -> Option<String> {
+    let output = std::process::Command::new("mount").output().ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Normalise path to have a trailing slash so prefix matching is exact.
+    let path_norm = if path.ends_with('/') {
+        path.to_string()
+    } else {
+        format!("{}/", path)
+    };
+
+    let mut best: Option<(usize, String)> = None; // (mount_point_len, url)
+
+    for line in stdout.lines() {
+        // Format: "<source> on <mountpoint> (<fstype>, ...)"
+        let Some((source, rest)) = line.split_once(" on ") else { continue };
+        let Some((mount_point, type_part)) = rest.split_once(" (") else { continue };
+        let mount_point = mount_point.trim();
+
+        // Skip local/system block devices.
+        if source.trim().starts_with("/dev/") {
+            continue;
+        }
+
+        let mp_norm = if mount_point.ends_with('/') {
+            mount_point.to_string()
+        } else {
+            format!("{}/", mount_point)
+        };
+
+        if !path_norm.starts_with(&mp_norm) {
+            continue;
+        }
+
+        // Build a mount-able URL from the source.  SMB mounts appear as
+        // `//[user@]host/share`; AFP similarly.  NFS as `host:/export`.
+        let source = source.trim();
+        let url = if source.starts_with("//") {
+            let scheme = if type_part.trim_start().starts_with("afpfs") {
+                "afp:"
+            } else {
+                "smb:"
+            };
+            format!("{}{}", scheme, source)
+        } else {
+            continue; // unrecognised format — skip
+        };
+
+        if best.as_ref().map_or(true, |(len, _)| mount_point.len() > *len) {
+            best = Some((mount_point.len(), url));
+        }
+    }
+
+    best.map(|(_, url)| url)
+}
+
+/// Attempt to mount a network URL via AppleScript.  macOS uses Keychain
+/// credentials automatically — no dialog unless credentials have expired.
+#[cfg(target_os = "macos")]
+fn try_mount_network_url(url: &str) -> bool {
+    let escaped = url.replace('"', "\\\"");
+    let script  = format!("mount volume \"{}\"", escaped);
+    match std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            log::info!("[watcher] mounted NAS: {url}");
+            true
+        }
+        Ok(out) => {
+            log::warn!(
+                "[watcher] mount failed for {url}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            false
+        }
+        Err(e) => {
+            log::warn!("[watcher] osascript error for {url}: {e}");
+            false
+        }
+    }
+}
+
+/// Return the network URL (e.g. `smb://host/share`) that backs `path`, or
+/// `None` if the path is local or the URL cannot be determined.
+/// No-op (returns `None`) on non-macOS platforms.
+pub fn capture_network_url(_path: &str) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    { find_network_url_for_path(_path) }
+    #[cfg(not(target_os = "macos"))]
+    { None }
+}
+
+/// Background loop that periodically checks every "missing" folder that has a
+/// stored network URL and attempts to remount it.  On success the folder
+/// transitions back to "watching" without any user action.
+/// No-op on non-macOS platforms.
+pub fn start_nas_recovery_loop() {
+    #[cfg(target_os = "macos")]
+    {
+        thread::spawn(|| {
+            loop {
+                thread::sleep(Duration::from_secs(30));
+
+                let missing = {
+                    let con = match database::open() {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    match database::missing_folders_with_network_url(&con) {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    }
+                };
+
+                for (path, url) in missing {
+                    log::info!("[watcher] NAS recovery attempt: {path} via {url}");
+                    if !try_mount_network_url(&url) {
+                        continue;
+                    }
+                    // Give macOS a moment to settle the mount point.
+                    thread::sleep(Duration::from_secs(2));
+                    let p = PathBuf::from(&path);
+                    if p.is_dir() {
+                        log::info!("[watcher] NAS remounted — restoring {path}");
+                        sync_one(&p);
+                        refresh_active_watches();
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// On startup, populate `network_url` for any watched folder that was added
+/// before this feature existed (NULL url) and is currently mounted.
+/// No-op on non-macOS platforms.
+pub fn backfill_network_urls() {
+    #[cfg(target_os = "macos")]
+    {
+        thread::spawn(|| {
+            let con = match database::open() {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            let paths = match database::watched_folders_without_network_url(&con) {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            for path in paths {
+                if let Some(url) = find_network_url_for_path(&path) {
+                    if let Err(e) = database::set_network_url(&con, &path, &url) {
+                        log::warn!("[watcher] backfill URL failed for {path}: {e}");
+                    } else {
+                        log::info!("[watcher] backfilled network URL for {path}: {url}");
+                    }
+                }
+            }
+        });
+    }
 }
 
 // ── Internals ──────────────────────────────────────────────────────────────
@@ -351,7 +523,13 @@ fn sync_one(folder: &PathBuf) {
 
     match sync_result {
         Ok(errors) => {
-            if let Err(e) = store.save(VECTOR_STORE_PATH.as_path()) {
+            // Hold the write lock only for the actual file write (~2 seconds).
+            // Search holds a read lock and is only blocked during this window.
+            let save_result = {
+                let _write_guard = crate::core::vector_store::store_io_write_guard();
+                store.save(VECTOR_STORE_PATH.as_path())
+            };
+            if let Err(e) = save_result {
                 log::warn!("[watcher] vector store save failed: {e}");
                 if let Ok(con) = database::open() {
                     let _ = database::set_watched_folder_status(&con, &folder_str, "error");

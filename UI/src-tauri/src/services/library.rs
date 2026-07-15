@@ -110,6 +110,15 @@ pub fn add_folder(path: String) -> Value {
     // Refresh OS subscriptions to include the new folder.
     watcher::refresh_active_watches();
 
+    // If this is a network mount (NAS), capture the backing URL so the app
+    // can remount it automatically if it disconnects later.
+    if let Some(url) = watcher::capture_network_url(&path) {
+        if let Ok(con) = database::open() {
+            let _ = database::set_network_url(&con, &path, &url);
+            log::info!("[library] stored network URL for {path}: {url}");
+        }
+    }
+
     // Kick off the initial scan on a worker thread so the UI returns now.
     let path_for_task = path.clone();
     std::thread::spawn(move || {
