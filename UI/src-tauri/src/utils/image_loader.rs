@@ -22,6 +22,26 @@ use std::{
 /// - **PSD / PSB** — tries the embedded JPEG thumbnail in the resource section
 ///   (fast, avoids full composite render); falls back to `image` crate decode.
 pub fn load_image(path: &Path) -> Result<DynamicImage> {
+    load_image_at(path, TIFF_TARGET_MAX)
+}
+
+/// Load at a resolution high enough to be sliced into regions.
+///
+/// The whole-image embedding only ever needs 224px, so [`load_image`] happily
+/// returns a 512px reduction.  Region slicing is different: a 1/9 window of a
+/// 512px carpet is ~170px, which then has to be *upscaled* to 224 — blurrier
+/// than the original and useless for matching.  Cutting the same window out of
+/// a 2048px load gives ~680px of real detail to downsample from instead.
+///
+/// This costs more than [`load_image`], but far less than the ratio suggests:
+/// the expensive part for a large TIFF/PSB is decompressing the source, which
+/// is paid either way.  Only the resample and (for `sips`) the intermediate
+/// PNG grow.
+pub fn load_image_detailed(path: &Path) -> Result<DynamicImage> {
+    load_image_at(path, INDEX_DETAIL_MAX)
+}
+
+fn load_image_at(path: &Path, target_max: u32) -> Result<DynamicImage> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -29,8 +49,8 @@ pub fn load_image(path: &Path) -> Result<DynamicImage> {
         .to_lowercase();
 
     let primary = match ext.as_str() {
-        "psd" | "psb" => load_psd_psb(path),
-        "tif" | "tiff" => load_tiff(path),
+        "psd" | "psb" => load_psd_psb(path, target_max),
+        "tif" | "tiff" => load_tiff(path, target_max),
         _ => load_standard(path),
     };
 
@@ -42,7 +62,7 @@ pub fn load_image(path: &Path) -> Result<DynamicImage> {
             // TIFFs, large PSBs, HEIC…) and resamples to a small size cheaply —
             // i.e. "reduce, then embed".
             #[cfg(target_os = "macos")]
-            if let Ok(img) = load_via_sips(path) {
+            if let Ok(img) = load_via_sips(path, target_max) {
                 log::info!("[image] decoded via sips fallback: {:?}", path);
                 return Ok(img);
             }
@@ -55,7 +75,7 @@ pub fn load_image(path: &Path) -> Result<DynamicImage> {
 /// we can embed.  Spawns `sips`, which streams the conversion (low memory) and
 /// applies proper colour management for CMYK.
 #[cfg(target_os = "macos")]
-fn load_via_sips(path: &Path) -> Result<DynamicImage> {
+fn load_via_sips(path: &Path, target_max: u32) -> Result<DynamicImage> {
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -72,7 +92,7 @@ fn load_via_sips(path: &Path) -> Result<DynamicImage> {
         .arg(path)
         .arg("--out")
         .arg(&tmp)
-        .args(["--resampleHeightWidthMax", "512"])
+        .args(["--resampleHeightWidthMax", &target_max.to_string()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -96,13 +116,13 @@ fn load_standard(path: &Path) -> Result<DynamicImage> {
 
 // ── TIFF ──────────────────────────────────────────────────────────────────
 
-fn load_tiff(path: &Path) -> Result<DynamicImage> {
+fn load_tiff(path: &Path, target_max: u32) -> Result<DynamicImage> {
     // CMYK TIFFs are device-dependent and need ICC colour management to convert
     // accurately.  Our in-Rust decode applies only a naive CMYK→RGB formula,
     // which casts neutral marbles green/pink/yellow.  On macOS, sips is
     // colour-managed (ColorSync) and cheap, so prefer it for TIFFs.
     #[cfg(target_os = "macos")]
-    if let Ok(img) = load_via_sips(path) {
+    if let Ok(img) = load_via_sips(path, target_max) {
         return Ok(img);
     }
 
@@ -111,18 +131,35 @@ fn load_tiff(path: &Path) -> Result<DynamicImage> {
     // 1. Photoshop JPEG preview (TIFF tag 34377) — Photoshop renders this with
     //    ICC-managed colour conversion, so CMYK → sRGB is perceptually correct
     //    without needing an ICC library on our side.
-    if let Ok(img) = try_tiff_photoshop_preview(path) {
-        return Ok(img);
-    }
-
-    // 2. IFD1 thumbnail — usually RGB, small, accurate enough.
-    if let Ok(thumb) = try_tiff_thumbnail(path) {
-        return Ok(thumb);
+    //
+    //    Skipped when we need detail: these previews are small (typically a few
+    //    hundred pixels), so accepting one here would silently cap the
+    //    resolution available for region slicing.  We only fall back to it if
+    //    the real decode fails.
+    if target_max <= TIFF_TARGET_MAX {
+        if let Ok(img) = try_tiff_photoshop_preview(path) {
+            return Ok(img);
+        }
+        // 2. IFD1 thumbnail — usually RGB, small, accurate enough.
+        if let Ok(thumb) = try_tiff_thumbnail(path) {
+            return Ok(thumb);
+        }
     }
 
     // 3. Full pixel decode with our naive CMYK → RGB formula (colour may drift
     //    vs. the OS for CMYK files, but this is the last resort).
-    load_tiff_main(path)
+    match load_tiff_main(path, target_max) {
+        Ok(img) => Ok(img),
+        Err(e) if target_max > TIFF_TARGET_MAX => {
+            // Detail decode failed — a low-resolution preview still beats
+            // dropping the file entirely.  It just won't be worth slicing.
+            log::debug!("[tiff] detail decode failed ({e}); falling back to preview");
+            try_tiff_photoshop_preview(path)
+                .or_else(|_| try_tiff_thumbnail(path))
+                .or(Err(e))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn try_tiff_thumbnail(path: &Path) -> Result<DynamicImage> {
@@ -255,23 +292,30 @@ fn parse_8bim_jpeg_preview(data: &[u8]) -> Result<DynamicImage> {
 /// allocating a second full-resolution image.
 const TIFF_TARGET_MAX: u32 = 512;
 
-fn load_tiff_main(path: &Path) -> Result<DynamicImage> {
+/// Longest edge used when an image is being indexed for region slicing.
+///
+/// Sized so a 1/5-scale window (the smallest level the region planner emits)
+/// still yields ~400px of source for the 224px model input, i.e. every slice
+/// is downsampled rather than upscaled.
+pub const INDEX_DETAIL_MAX: u32 = 2048;
+
+fn load_tiff_main(path: &Path, target_max: u32) -> Result<DynamicImage> {
     // Primary: decode with the `tiff` crate directly so we can lift its 256 MB
     // buffer cap (large multi-channel design TIFFs — e.g. 8008x15709 CMYK ≈
     // 480 MB — were otherwise rejected with "Memory limit exceeded") and convert
     // CMYK ourselves.  Fall back to the image crate for compressions the `tiff`
     // crate can't handle (e.g. some JPEG-in-TIFF variants).
-    match load_tiff_via_tiff_crate(path) {
+    match load_tiff_via_tiff_crate(path, target_max) {
         Ok(img) => Ok(img),
         Err(e)  => {
             log::debug!("[tiff] direct decode failed ({e}); falling back to image crate");
             let img = ImageReader::open(path)?.with_guessed_format()?.decode()?;
-            Ok(downscale(img, TIFF_TARGET_MAX))
+            Ok(downscale(img, target_max))
         }
     }
 }
 
-fn load_tiff_via_tiff_crate(path: &Path) -> Result<DynamicImage> {
+fn load_tiff_via_tiff_crate(path: &Path, target_max: u32) -> Result<DynamicImage> {
     use image::{ImageBuffer, Rgb};
     use tiff::decoder::{DecodingResult, Decoder, Limits};
     use tiff::ColorType;
@@ -297,11 +341,18 @@ fn load_tiff_via_tiff_crate(path: &Path) -> Result<DynamicImage> {
     // strip_count() fails (returns Err) for tile-based TIFFs; that falls through
     // to the full read_image() path below, which is fine because tiles are usually
     // smaller files.
-    if w.max(h) > TIFF_TARGET_MAX * 2 {
+    //
+    // NOT valid when indexing for region slicing.  "The design repeats" holds for
+    // a single tile but is exactly false for a composite — a carpet built from a
+    // grid of *different* motifs.  Reading only the top strips would leave the
+    // lower two-thirds of such a file permanently unindexed, which surfaces as a
+    // search that mysteriously fails to find the right image rather than as a
+    // load error.  In detail mode we always read the full height.
+    if target_max <= TIFF_TARGET_MAX && w.max(h) > TIFF_TARGET_MAX * 2 {
         if let Ok(n_strips) = decoder.strip_count() {
             if n_strips > 1 {
                 let (_, rows_per_strip) = decoder.chunk_dimensions();
-                let strips_needed = ((TIFF_TARGET_MAX / rows_per_strip.max(1)) + 1)
+                let strips_needed = ((target_max / rows_per_strip.max(1)) + 1)
                     .min(n_strips);
 
                 let mut raw: Vec<u8> = Vec::new();
@@ -353,7 +404,7 @@ fn load_tiff_via_tiff_crate(path: &Path) -> Result<DynamicImage> {
         .read_image()
         .map_err(|e| PictoriaError::Fatal(format!("TIFF read failed: {e}")))?;
 
-    tiff_to_downscaled_rgb(result, w, h, color, TIFF_TARGET_MAX)
+    tiff_to_downscaled_rgb(result, w, h, color, target_max)
 }
 
 /// Convert a decoded TIFF buffer to a down-sampled RGB image in a single pass.
@@ -502,7 +553,21 @@ fn tiff_result_to_dynamic(
 /// The PSD/PSB resource section contains blocks identified by a 2-byte
 /// resource ID.  IDs 1033 and 1036 hold a JPEG thumbnail prefixed by a
 /// 28-byte header (format, width, height, etc.).
-fn load_psd_psb(path: &Path) -> Result<DynamicImage> {
+fn load_psd_psb(path: &Path, target_max: u32) -> Result<DynamicImage> {
+    // When indexing for region slicing, the embedded thumbnail is not good
+    // enough — Photoshop stores it at a couple of hundred pixels, which leaves
+    // nothing to slice.  Ask the OS to composite the layer stack instead; it is
+    // colour-managed and streams, and it is the only way to get real resolution
+    // out of a PSD/PSB short of parsing the merged image plane ourselves.
+    // Expensive on big files, so it is confined to the detail path.
+    #[cfg(target_os = "macos")]
+    if target_max > TIFF_TARGET_MAX {
+        if let Ok(img) = load_via_sips(path, target_max) {
+            return Ok(img);
+        }
+        log::debug!("[psd] sips composite failed for {path:?}; using embedded preview");
+    }
+
     match try_psb_thumbnail(path) {
         Ok(img) => return Ok(img),
         Err(e)  => log::debug!("PSB thumbnail fallback: {e}"),
@@ -521,30 +586,49 @@ fn load_psd_psb(path: &Path) -> Result<DynamicImage> {
 }
 
 fn try_psb_thumbnail(path: &Path) -> Result<DynamicImage> {
-    let data = std::fs::read(path)?;
-    let mut cur = Cursor::new(data.as_slice());
+    // Read the header and the image-resources section only.  A PSB is routinely
+    // several gigabytes and the preview lives near the *start* of the file, so
+    // reading the whole thing into memory (as this used to) meant a
+    // multi-gigabyte allocation just to reach a thumbnail — and with NUM_WORKERS
+    // files pre-processed in parallel, several of those at once.
+    let f = std::fs::File::open(path)?;
+    let mut r = BufReader::new(f);
 
     // Signature "8BPS"
     let mut magic = [0u8; 4];
-    cur.read_exact(&mut magic)?;
+    r.read_exact(&mut magic)?;
     if &magic != b"8BPS" {
         return Err(PictoriaError::Fatal("Not a PSD/PSB file".into()));
     }
 
     // Skip: version(2) + reserved(6) + channels(2) + height(4) + width(4) +
     //       depth(2) + color_mode(2) = 22 bytes
-    cur.seek(SeekFrom::Current(22))?;
+    r.seek(SeekFrom::Current(22))?;
+
+    let mut len_buf = [0u8; 4];
 
     // Color-mode data section
-    let color_mode_len = read_u32_be(&mut cur)?;
-    cur.seek(SeekFrom::Current(color_mode_len as i64))?;
+    r.read_exact(&mut len_buf)?;
+    r.seek(SeekFrom::Current(u32::from_be_bytes(len_buf) as i64))?;
 
-    // Image resources section — extract the slice and let the shared parser handle it.
-    let resources_len = read_u32_be(&mut cur)? as usize;
-    let start = cur.position() as usize;
-    let end   = start.saturating_add(resources_len).min(data.len());
+    // Image resources section — metadata only (previews, paths, slices), so a
+    // huge value here means a malformed file rather than a real section.  Cap
+    // the allocation instead of trusting it.
+    r.read_exact(&mut len_buf)?;
+    let resources_len = u32::from_be_bytes(len_buf) as usize;
+    const MAX_RESOURCES_LEN: usize = 64 * 1024 * 1024;
+    if resources_len == 0 || resources_len > MAX_RESOURCES_LEN {
+        return Err(PictoriaError::Fatal(
+            "PSD/PSB image-resources section missing or implausibly large".into(),
+        ));
+    }
 
-    parse_8bim_jpeg_preview(&data[start..end])
+    // take() rather than read_exact so a truncated file still yields whatever
+    // resources it does have — the old code clamped to the file length here.
+    let mut resources = Vec::with_capacity(resources_len.min(1024 * 1024));
+    r.take(resources_len as u64).read_to_end(&mut resources)?;
+
+    parse_8bim_jpeg_preview(&resources)
         .map_err(|_| PictoriaError::Fatal("No JPEG thumbnail resource found in PSD/PSB".into()))
 }
 

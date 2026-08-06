@@ -199,6 +199,8 @@
                     @if (item.thumbnailUrl && !item.imgError) {
                       <img [src]="item.thumbnailUrl" [alt]="item.name"
                            class="pin-card__img" loading="lazy"
+                           [attr.data-rank]="item.rank"
+                           (load)="onImgLoad(item, $event)"
                            (error)="onImgError(item)" />
                     } @else if (item.imgError) {
                       <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
@@ -208,6 +210,21 @@
                       <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
                         <i class="pi pi-spin pi-spinner"></i>
                       </div>
+                    }
+                    @if (item.partial) {
+                      <!-- Box over the region that matched.  Its geometry is
+                           computed from the rendered image rather than set in
+                           percentages, because object-fit: cover crops the
+                           thumbnail and percentages of the card would land
+                           somewhere else entirely.  Note the crop also means a
+                           region outside the visible band is not shown at all. -->
+                      @if (item.matchBox) {
+                        <div class="pin-card__match-box" [ngStyle]="item.matchBox"></div>
+                      }
+                      <span class="pin-card__found-inside" title="Your design was found inside this one">
+                        <i class="pi pi-search-plus"></i>
+                        Found inside
+                      </span>
                     }
                     <div class="pin-card__overlay">
                       <span class="pin-card__open">

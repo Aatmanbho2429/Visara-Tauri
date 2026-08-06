@@ -1,4 +1,4 @@
-import { Component, ElementRef, OnInit, ViewChild, inject } from '@angular/core';
+import { Component, ElementRef, HostListener, OnInit, ViewChild, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { TranslateModule } from '@ngx-translate/core';
 import { Router } from '@angular/router';
@@ -15,6 +15,15 @@ import { SearchStateService } from '../../services/search-state.service';
 import { PlansDialog } from '../../shared/plans-dialog/plans-dialog';
 import { WatchedFolder } from '../../models/library.model';
 
+/** Where in a result image the query design was found, as fractions of its
+ *  width and height. */
+export interface MatchRegion {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface SearchResult {
   rank:          number;
   path:          string;
@@ -23,8 +32,15 @@ export interface SearchResult {
   pattern_match: number;
   color_match:   number;
   folder:        string;
+  /** True when the query matched a *part* of this image — this design contains
+   *  the searched design rather than being it. */
+  partial:       boolean;
+  match_region:  MatchRegion;
   thumbnailUrl:  string;
   imgError:      boolean;
+  /** Pixel geometry of the highlight box, derived from the rendered thumbnail.
+   *  Null until the image has loaded. */
+  matchBox:      Record<string, string> | null;
 }
 
 export interface FailedFile {
@@ -228,7 +244,7 @@ export class Search extends BaseComponent implements OnInit {
             // Browser-safe formats load straight from disk; everything else
             // (PSB, PSD, TIFF…) has no thumbnail yet — leave it in the loading
             // state and generate one below, mirroring the Browse page.
-            return { ...r, thumbnailUrl: safe ? convertFileSrc(r.path) : '', imgError: false };
+            return { ...r, thumbnailUrl: safe ? convertFileSrc(r.path) : '', imgError: false, matchBox: null };
           });
           // Kick off thumbnail generation for the non-browser-safe results so
           // they render as real previews instead of a gradient fallback.
@@ -257,6 +273,55 @@ export class Search extends BaseComponent implements OnInit {
   }
 
   onImgError(item: SearchResult): void { item.imgError = true; this.cdr.detectChanges(); }
+
+  // ── "Found inside" highlight ─────────────────────────────────────
+  //
+  // The backend reports the matched region in normalised coordinates of the
+  // *source* image.  The thumbnail is rendered with object-fit: cover inside a
+  // fixed-height card, so part of the image is cropped away and the mapping
+  // from source coordinates to card coordinates depends on both aspect ratios.
+  // We therefore measure the rendered image and convert to pixels.
+
+  onImgLoad(item: SearchResult, ev: Event): void {
+    item.matchBox = this.computeMatchBox(item, ev.target as HTMLImageElement);
+    this.cdr.detectChanges();
+  }
+
+  /** The card width changes with the window, so the boxes need re-deriving. */
+  @HostListener('window:resize')
+  onWindowResize(): void {
+    const root = this.masonryGridRef?.nativeElement;
+    if (!root) return;
+    root.querySelectorAll<HTMLImageElement>('img.pin-card__img[data-rank]').forEach(img => {
+      const rank = Number(img.dataset['rank']);
+      const item = this.state.results.find((r: SearchResult) => r.rank === rank);
+      if (item) item.matchBox = this.computeMatchBox(item, img);
+    });
+    this.cdr.detectChanges();
+  }
+
+  private computeMatchBox(item: SearchResult, img: HTMLImageElement): Record<string, string> | null {
+    if (!item.partial || !item.match_region) return null;
+
+    const cw = img.clientWidth,  ch = img.clientHeight;
+    const iw = img.naturalWidth, ih = img.naturalHeight;
+    if (!cw || !ch || !iw || !ih) return null;
+
+    // object-fit: cover scales by the *larger* ratio and centres the overflow,
+    // so ox/oy go negative on the cropped axis — part of the image, and so
+    // possibly part of the box, sits outside the card and is clipped.
+    const scale = Math.max(cw / iw, ch / ih);
+    const dw = iw * scale, dh = ih * scale;
+    const ox = (cw - dw) / 2, oy = (ch - dh) / 2;
+
+    const r = item.match_region;
+    return {
+      left:   `${ox + r.x * dw}px`,
+      top:    `${oy + r.y * dh}px`,
+      width:  `${r.w * dw}px`,
+      height: `${r.h * dh}px`,
+    };
+  }
 
   openFile(path: string): void { this.tauri.openFilePath(path); }
 

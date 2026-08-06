@@ -33,7 +33,18 @@ use std::{
 /// v3: grayscale CLIP input for pattern-only design vectors; weights 0.85/0.15.
 /// v4: DINOv2 ViT-B/14 replaces CLIP; 1536-dim design vector; ranking is
 ///     pure design similarity (color stored for display only, weight 0.0).
-pub const EMBED_SCHEMA_VERSION: i64 = 4;
+/// v5: multi-region index — each file stores one vector per region (whole frame
+///     plus overlapping windows) so a small motif can match the larger design it
+///     appears inside; whole-frame pre-processing pads instead of centre-cropping
+///     so no part of a non-square image is discarded.
+/// v6: reverts v5's pad-to-square.  The padding gave every image of the same
+///     aspect ratio an identical band artefact, which then dominated similarity —
+///     a 1.98-aspect query returned twenty 1.98-aspect images regardless of
+///     design, and the true parent (1.50 aspect, same marble) sat at rank 237.
+///     It also put square region slices in a different visual domain from a
+///     padded query, disabling partial matching entirely.  Back to the centre
+///     crop; full-frame coverage comes from the region windows instead.
+pub const EMBED_SCHEMA_VERSION: i64 = 6;
 
 static REEMBED_PENDING: AtomicBool = AtomicBool::new(false);
 

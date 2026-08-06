@@ -137,15 +137,31 @@ pub fn preprocess_grayscale(img: image::DynamicImage) -> Vec<f32> {
     preprocess(image::DynamicImage::ImageLuma8(img.into_luma8()))
 }
 
+/// Canonical recipe: resize so the *shorter* side == 224 (aspect preserved),
+/// then centre-crop to 224×224.
+///
+/// ## Why not pad to square instead
+/// Padding looks like the obvious way to avoid discarding the outer parts of a
+/// non-square image, and it was tried.  It is actively harmful: a 1:2 tile
+/// becomes a 112-wide strip with mirrored fill on either side, and *every* 1:2
+/// image acquires the same band structure at the same positions.  That shared
+/// artefact then dominates the embedding — measured on a real library, all 20
+/// top hits for a 1.98-aspect query were 1.98-aspect images regardless of their
+/// design, while the true parent image (a 1.50-aspect landscape carrying the
+/// exact same marble) fell to rank 237.  Aspect ratio became the search.
+///
+/// It also silently broke partial matching: region slices are square and so
+/// carry no padding, which put them in a different visual domain from a padded
+/// query and left them unable to compete.  Removing the padding moved that same
+/// query's true parent from rank 237 to rank 2.
+///
+/// Nothing is lost by cropping here, because full-frame coverage is the job of
+/// [`crate::core::regions`] — its windows span the whole image, edges included.
+/// The centre crop is just the coarsest view among them.
 pub fn preprocess(img: image::DynamicImage) -> Vec<f32> {
     let size = CLIP_INPUT_SIZE;   // 224
     let sz   = size as usize;
 
-    // Canonical CLIP recipe: resize so the *shorter* side == 224 (preserving
-    // aspect ratio), then centre-crop to 224×224.  The old code squashed every
-    // image to a square with `resize_exact`, which distorted rectangular tiles
-    // (plank / subway formats) and pushed their embeddings off the distribution
-    // CLIP was trained on — weakening similarity for exactly those designs.
     let (w, h) = (img.width(), img.height());
     let (nw, nh) = if w <= h {
         (size, ((h as u64 * size as u64) / w.max(1) as u64) as u32)
@@ -175,6 +191,69 @@ pub fn preprocess(img: image::DynamicImage) -> Vec<f32> {
 }
 
 pub const EMBED_BATCH_SIZE: usize = BATCH_SIZE;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{DynamicImage, Rgb, RgbImage};
+
+    const SZ: usize = CLIP_INPUT_SIZE as usize;
+
+    /// Tall image whose left third is white and the rest black — asymmetric
+    /// across the vertical axis, which is what makes padding detectable.
+    fn left_banded_tall() -> DynamicImage {
+        let (w, h) = (200u32, 400u32);
+        let mut img = RgbImage::from_pixel(w, h, Rgb([0, 0, 0]));
+        for y in 0..h {
+            for x in 0..(w / 3) {
+                img.put_pixel(x, y, Rgb([255, 255, 255]));
+            }
+        }
+        DynamicImage::ImageRgb8(img)
+    }
+
+    /// Regression test for the mirror-padding that made aspect ratio the
+    /// dominant search signal (true parent image fell to rank 237; removing the
+    /// padding put it at rank 2).
+    ///
+    /// Under padding, a 1:2 image was resized to a 112-wide strip centred in the
+    /// frame, so column 0 held *mirrored* content — here, black.  Under the
+    /// centre crop the resized image spans the full width, so column 0 holds the
+    /// real left edge — white.  That single column tells the two apart.
+    #[test]
+    fn preprocessing_does_not_pad_non_square_images() {
+        let t = preprocess(left_banded_tall());
+        assert_eq!(t.len(), 3 * SZ * SZ);
+
+        let mid_row = SZ / 2;
+        let left_edge  = t[mid_row * SZ];
+        let right_edge = t[mid_row * SZ + SZ - 1];
+
+        assert!(
+            left_edge > 0.0,
+            "column 0 should be the image's real left edge (white), got {left_edge} — \
+             a negative value means the frame was padded again"
+        );
+        assert!(
+            right_edge < 0.0,
+            "column 223 should be the image's real right edge (black), got {right_edge}"
+        );
+    }
+
+    #[test]
+    fn square_images_pass_through_undistorted() {
+        // No padding is needed for a square, so this is the plain resize path —
+        // the common case, and the one that must not regress.
+        let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(300, 300, Rgb([128, 64, 32])));
+        let t = preprocess(img);
+        assert_eq!(t.len(), 3 * SZ * SZ);
+
+        let expected = (128.0 / 255.0 - CLIP_MEAN[0]) / CLIP_STD[0];
+        for &v in t.iter().take(SZ * SZ) {
+            assert!((v - expected).abs() < 0.05, "flat square should embed flat");
+        }
+    }
+}
 
 // Pure-Rust Fernet decryption (no OpenSSL).
 // Spec: https://github.com/fernet/spec/blob/master/Spec.md

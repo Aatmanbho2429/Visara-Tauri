@@ -1,6 +1,6 @@
 use crate::{
     config::BATCH_SIZE,
-    core::{database, embedder, progress, vector_store::VectorStore},
+    core::{database, embedder, progress, regions::{self, Region}, vector_store::VectorStore},
     error::{Result, PictoriaError},
     utils::{file_utils, image_loader},
 };
@@ -15,6 +15,53 @@ use std::{
 pub struct FileError {
     pub file:   String,
     pub reason: String,
+}
+
+/// Files pre-processed together before an inference batch is dispatched.
+///
+/// Deliberately smaller than [`BATCH_SIZE`]: each file now expands into up to
+/// `regions::MAX_REGIONS` tensors of 224x224x3 f32 (~600 KB each), so chunking
+/// by BATCH_SIZE files would hold hundreds of megabytes of pixel data at once.
+/// Inference is still dispatched in BATCH_SIZE-sized batches — this only bounds
+/// how much is staged in memory ahead of it.
+const INDEX_FILE_CHUNK: usize = 8;
+
+/// One region of an image, ready to embed.
+type PreparedRegion = (Region, Vec<f32>, Vec<f32>);
+
+/// Load an image at slicing resolution and pre-process every planned region:
+/// the whole frame plus overlapping windows (see [`crate::core::regions`]).
+///
+/// Returns `(region, model input tensor, colour histogram)` per region.  The
+/// colour histogram is computed per region so a partial match reports the
+/// palette of the part that actually matched, not of the whole sheet.
+fn prepare_regions(path: &Path) -> Result<Vec<PreparedRegion>> {
+    // Detailed load: slices are cut from this, so a 512px reduction would leave
+    // each window with less source than the 224px the model wants.
+    let img = image_loader::load_image_detailed(path)?;
+    let (w, h) = (img.width(), img.height());
+
+    let plan = regions::plan(w, h);
+    let mut out: Vec<Option<PreparedRegion>> = vec![None; plan.len()];
+
+    for (i, r) in plan.iter().enumerate() {
+        if r.is_whole() {
+            continue; // handled below, so it can consume `img` without a copy
+        }
+        let (x, y, cw, ch) = r.to_pixels(w, h);
+        let crop   = img.crop_imm(x, y, cw, ch);
+        let color  = crate::core::color::histogram(&crop);
+        let pixels = embedder::preprocess_grayscale(crop);
+        out[i] = Some((*r, pixels, color));
+    }
+
+    if let Some(i) = plan.iter().position(|r| r.is_whole()) {
+        let color  = crate::core::color::histogram(&img);
+        let pixels = embedder::preprocess_grayscale(img);
+        out[i] = Some((plan[i], pixels, color));
+    }
+
+    Ok(out.into_iter().flatten().collect())
 }
 
 pub fn sync_folder(
@@ -162,38 +209,32 @@ pub fn sync_folder(
 
         let mut done_count = 0usize;
 
-        for chunk in needs_embed.chunks(BATCH_SIZE) {
+        for chunk in needs_embed.chunks(INDEX_FILE_CHUNK) {
             let first_name = chunk[0].0.file_name().and_then(|n| n.to_str()).unwrap_or("");
             progress::set_progress(None, None, None, Some(first_name), None);
 
             // Pre-process images in parallel.  Each worker loads the image once
-            // and derives BOTH vectors from it: the CLIP pixel tensor (design)
-            // and the HSV colour histogram (palette).
-            let preprocess_results: Vec<(usize, Result<(Vec<f32>, Vec<f32>)>)> = chunk
+            // and derives, for every region of it, BOTH vectors: the model pixel
+            // tensor (design) and the HSV colour histogram (palette).
+            let preprocess_results: Vec<(usize, Result<Vec<PreparedRegion>>)> = chunk
                 .par_iter()
                 .enumerate()
-                .map(|(i, (path, _, _))| {
-                    let res = image_loader::load_image(path).map(|img| {
-                        // colour histogram from full-colour image; design embedding
-                        // from grayscale so the vector captures pattern only, not hue.
-                        let color  = crate::core::color::histogram(&img);
-                        let pixels = embedder::preprocess_grayscale(img);
-                        (pixels, color)
-                    });
-                    (i, res)
-                })
+                .map(|(i, (path, _, _))| (i, prepare_regions(path)))
                 .collect();
 
             let mut flat_pixels: Vec<f32> = Vec::new();
-            // (chunk index, colour vector) for every successfully pre-processed
-            // image, in the same order their pixels were appended to flat_pixels.
-            let mut valid: Vec<(usize, Vec<f32>)> = Vec::new();
+            // (chunk index, region, colour vector) for every successfully
+            // pre-processed region, in the same order their pixels were appended
+            // to flat_pixels.  One file contributes several entries here.
+            let mut valid: Vec<(usize, Region, Vec<f32>)> = Vec::new();
 
             for (i, result) in preprocess_results {
                 match result {
-                    Ok((pixels, color)) => {
-                        flat_pixels.extend(pixels);
-                        valid.push((i, color));
+                    Ok(prepared) => {
+                        for (region, pixels, color) in prepared {
+                            flat_pixels.extend(pixels);
+                            valid.push((i, region, color));
+                        }
                     }
                     Err(e) => {
                         let path_str = chunk[i].0.to_string_lossy().to_string();
@@ -207,7 +248,13 @@ pub fn sync_folder(
                 let embeddings = embedder::embed_batch(&flat_pixels, BATCH_SIZE)
                     .map_err(|e| PictoriaError::Fatal(format!("Embedding failed: {e}")))?;
 
-                for (emb_idx, (chunk_idx, color)) in valid.into_iter().enumerate() {
+                // All regions of a file share its vector id, so the row is
+                // created once — on the file's first region — and reused.
+                // `Err` marks a file whose persistence failed, so its remaining
+                // regions are skipped rather than added against no DB row.
+                let mut file_ids: HashMap<usize, std::result::Result<i64, ()>> = HashMap::new();
+
+                for (emb_idx, (chunk_idx, region, color)) in valid.into_iter().enumerate() {
                     let (path, hash, mtime) = &chunk[chunk_idx];
                     let path_str = path.to_string_lossy().to_string();
 
@@ -215,27 +262,36 @@ pub fn sync_folder(
                     // failure is recorded and skipped so the rest of the folder
                     // still indexes (e.g. one locked/duplicate file won't kill
                     // the whole batch).
-                    let vector_id = match database::next_vector_id(&con) {
-                        Ok(id) => id,
-                        Err(e) => {
-                            errors.push(FileError { file: path_str, reason: format!("ID allocation failed: {e}") });
+                    let id_entry = file_ids.entry(chunk_idx).or_insert_with(|| {
+                        let vector_id = match database::next_vector_id(&con) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                errors.push(FileError { file: path_str.clone(), reason: format!("ID allocation failed: {e}") });
+                                progress::increment_errors();
+                                return Err(());
+                            }
+                        };
+                        if let Err(e) = database::insert_file(&con, &path_str, hash, vector_id, *mtime) {
+                            errors.push(FileError { file: path_str.clone(), reason: format!("DB insert failed: {e}") });
                             progress::increment_errors();
-                            continue;
+                            return Err(());
                         }
+                        progress::increment_file_type(
+                            path.extension().and_then(|e| e.to_str()).unwrap_or(""),
+                        );
+                        Ok(vector_id)
+                    });
+
+                    let vector_id = match id_entry {
+                        Ok(id) => *id,
+                        Err(()) => continue,
                     };
-                    if let Err(e) = store.add(vector_id, &embeddings[emb_idx], &color) {
+
+                    if let Err(e) = store.add(vector_id, region, &embeddings[emb_idx], &color) {
                         errors.push(FileError { file: path_str, reason: format!("Index add failed: {e}") });
                         progress::increment_errors();
                         continue;
                     }
-                    if let Err(e) = database::insert_file(&con, &path_str, hash, vector_id, *mtime) {
-                        errors.push(FileError { file: path_str, reason: format!("DB insert failed: {e}") });
-                        progress::increment_errors();
-                        continue;
-                    }
-                    progress::increment_file_type(
-                        path.extension().and_then(|e| e.to_str()).unwrap_or(""),
-                    );
                 }
             }
 
@@ -315,32 +371,27 @@ pub fn reembed_folder(
     progress::set_progress(Some("Rebuilding index"), Some(0), Some(total), Some(""), Some(0));
     let mut done = 0usize;
 
-    for chunk in items.chunks(BATCH_SIZE) {
+    for chunk in items.chunks(INDEX_FILE_CHUNK) {
         let first_name = chunk[0].1.file_name().and_then(|n| n.to_str()).unwrap_or("");
         progress::set_progress(None, None, None, Some(first_name), None);
 
-        // Load once, derive both vectors, in parallel.
-        let pre: Vec<(usize, Result<(Vec<f32>, Vec<f32>)>)> = chunk
+        // Load once, derive every region's vectors, in parallel.
+        let pre: Vec<(usize, Result<Vec<PreparedRegion>>)> = chunk
             .par_iter()
             .enumerate()
-            .map(|(i, (_, path))| {
-                let res = image_loader::load_image(path).map(|img| {
-                    let color  = crate::core::color::histogram(&img);
-                    let pixels = embedder::preprocess_grayscale(img);
-                    (pixels, color)
-                });
-                (i, res)
-            })
+            .map(|(i, (_, path))| (i, prepare_regions(path)))
             .collect();
 
         let mut flat_pixels: Vec<f32> = Vec::new();
-        let mut valid: Vec<(usize, Vec<f32>)> = Vec::new();
+        let mut valid: Vec<(usize, Region, Vec<f32>)> = Vec::new();
 
         for (i, res) in pre {
             match res {
-                Ok((pixels, color)) => {
-                    flat_pixels.extend(pixels);
-                    valid.push((i, color));
+                Ok(prepared) => {
+                    for (region, pixels, color) in prepared {
+                        flat_pixels.extend(pixels);
+                        valid.push((i, region, color));
+                    }
                 }
                 Err(e) => {
                     errors.push(FileError {
@@ -356,9 +407,9 @@ pub fn reembed_folder(
             let embeddings = embedder::embed_batch(&flat_pixels, BATCH_SIZE)
                 .map_err(|e| PictoriaError::Fatal(format!("Embedding failed: {e}")))?;
 
-            for (emb_idx, (chunk_idx, color)) in valid.into_iter().enumerate() {
+            for (emb_idx, (chunk_idx, region, color)) in valid.into_iter().enumerate() {
                 let (faiss_id, path) = &chunk[chunk_idx];
-                if let Err(e) = store.add(*faiss_id, &embeddings[emb_idx], &color) {
+                if let Err(e) = store.add(*faiss_id, region, &embeddings[emb_idx], &color) {
                     errors.push(FileError {
                         file:   path.to_string_lossy().to_string(),
                         reason: format!("Index add failed: {e}"),

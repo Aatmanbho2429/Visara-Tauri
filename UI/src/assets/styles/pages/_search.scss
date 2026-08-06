@@ -578,6 +578,38 @@
     i { font-size: $font-size-2xl; color: rgba(255,255,255,0.4); }
   }
 
+  // ── Partial ("found inside") matches ──────────────────────────────────
+  // The query design was found in a *region* of this image rather than as the
+  // whole thing.  The box marks that region; its pixel geometry is set from
+  // TypeScript because object-fit: cover crops the thumbnail.
+  &__match-box {
+    position: absolute;
+    border: 2px solid rgba(251, 191, 36, 0.95);
+    border-radius: 3px;
+    box-shadow: 0 0 0 9999px rgba(24, 18, 30, 0.45),
+                0 0 12px rgba(251, 191, 36, 0.5);
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  &__found-inside {
+    position: absolute;
+    top: $space-2;
+    left: $space-2;
+    z-index: 2;
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px $space-2;
+    border-radius: $border-radius-sm;
+    background: rgba(251, 191, 36, 0.92);
+    color: #2d1f3d;
+    font-family: $font-primary;
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    pointer-events: none;
+
+    i { font-size: $font-size-xs; }
+  }
+
   &__overlay {
     position: absolute; inset: 0;
     display: flex; align-items: flex-end;
@@ -585,6 +617,7 @@
     background: linear-gradient(to top, rgba(24, 18, 30, 0.85) 0%, transparent 60%);
     opacity: 0;
     transition: opacity 0.25s ease;
+    z-index: 3;
   }
 
   &__open {
