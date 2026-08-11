@@ -457,13 +457,22 @@ fn sync_one(folder: &PathBuf) {
     }
 
     log::info!("[watcher] reconciling {folder:?}");
+    let t_sync_one = Instant::now();
 
     // Serialize against the search pipeline — both load → modify → save the
     // vector store, and concurrent runs would lose updates.
     let _store_guard = crate::core::vector_store::store_io_guard();
 
+    let t_load = Instant::now();
     let mut store = match VectorStore::load(VECTOR_STORE_PATH.as_path()) {
-        Ok(s)  => s,
+        Ok(s)  => {
+            log::info!(
+                "[timing] vector_store_load path={:?} load_ms={:.2}",
+                VECTOR_STORE_PATH.as_path(),
+                t_load.elapsed().as_secs_f64() * 1000.0,
+            );
+            s
+        }
         Err(e) => {
             log::warn!("[watcher] vector store load failed: {e}");
             if let Ok(con) = database::open() {
@@ -525,10 +534,16 @@ fn sync_one(folder: &PathBuf) {
         Ok(errors) => {
             // Hold the write lock only for the actual file write (~2 seconds).
             // Search holds a read lock and is only blocked during this window.
+            let t_save = Instant::now();
             let save_result = {
                 let _write_guard = crate::core::vector_store::store_io_write_guard();
                 store.save(VECTOR_STORE_PATH.as_path())
             };
+            log::info!(
+                "[timing] vector_store_save path={:?} save_ms={:.2}",
+                VECTOR_STORE_PATH.as_path(),
+                t_save.elapsed().as_secs_f64() * 1000.0,
+            );
             if let Err(e) = save_result {
                 log::warn!("[watcher] vector store save failed: {e}");
                 if let Ok(con) = database::open() {
@@ -556,6 +571,10 @@ fn sync_one(folder: &PathBuf) {
                     log::warn!("[watcher]   • {} — {}", e.file, e.reason);
                 }
             }
+            log::info!(
+                "[timing] sync_one TOTAL folder={folder:?} wall_ms={:.2}",
+                t_sync_one.elapsed().as_secs_f64() * 1000.0,
+            );
             log::info!("[watcher] done reconciling {folder:?}");
 
             // Ship a bounded sample of the failures so the Library card can show

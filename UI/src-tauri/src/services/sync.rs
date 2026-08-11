@@ -8,8 +8,16 @@ use rayon::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
+
+// ── Temporary benchmarking instrumentation ──────────────────────────────────
+//
+// Logs a `[timing]`-tagged line at every pipeline stage boundary so a folder
+// load can be broken down cost-by-code-block after the fact (grep the Tauri
+// log for "[timing]"). Cheap (Instant::now() + a log line per file/chunk) —
+// safe to leave compiled in, but flagged here in case it should be stripped
+// or gated behind a debug-only cfg later.
 
 #[derive(Debug, Clone)]
 pub struct FileError {
@@ -36,12 +44,19 @@ type PreparedRegion = (Region, Vec<f32>, Vec<f32>);
 /// colour histogram is computed per region so a partial match reports the
 /// palette of the part that actually matched, not of the whole sheet.
 fn prepare_regions(path: &Path) -> Result<Vec<PreparedRegion>> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let file_kb = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) as f64 / 1024.0;
+
     // Detailed load: slices are cut from this, so a 512px reduction would leave
     // each window with less source than the 224px the model wants.
+    let t_decode = Instant::now();
     let img = image_loader::load_image_detailed(path)?;
+    let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
     let (w, h) = (img.width(), img.height());
 
+    let t_prep = Instant::now();
     let plan = regions::plan(w, h);
+    let n_regions = plan.len();
     let mut out: Vec<Option<PreparedRegion>> = vec![None; plan.len()];
 
     for (i, r) in plan.iter().enumerate() {
@@ -60,6 +75,15 @@ fn prepare_regions(path: &Path) -> Result<Vec<PreparedRegion>> {
         let pixels = embedder::preprocess_grayscale(img);
         out[i] = Some((plan[i], pixels, color));
     }
+    let prep_ms = t_prep.elapsed().as_secs_f64() * 1000.0;
+
+    log::debug!(
+        "[timing] decode file={:?} ext={ext} dim={w}x{h} size_kb={file_kb:.1} \
+         regions={n_regions} decode_ms={decode_ms:.2} region_prep_ms={prep_ms:.2} \
+         total_ms={:.2}",
+        path.file_name().unwrap_or_default(),
+        decode_ms + prep_ms,
+    );
 
     Ok(out.into_iter().flatten().collect())
 }
@@ -72,6 +96,7 @@ pub fn sync_folder(
         return Err(PictoriaError::ModelNotReady);
     }
 
+    let t_total = Instant::now();
     let folder_str = folder_path.to_string_lossy().to_string();
     let mut errors: Vec<FileError> = Vec::new();
 
@@ -84,14 +109,20 @@ pub fn sync_folder(
     }
 
     // Phase 1: collect files and compute hashes in parallel.
+    let t_scan = Instant::now();
     let current_files = file_utils::scan_images(folder_path);
     let total         = current_files.len();
+    log::info!(
+        "[timing] scan_images folder={folder_str} files={total} scan_ms={:.2}",
+        t_scan.elapsed().as_secs_f64() * 1000.0
+    );
 
     progress::set_progress(Some("Scanning files"), Some(0), Some(total), Some(""), Some(0));
 
     // Tuple: (path, hash, error, mtime, already_indexed).
     // `already_indexed` = the file already has its own DB row at this exact path
     // with an unchanged mtime, so it needs no work at all.
+    let t_hash = Instant::now();
     let hash_results: Vec<(PathBuf, Option<String>, Option<String>, f64, bool)> = current_files
         .par_iter()
         .map(|path| {
@@ -118,6 +149,10 @@ pub fn sync_folder(
             }
         })
         .collect();
+    log::info!(
+        "[timing] hash_phase folder={folder_str} files={total} hash_ms={:.2}",
+        t_hash.elapsed().as_secs_f64() * 1000.0
+    );
 
     // Classify: already indexed / needs embedding / error.
     let mut needs_embed: Vec<(PathBuf, String, f64)> = Vec::new();
@@ -208,19 +243,23 @@ pub fn sync_folder(
         con.execute_batch("BEGIN;")?;
 
         let mut done_count = 0usize;
+        let mut chunk_no    = 0usize;
 
         for chunk in needs_embed.chunks(INDEX_FILE_CHUNK) {
+            chunk_no += 1;
             let first_name = chunk[0].0.file_name().and_then(|n| n.to_str()).unwrap_or("");
             progress::set_progress(None, None, None, Some(first_name), None);
 
             // Pre-process images in parallel.  Each worker loads the image once
             // and derives, for every region of it, BOTH vectors: the model pixel
             // tensor (design) and the HSV colour histogram (palette).
+            let t_preprocess = Instant::now();
             let preprocess_results: Vec<(usize, Result<Vec<PreparedRegion>>)> = chunk
                 .par_iter()
                 .enumerate()
                 .map(|(i, (path, _, _))| (i, prepare_regions(path)))
                 .collect();
+            let preprocess_wall_ms = t_preprocess.elapsed().as_secs_f64() * 1000.0;
 
             let mut flat_pixels: Vec<f32> = Vec::new();
             // (chunk index, region, colour vector) for every successfully
@@ -244,9 +283,13 @@ pub fn sync_folder(
                 }
             }
 
+            let n_vectors = flat_pixels.len() / (3 * crate::config::CLIP_INPUT_SIZE as usize * crate::config::CLIP_INPUT_SIZE as usize);
+
             if !flat_pixels.is_empty() {
+                let t_embed = Instant::now();
                 let embeddings = embedder::embed_batch(&flat_pixels, BATCH_SIZE)
                     .map_err(|e| PictoriaError::Fatal(format!("Embedding failed: {e}")))?;
+                let embed_ms = t_embed.elapsed().as_secs_f64() * 1000.0;
 
                 // All regions of a file share its vector id, so the row is
                 // created once — on the file's first region — and reused.
@@ -254,6 +297,7 @@ pub fn sync_folder(
                 // regions are skipped rather than added against no DB row.
                 let mut file_ids: HashMap<usize, std::result::Result<i64, ()>> = HashMap::new();
 
+                let t_persist = Instant::now();
                 for (emb_idx, (chunk_idx, region, color)) in valid.into_iter().enumerate() {
                     let (path, hash, mtime) = &chunk[chunk_idx];
                     let path_str = path.to_string_lossy().to_string();
@@ -293,6 +337,15 @@ pub fn sync_folder(
                         continue;
                     }
                 }
+                let persist_ms = t_persist.elapsed().as_secs_f64() * 1000.0;
+
+                log::info!(
+                    "[timing] chunk #{chunk_no} files={} vectors={n_vectors} \
+                     preprocess_wall_ms={preprocess_wall_ms:.2} embed_ms={embed_ms:.2} \
+                     persist_ms={persist_ms:.2} avg_embed_ms_per_vector={:.3}",
+                    chunk.len(),
+                    embed_ms / n_vectors.max(1) as f64,
+                );
             }
 
             // Commit this batch and immediately open the next transaction.
@@ -321,6 +374,13 @@ pub fn sync_folder(
         }
         con.execute_batch("COMMIT;")?;
     }
+
+    log::info!(
+        "[timing] sync_folder TOTAL folder={folder_str} files_scanned={total} \
+         files_embedded={total_embed} errors={} total_ms={:.2}",
+        errors.len(),
+        t_total.elapsed().as_secs_f64() * 1000.0,
+    );
 
     Ok(errors)
 }
