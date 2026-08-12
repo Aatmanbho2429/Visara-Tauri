@@ -149,8 +149,8 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
         this.userState.set(res.data.user); // pre-populate so authGuard skips validate
 
         // authGuard will now skip validateToken(), but that call is also what
-        // fetches the onnx_key, preloads the CLIP model, and notifies the
-        // watcher to reconcile any folders added before the model was ready.
+        // confirms the subscription is active and notifies the watcher to
+        // reconcile any folders added before the sidecar/session were ready.
         // Fire it here so a fresh login doesn't leave indexing stuck until
         // the next app restart.
         this.authService.validateToken().subscribe();

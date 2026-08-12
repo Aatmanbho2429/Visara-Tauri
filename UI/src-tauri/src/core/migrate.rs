@@ -44,7 +44,11 @@ use std::{
 ///     It also put square region slices in a different visual domain from a
 ///     padded query, disabling partial matching entirely.  Back to the centre
 ///     crop; full-frame coverage comes from the region windows instead.
-pub const EMBED_SCHEMA_VERSION: i64 = 6;
+/// v7: DINOv2/ONNX replaced by the sidecar (Gabor-rose + Gram-matrix ranking,
+///     SIFT/RANSAC verification). No more region slicing — one descriptor per
+///     file; "found inside" is now a direct geometric proof instead of a
+///     region-vs-whole-frame score margin.
+pub const EMBED_SCHEMA_VERSION: i64 = 7;
 
 static REEMBED_PENDING: AtomicBool = AtomicBool::new(false);
 

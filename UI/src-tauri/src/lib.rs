@@ -64,13 +64,10 @@ fn hotkey_shortcut() -> Shortcut {
     Shortcut::new(Some(mods), Code::KeyV)
 }
 
-/// Recognized image file extensions for file-list clipboard contents.
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "psd", "psb", "bmp", "gif", "webp"];
-
 fn is_image_file(p: &PathBuf) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
-        .map(|e| IMAGE_EXTS.contains(&e.to_lowercase().as_str()))
+        .map(|e| config::IMAGE_EXTENSIONS.contains(&e.to_lowercase().as_str()))
         .unwrap_or(false)
 }
 
@@ -191,7 +188,10 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     update::check_for_update(app_clone).await;
                 });
             }
-            "tray_quit" => app.exit(0),
+            "tray_quit" => {
+                crate::core::sidecar::shutdown();
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -281,10 +281,16 @@ pub fn run() {
                 log::warn!("[tray] failed to build tray: {e}");
             }
 
+            // Spawn the sidecar (Gabor/Gram descriptors + SIFT verification)
+            // hidden, in the background. `core::sidecar::is_ready()` gates
+            // search/indexing until its health check passes AND the user is
+            // logged in with a current subscription.
+            crate::core::sidecar::spawn();
+
             // Start the background folder watcher.  Its OS subscriptions and
-            // initial reconciliation kick in later (after token validation
-            // loads the CLIP model) via `crate::core::watcher::refresh_active_watches`
-            // and `reconcile_all`.
+            // initial reconciliation kick in later (once the sidecar is ready
+            // and the user is logged in) via `crate::core::sidecar::maybe_notify_ready`
+            // -> `crate::core::watcher::notify_model_ready`.
             crate::core::watcher::init(app.handle().clone());
 
             // Spawn the NAS auto-recovery loop (macOS only — no-op elsewhere).
@@ -358,6 +364,7 @@ pub fn run() {
             auth::auth_request_access,
             // ── Image search ─────────────────────────────────────────
             search::start_search,
+            search::sidecar_status,
             // ── Subscription / payments ──────────────────────────────
             subscription::get_plans,
             subscription::get_user_subscriptions,
@@ -395,6 +402,14 @@ pub fn run() {
             // ── Utilities ────────────────────────────────────────────
             open_file_path,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Pictoria");
+        .build(tauri::generate_context!())
+        .expect("error while building Pictoria")
+        .run(|_app_handle, event| {
+            // Catch-all so the sidecar process is never left orphaned,
+            // regardless of which path the app exits through (tray Quit
+            // already calls this too — shutdown() is a no-op the second time).
+            if let tauri::RunEvent::Exit = event {
+                crate::core::sidecar::shutdown();
+            }
+        });
 }

@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "../../sidecar/dist/pictoria-sidecar.exe": "bin/pictoria-sidecar.exe"
+    }
+  }
+}

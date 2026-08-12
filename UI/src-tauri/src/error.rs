@@ -8,17 +8,11 @@ pub enum PictoriaError {
     #[error("Image error: {0}")]
     Image(#[from] image::ImageError),
 
-    #[error("Inference error: {0}")]
-    Ort(#[from] ort::Error),
-
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
 
     #[error("Network error: {0}")]
     Network(String),
-
-    #[error("Model decryption failed - invalid or expired key")]
-    Decryption,
 
     #[error("No saved session - please login")]
     NoSession,
@@ -26,7 +20,7 @@ pub enum PictoriaError {
     #[error("Session expired - {0}")]
     SessionExpired(String),
 
-    #[error("AI model not loaded - please restart and login again")]
+    #[error("Design-match engine not ready yet - please wait a moment and try again")]
     ModelNotReady,
 
     #[error("Search already in progress")]

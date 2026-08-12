@@ -99,6 +99,22 @@ jobs:
         run: npm install
         working-directory: UI
 
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Produces sidecar/dist/pictoria-sidecar[.exe], which
+      # UI/src-tauri/tauri.<platform>.conf.json's `bundle.resources` expects
+      # to exist before tauri-action runs — see sidecar/README.md.
+      - name: Freeze sidecar (PyInstaller)
+        shell: bash
+        working-directory: sidecar
+        run: |
+          pip install -r requirements.txt
+          python -m PyInstaller --onefile --name pictoria-sidecar \
+            --distpath dist --workpath build --specpath . server.py
+
       - name: Verify signing secrets are present
         shell: bash
         env:

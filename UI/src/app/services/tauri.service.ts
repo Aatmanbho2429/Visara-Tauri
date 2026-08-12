@@ -105,7 +105,7 @@ export class TauriService {
    * @param scopePaths Watched-folder paths to restrict the search to.  Empty
    *                   array means "search every folder in the Library".
    */
-  searchStream(imagePath: string, scopePaths: string[], topK: number, onnxKey: string): Observable<SearchEvent> {
+  searchStream(imagePath: string, scopePaths: string[], topK: number): Observable<SearchEvent> {
     return new Observable(observer => {
       let ulProgress: (() => void) | null = null;
       let ulComplete: (() => void) | null = null;
@@ -137,7 +137,7 @@ export class TauriService {
           ulComplete = c;
           ulError    = er;
 
-          invoke('start_search', { imagePath, scopePaths, topK, onnxKey }).catch(err => {
+          invoke('start_search', { imagePath, scopePaths, topK }).catch(err => {
             this.zone.run(() => {
               observer.next({ type: 'error', data: { message: String(err) } });
               observer.complete();

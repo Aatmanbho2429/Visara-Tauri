@@ -1,6 +1,6 @@
 use crate::{
     config::{OFFLINE_GRACE_SECS, SUPABASE_EDGE, TOKEN_FILE},
-    core::{embedder, watcher},
+    core::sidecar,
     services::license,
 };
 use keyring::Entry;
@@ -24,6 +24,11 @@ struct Session {
 }
 
 static SESSION: Lazy<Mutex<Option<Session>>> = Lazy::new(|| Mutex::new(None));
+
+/// Separate from `SESSION` on purpose: an expired/exhausted subscription still
+/// leaves the user logged in (they need the session to see billing/renewal
+/// screens) but must block search/indexing — see `has_active_session()`.
+static SUBSCRIPTION_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 // In-memory cache of the auth token.
 //
@@ -55,6 +60,13 @@ fn clear_in_memory_session() {
 /// User ID from the current in-memory session (None if not logged in).
 pub fn session_user_id() -> Option<String> {
     SESSION.lock().unwrap().as_ref().map(|s| s.user_id.clone())
+}
+
+/// True while a user is logged in AND their subscription is current. This is
+/// the gate `core::sidecar::is_ready()` checks — it's what used to be
+/// enforced by needing a license-issued key to decrypt the model.
+pub fn has_active_session() -> bool {
+    session_user_id().is_some() && SUBSCRIPTION_OK.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 // ── Token storage ─────────────────────────────────────────────────────────
@@ -187,9 +199,8 @@ pub async fn login(email: &str, password: &str) -> Value {
 
             save_token(token);
             set_session(user_id, &data["user"]);
+            sidecar::maybe_notify_ready(); // sidecar may already be healthy and waiting on this login
 
-            // Model is NOT loaded here — it loads on the first search via
-            // the onnx_key the client receives from validate_saved_token().
             serde_json::json!({
                 "success": true,
                 "message": data["message"].as_str().unwrap_or("Login successful"),
@@ -202,8 +213,8 @@ pub async fn login(email: &str, password: &str) -> Value {
     }
 }
 
-/// Called on app startup: validates the saved token, loads the model from the
-/// onnx_key Supabase returns, and stores user info in memory.
+/// Called on app startup: validates the saved token, confirms the
+/// subscription is current, and stores user info in memory.
 pub async fn validate_saved_token() -> Value {
     let token = match saved_token() {
         Some(t) => t,
@@ -228,11 +239,10 @@ pub async fn validate_saved_token() -> Value {
             };
 
             if !data["valid"].as_bool().unwrap_or(false) {
-                // Session lost — unload the model so a fresh login is required
-                // to get the onnx_key again.  Nothing usable left in memory.
+                // Session lost — a fresh login is required.
                 delete_token();
                 clear_in_memory_session();
-                embedder::reset();
+                sidecar::reset_notified();
                 return serde_json::json!({
                     "success": false,
                     "message": data["message"].as_str().unwrap_or("Session expired. Please login again."),
@@ -246,56 +256,26 @@ pub async fn validate_saved_token() -> Value {
             }
             mark_valid_now();
 
-            // If subscription has lapsed, unload the model so it cannot be used
-            // even if the UI is bypassed.  Supabase also withholds onnx_key for
-            // expired users so it cannot be reloaded without renewing.
+            // If subscription has lapsed, block search/indexing even if the UI is
+            // bypassed — the user stays logged in (they still need to see
+            // billing/renewal screens), but has_active_session() now reports
+            // false, so sidecar::is_ready() does too.
             let status = data["user"]["subscription_status"].as_str().unwrap_or("");
-            if status == "expired" || status == "exhausted" {
-                embedder::reset();
-            }
-
-            let onnx_key = data["onnx_key"].as_str().unwrap_or("").to_string();
-
-            // Eagerly preload the CLIP model in the background so the user's
-            // first search doesn't pay the multi-second decrypt-and-compile
-            // cost.  No-op if the model is already loaded (e.g. token was
-            // re-validated mid-session).  The onnx_key is still returned to
-            // Angular as a fallback for the rare case where the user clicks
-            // Search before this background task finishes.
-            if !onnx_key.is_empty() {
-                let key = onnx_key.clone();
-                let model_already_ready = embedder::is_ready();
-                tokio::task::spawn_blocking(move || {
-                    // validate_saved_token() is hit frequently — the cold-start
-                    // route guard, every search, and every profile visit all call
-                    // it.  The OS watchers + reconciliation only need to run when
-                    // the model TRANSITIONS from not-ready to ready (cold start, or
-                    // after a renewal that followed an expiry reset).  Doing it on
-                    // every call re-scanned all folders needlessly and bled that
-                    // "Indexing…" progress into the search screen, since search and
-                    // sync shared one global progress state.  When the model is
-                    // already loaded the watchers are live and catching changes, so
-                    // there is nothing to redo.
-                    if !model_already_ready {
-                        if let Err(e) = embedder::load_model(&key) {
-                            log::warn!("[auth] background model preload failed: {e}");
-                            return;
-                        }
-                        log::info!("[auth] CLIP model preloaded after validate");
-
-                        // First time the model is ready this session: register the
-                        // OS file-system watchers and run one reconciliation pass so
-                        // changes made while the app was closed are picked up (also
-                        // drains folders deferred to the watcher's PENDING set).
-                        watcher::notify_model_ready();
-                    }
-                });
+            let subscription_ok = status != "expired" && status != "exhausted";
+            SUBSCRIPTION_OK.store(subscription_ok, std::sync::atomic::Ordering::SeqCst);
+            if subscription_ok {
+                // Sidecar may already be healthy and waiting on this; also
+                // registers the OS watchers + runs one reconciliation pass the
+                // first time this session that both conditions are true.
+                sidecar::maybe_notify_ready();
+            } else {
+                sidecar::reset_notified();
             }
 
             serde_json::json!({
                 "success": true,
                 "message": "Session valid",
-                "data":    { "user": data["user"], "onnx_key": onnx_key }
+                "data":    { "user": data["user"] }
             })
         }
     }
@@ -304,7 +284,7 @@ pub async fn validate_saved_token() -> Value {
 pub fn logout() -> Value {
     delete_token();
     clear_in_memory_session();
-    embedder::reset();
+    sidecar::reset_notified();
     serde_json::json!({
         "success": true,
         "message": "Logged out successfully",
@@ -381,7 +361,7 @@ pub async fn periodic_revalidate() -> Value {
 
     delete_token();
     clear_in_memory_session();
-    embedder::reset();
+    sidecar::reset_notified();
     serde_json::json!({ "success": true, "message": "Offline grace period exceeded", "data": { "action": "logout" } })
 }
 

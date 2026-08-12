@@ -45,8 +45,7 @@ export interface LoginData {
 }
 
 export interface ValidateTokenData {
-  user:     User;
-  onnx_key: string;
+  user: User;
 }
 
 /** Result of a background `auth_periodic_revalidate` tick. */

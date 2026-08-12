@@ -10,22 +10,31 @@ pub const APP_VERSION:   &str = "1.1.30";
 pub const SUPABASE_EDGE: &str =
     "https://qpxvwdxuhgbthzbcppye.supabase.co/functions/v1";
 
-// ── Embedding model ────────────────────────────────────────────────────────
+// ── Design descriptor (Gabor rose + Gram-matrix) ──────────────────────────
 
-/// DINOv2 ViT-B/14 embedding dimension: 768-dim CLS token + 768-dim patch mean.
-pub const EMB_DIM: usize = 1536;
+/// Gabor orientation-energy histogram: one bin per direction.
+pub const ROSE_DIM: usize = 8;
 
-/// Standard ImageNet mean / std used for DINOv2 pre-processing (RGB order).
-pub const CLIP_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
-pub const CLIP_STD:  [f32; 3] = [0.229, 0.224, 0.225];
+/// Gram-matrix texture descriptor: 3 zoom levels x 24x24 flattened channel
+/// correlations (mobilenet_v2 block 4).
+pub const GRAM_ZOOM_LEVELS: usize = 3;
+pub const GRAM_DIM_PER_ZOOM: usize = 576;
 
-/// Input resolution expected by the DINOv2 ViT-B/14 image encoder.
-pub const CLIP_INPUT_SIZE: u32 = 224;
+/// Stage-1 ranking weights — how much each descriptor contributes to the
+/// combined score. Must match `sidecar/pipeline.py`'s own defaults.
+pub const ROSE_WEIGHT: f32 = 0.4;
+pub const GRAM_WEIGHT: f32 = 0.6;
+
+// ── Sidecar (Python: Gabor/Gram descriptors + SIFT/RANSAC verification) ──
+
+/// Localhost port the sidecar's HTTP server listens on.
+pub const SIDECAR_PORT: u16 = 8756;
+
+/// How often `core::sidecar` polls `/health` while waiting for the model to
+/// finish loading at startup.
+pub const SIDECAR_HEALTH_POLL_MS: u64 = 300;
 
 // ── Processing ────────────────────────────────────────────────────────────
-
-/// Images processed per ONNX inference call.
-pub const BATCH_SIZE: usize = 32;
 
 /// Rayon thread-pool size for parallel image pre-processing.
 pub const NUM_WORKERS: usize = 8;
@@ -48,9 +57,9 @@ pub const PROGRESS_EMIT_INTERVAL_MS: u64 = 400;
 pub const OFFLINE_GRACE_SECS: i64 = 3 * 24 * 3600; // 3 days
 
 // ── Supported image extensions ────────────────────────────────────────────
-
+//, "tif", "tiff", "psd", "psb"
 pub const IMAGE_EXTENSIONS: &[&str] =
-    &["jpg", "jpeg", "png", "tif", "tiff", "psd", "psb"];
+    &["jpg", "jpeg", "png"];
 
 // ── Filesystem paths (resolved once at startup) ───────────────────────────
 
@@ -65,55 +74,45 @@ pub fn set_resource_dir(resource_dir: PathBuf) {
     let _ = RESOURCE_DIR.set(resource_dir);
 }
 
-/// Encrypted model file name.
-const MODEL_FILE: &str = "clip_vitb32.onnx.enc";
+/// Frozen sidecar executable name, per-platform (matches the PyInstaller
+/// output and the Tauri `externalBin` target-triple naming convention).
+#[cfg(target_os = "windows")]
+const SIDECAR_FILE: &str = "pictoria-sidecar.exe";
+#[cfg(not(target_os = "windows"))]
+const SIDECAR_FILE: &str = "pictoria-sidecar";
 
-/// Resolve the encrypted CLIP model by probing every location it could live in
-/// across platforms and build modes, returning the first that exists:
-///   1. `<resource_dir>/models/<file>`  — packaged bundle layout
-///   2. `<resource_dir>/<file>`         — flat layout (Tauri dev copies here)
-///   3. `<crate>/resources/models/<file>` — in-repo resources (dev)
-///   4. `<repo>/python/models/<file>`     — legacy in-repo model (dev)
-///
-/// macOS dev resolved `resource_dir` to `target/debug/`, where Tauri places the
-/// model flat (no `models/` sub-dir) — candidate 2 covers that case, which the
-/// old single-path logic missed (it only checked candidate 1).
-pub fn model_enc_path() -> PathBuf {
+/// Resolve the frozen sidecar binary the same way `model_enc_path()` used to
+/// resolve the encrypted model — probe bundle layout, then dev fallbacks.
+pub fn sidecar_bin_path() -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     if let Some(dir) = RESOURCE_DIR.get() {
-        candidates.push(dir.join("models").join(MODEL_FILE));
-        candidates.push(dir.join(MODEL_FILE));
+        candidates.push(dir.join("bin").join(SIDECAR_FILE));
+        candidates.push(dir.join(SIDECAR_FILE));
     }
 
-    // Dev fallbacks relative to the crate (CARGO_MANIFEST_DIR = UI/src-tauri).
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    candidates.push(manifest.join("resources").join("models").join(MODEL_FILE));
+    candidates.push(manifest.join("binaries").join(SIDECAR_FILE));
     candidates.push(
-        manifest
-            .join("..") // UI/
-            .join("..") // project root
-            .join("python")
-            .join("models")
-            .join(MODEL_FILE),
+        manifest.join("..").join("..").join("sidecar").join("dist").join(SIDECAR_FILE),
     );
 
     for candidate in &candidates {
         if candidate.exists() {
-            log::info!("[config] model file resolved to {:?}", candidate);
+            log::info!("[config] sidecar binary resolved to {:?}", candidate);
             return candidate.clone();
         }
     }
 
     log::warn!(
-        "[config] model file '{MODEL_FILE}' not found in any known location; \
+        "[config] sidecar binary '{SIDECAR_FILE}' not found in any known location; \
          tried {:?}",
         candidates
     );
     candidates
         .into_iter()
         .next()
-        .unwrap_or_else(|| PathBuf::from(MODEL_FILE))
+        .unwrap_or_else(|| PathBuf::from(SIDECAR_FILE))
 }
 
 /// User-scoped data directory:  ~/.pictoria/   (created on first run).

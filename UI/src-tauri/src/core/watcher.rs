@@ -12,7 +12,7 @@
 
 use crate::{
     config::{VECTOR_STORE_PATH, PROGRESS_EMIT_INTERVAL_MS},
-    core::{database, embedder, progress, vector_store::VectorStore},
+    core::{database, progress, sidecar, vector_store::VectorStore},
     services::sync,
 };
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -118,7 +118,7 @@ pub fn init(app: AppHandle) {
 
 /// Subscribe to OS events for every watched folder recorded in the DB.
 /// Safe to call multiple times — the watcher is rebuilt each time.
-/// Pre-condition: the embedder model must be loaded, otherwise sync will fail.
+/// Pre-condition: the sidecar must be ready (`core::sidecar::is_ready()`), otherwise sync will fail.
 pub fn refresh_active_watches() {
     let paths = match read_paths_from_db() {
         Ok(p)  => p,
@@ -421,8 +421,8 @@ fn owning_root(event_path: &PathBuf, roots: &HashSet<PathBuf>) -> Option<PathBuf
 fn sync_one(folder: &PathBuf) {
     let folder_str = folder.to_string_lossy().to_string();
 
-    if !embedder::is_ready() {
-        log::info!("[watcher] model not ready; deferring sync of {folder:?}");
+    if !sidecar::is_ready() {
+        log::info!("[watcher] sidecar not ready; deferring sync of {folder:?}");
         PENDING.lock().unwrap().insert(folder.clone());
         if let Ok(con) = database::open() {
             let _ = database::set_watched_folder_status(&con, &folder_str, "indexing");

@@ -12,6 +12,12 @@ export class LibraryService {
     return this.tauri.invoke<ListFoldersData>('library_list_folders');
   }
 
+  /** Same call, without the global loading spinner — for background checks
+   *  (e.g. search peeking at folder status before it starts). */
+  listSilent(): Observable<BaseResponse<ListFoldersData>> {
+    return this.tauri.invokeSilent<ListFoldersData>('library_list_folders');
+  }
+
   add(path: string): Observable<BaseResponse<null>> {
     return this.tauri.invoke<null>('library_add_folder', { path });
   }

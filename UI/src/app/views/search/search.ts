@@ -1,4 +1,4 @@
-import { Component, ElementRef, HostListener, OnInit, ViewChild, inject } from '@angular/core';
+import { Component, ElementRef, HostListener, OnDestroy, OnInit, ViewChild, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { TranslateModule } from '@ngx-translate/core';
 import { Router } from '@angular/router';
@@ -32,10 +32,16 @@ export interface SearchResult {
   pattern_match: number;
   color_match:   number;
   folder:        string;
-  /** True when the query matched a *part* of this image — this design contains
-   *  the searched design rather than being it. */
+  /** True once SIFT/RANSAC has geometrically proven the query sits inside
+   *  this file — a direct fact, not a similarity threshold. */
+  verified:      boolean;
+  /** True when `verified` AND the matched region is a small piece of this
+   *  file rather than nearly the whole frame — genuinely "found inside a
+   *  bigger design", not just "this is basically the same image". */
   partial:       boolean;
   match_region:  MatchRegion;
+  /** SIFT inlier count backing `verified` (0 when not verified). */
+  match_points:  number;
   thumbnailUrl:  string;
   imgError:      boolean;
   /** Pixel geometry of the highlight box, derived from the rendered thumbnail.
@@ -65,7 +71,7 @@ export interface SearchProgress {
   templateUrl: './search.html',
   styleUrl:    './search.scss',
 })
-export class Search extends BaseComponent implements OnInit {
+export class Search extends BaseComponent implements OnInit, OnDestroy {
 
   private tauri     = inject(TauriService);
   private auth      = inject(AuthService);
@@ -90,10 +96,36 @@ export class Search extends BaseComponent implements OnInit {
   foldersLoading                  = true;
   scopeOpen                       = false;
 
+  /** The sidecar (Gabor/Gram/SIFT) loads its model at app launch, not lazily
+   *  per-search anymore — this drives the "Model is loading…" state until
+   *  its health check passes and the session is confirmed active. */
+  sidecarReady           = false;
+  private sidecarPollId: ReturnType<typeof setInterval> | null = null;
+
   constructor() { super(); }
 
   ngOnInit(): void {
     this.refreshFolders();
+    this.pollSidecarStatus();
+  }
+
+  ngOnDestroy(): void {
+    if (this.sidecarPollId !== null) clearInterval(this.sidecarPollId);
+  }
+
+  private pollSidecarStatus(): void {
+    const check = () => {
+      this.tauri.invokeSilent<{ healthy: boolean; ready: boolean }>('sidecar_status').subscribe(res => {
+        this.sidecarReady = res.success && !!res.data?.ready;
+        this.cdr.detectChanges();
+        if (this.sidecarReady && this.sidecarPollId !== null) {
+          clearInterval(this.sidecarPollId);
+          this.sidecarPollId = null;
+        }
+      });
+    };
+    check();
+    this.sidecarPollId = setInterval(check, 700);
   }
 
   refreshFolders(): void {
@@ -110,7 +142,7 @@ export class Search extends BaseComponent implements OnInit {
   }
 
   get hasWatchedFolders(): boolean { return this.watchedFolders.length > 0; }
-  get canSearch():       boolean   { return !!this.state.imagePath && this.hasWatchedFolders; }
+  get canSearch():       boolean   { return !!this.state.imagePath && this.hasWatchedFolders && this.sidecarReady; }
   get isIdle():          boolean   { return this.state.searchState === 'idle'; }
   get isSearching():     boolean   { return this.state.searchState === 'searching'; }
   get hasResults():      boolean   { return this.state.searchState === 'results'; }
@@ -138,7 +170,7 @@ export class Search extends BaseComponent implements OnInit {
   async pickImage() {
     const selected = await open({
       multiple: false,
-      filters:  [{ name: 'Images', extensions: ['jpg','jpeg','png','tif','tiff','psd','psb'] }]
+      filters:  [{ name: 'Images', extensions: ['jpg','jpeg','png'] }]
     });
     if (selected) {
       this.state.imagePath    = selected as string;
@@ -215,7 +247,7 @@ export class Search extends BaseComponent implements OnInit {
         return;
       }
 
-      this.runSearch(res.data?.onnx_key ?? '');
+      this.runSearch();
     });
   }
 
@@ -225,7 +257,15 @@ export class Search extends BaseComponent implements OnInit {
     return this.BROWSER_SAFE.has(path.split('.').pop()?.toLowerCase() ?? '');
   }
 
-  private runSearch(onnxKey: string): void {
+  /** True if any folder this search will touch is mid-index right now — the
+   *  only case where the sidecar's single-lane queue makes the query wait on
+   *  something already in flight (see search-loader status line below). */
+  private scopeIsIndexing(folders: WatchedFolder[]): boolean {
+    const scope = this.state.scopePaths;
+    return folders.some(f => f.status === 'indexing' && (scope.length === 0 || scope.includes(f.path)));
+  }
+
+  private runSearch(): void {
     this.state.searchState   = 'searching';
     this.state.searchError   = '';
     this.state.results       = [];
@@ -234,7 +274,18 @@ export class Search extends BaseComponent implements OnInit {
     this.state.progress      = { phase: 'Starting…', percent: 0, done: 0, total: 0, current: '', eta_sec: -1, errors: 0, active: true };
     this.cdr.detectChanges();
 
-    this.tauri.searchStream(this.state.imagePath, this.state.scopePaths, this.state.topK, onnxKey).subscribe({
+    // Peek at current folder status (silent — no global loader flicker) so the
+    // loader can say something honest if this search is about to sit behind
+    // an in-flight indexing file, instead of just spinning unexplained.
+    this.libSvc.listSilent().subscribe(res => {
+      const folders = (res.success && res.data?.folders) ? res.data.folders : this.watchedFolders;
+      if (this.state.searchState === 'searching' && this.scopeIsIndexing(folders)) {
+        this.state.progress = { ...this.state.progress, phase: 'One moment — wrapping up indexing before your search…' };
+        this.cdr.detectChanges();
+      }
+    });
+
+    this.tauri.searchStream(this.state.imagePath, this.state.scopePaths, this.state.topK).subscribe({
       next: event => {
         if (event.type === 'progress') {
           if (event.data?.progress) this.state.progress = event.data.progress;
