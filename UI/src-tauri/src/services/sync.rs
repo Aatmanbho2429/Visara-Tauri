@@ -21,7 +21,7 @@ pub struct FileError {
 }
 
 /// Files processed together per sidecar `/describe` call and DB transaction.
-const INDEX_FILE_CHUNK: usize = 24;
+const INDEX_FILE_CHUNK: usize = 64;
 
 pub fn sync_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec<FileError>> {
     if !sidecar::is_ready() {
