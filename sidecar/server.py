@@ -13,27 +13,72 @@ indexing effectively pauses and resumes around it.
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import os
 import queue
+import sys
 import threading
+import time
 
 from flask import Flask, jsonify, request
 from waitress import serve
 
 import pipeline
 
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
+
+def _base_dir() -> str:
+    """Directory to anchor `logs/` in.
+
+    `__file__` is only meaningful for the plain-script case (`python
+    server.py`, used in dev). Under PyInstaller's onefile bootloader,
+    `__file__` resolves *inside* the `_MEI*` temp extraction dir, which is
+    wiped when the process exits — a log written there vanishes with it.
+    `sys.executable` is the actual frozen `.exe` path in that case.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _log_dir() -> str:
+    """Prefer `logs/` next to the binary (matches dev, keeps everything in
+    one place). Falls back to a per-user directory if that's not writable —
+    e.g. a `perMachine` install placing the exe under Program Files."""
+    primary = os.path.join(_base_dir(), "logs")
+    try:
+        os.makedirs(primary, exist_ok=True)
+        probe = os.path.join(primary, ".write_test")
+        with open(probe, "w") as f:
+            f.write("")
+        os.remove(probe)
+        return primary
+    except OSError:
+        fallback = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "pictoria-sidecar", "logs")
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+
+
+LOG_DIR = _log_dir()
 
 logging.basicConfig(
-    level=logging.INFO,
+    # DEBUG so the per-file/per-candidate [timing] breakdown in pipeline.py
+    # (decode/gabor/gram, decode/sift/match/ransac) actually gets written —
+    # at INFO those lines are silently dropped and only the per-job totals
+    # in _run() below show up.
+    level=logging.DEBUG,
     format="%(asctime)s  %(levelname)-7s %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(os.path.join(LOG_DIR, "sidecar.log"), encoding="utf-8"),
+        # Rotating, not plain FileHandler: DEBUG-level per-file logging over
+        # a large folder index adds up fast, and this file has no other
+        # cap on it (unlike the Rust side's tauri-plugin-log KeepOne).
+        logging.handlers.RotatingFileHandler(
+            os.path.join(LOG_DIR, "sidecar.log"), maxBytes=10_000_000, backupCount=2, encoding="utf-8",
+        ),
     ],
 )
 log = logging.getLogger("sidecar")
+log.info("log directory: %s", LOG_DIR)
 
 app = Flask(__name__)
 
@@ -46,7 +91,7 @@ class Job:
     """One unit of work handed to the worker thread; the HTTP handler blocks
     on `event` until the worker fills in `result`."""
 
-    __slots__ = ("kind", "payload", "priority", "event", "result")
+    __slots__ = ("kind", "payload", "priority", "event", "result", "t_created")
 
     def __init__(self, kind: str, payload: dict, priority: str):
         self.kind = kind
@@ -54,6 +99,7 @@ class Job:
         self.priority = priority
         self.event = threading.Event()
         self.result: dict | None = None
+        self.t_created = time.perf_counter()  # for queue_wait_ms below
 
 
 def _submit(kind: str, payload: dict, priority: str) -> dict:
@@ -106,14 +152,28 @@ def _drain_search(query_cache: dict) -> None:
 
 
 def _run(job: Job, query_cache: dict) -> dict:
+    # `queue_wait_ms` is how long the job sat behind other work (mostly
+    # relevant for "index" priority jobs, which yield to a just-arrived
+    # search — see `_drain_search` below); `compute_ms` is the pipeline
+    # work itself. Split out so a slow search can be told apart from a
+    # search that was merely waiting behind a big indexing chunk.
+    queue_wait_ms = (time.perf_counter() - job.t_created) * 1000
+    t_start = time.perf_counter()
+
     if job.kind == "describe":
         results = []
         for p in job.payload["paths"]:
             d = pipeline.describe(p)
-            results.append({"path": p, "rose": d.rose, "gram": d.gram} if d
+            results.append({"path": p, "rose": d.rose, "gram": d.gram, "color": d.color,
+                            "dominant": d.dominant} if d
                             else {"path": p, "error": "decode-failed"})
             if job.priority != "search":
                 _drain_search(query_cache)  # let a just-arrived search cut in, file by file
+        compute_ms = (time.perf_counter() - t_start) * 1000
+        log.info(
+            "[timing] job kind=describe priority=%s n=%d queue_wait_ms=%.2f compute_ms=%.2f total_ms=%.2f",
+            job.priority, len(job.payload["paths"]), queue_wait_ms, compute_ms, queue_wait_ms + compute_ms,
+        )
         return {"results": results}
 
     if job.kind == "verify":
@@ -123,6 +183,11 @@ def _run(job: Job, query_cache: dict) -> dict:
             r = pipeline.verify(query_path, c, query_cache)
             r["path"] = c
             results.append(r)
+        compute_ms = (time.perf_counter() - t_start) * 1000
+        log.info(
+            "[timing] job kind=verify priority=%s n=%d queue_wait_ms=%.2f compute_ms=%.2f total_ms=%.2f",
+            job.priority, len(job.payload["candidate_paths"]), queue_wait_ms, compute_ms, queue_wait_ms + compute_ms,
+        )
         return {"results": results}
 
     return {"error": f"unknown job kind: {job.kind}"}

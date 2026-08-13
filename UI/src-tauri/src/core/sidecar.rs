@@ -171,6 +171,14 @@ impl Priority {
 pub struct Descriptor {
     pub rose: Vec<f32>,
     pub gram: Vec<Vec<f32>>,
+    /// COLOR_DIM-length colour histogram — computed sidecar-side now (see
+    /// `pipeline.color_histogram`) from the same decode used for rose/gram,
+    /// rather than a separate full-resolution decode in Rust.
+    pub color: Vec<f32>,
+    /// 1-2 dominant colour bucket names for the Browse colour tag, from the
+    /// same decode (`pipeline.dominant_colors`). Empty when the sidecar
+    /// predates this field — callers treat that as "no tag", never an error.
+    pub dominant: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -196,6 +204,11 @@ struct DescribeRespItem {
     path: String,
     rose: Option<Vec<f32>>,
     gram: Option<Vec<Vec<f32>>>,
+    color: Option<Vec<f32>>,
+    /// Absent from an older sidecar build — defaulted rather than required, so
+    /// a version skew costs the colour *tag* only, not the whole descriptor.
+    #[serde(default)]
+    dominant: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -223,8 +236,10 @@ pub fn describe(paths: &[String], priority: Priority) -> Result<Vec<(String, Opt
         .results
         .into_iter()
         .map(|r| {
-            let desc = match (r.rose, r.gram) {
-                (Some(rose), Some(gram)) => Some(Descriptor { rose, gram }),
+            let desc = match (r.rose, r.gram, r.color) {
+                (Some(rose), Some(gram), Some(color)) => {
+                    Some(Descriptor { rose, gram, color, dominant: r.dominant })
+                }
                 _ => None,
             };
             (r.path, desc)

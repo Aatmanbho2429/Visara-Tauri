@@ -6,7 +6,7 @@
 
 use crate::{
     config::VECTOR_STORE_PATH,
-    core::{color, database, sidecar, vector_store::VectorStore},
+    core::{database, search_gate, sidecar, vector_store::VectorStore},
     error::{Result, PictoriaError},
     utils::image_loader,
 };
@@ -15,6 +15,7 @@ use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 // ── Result types ──────────────────────────────────────────────────────────
@@ -71,6 +72,13 @@ const VERIFY_SHORTLIST_MIN: usize = 40;
 const PARTIAL_MAX_AREA_FRACTION: f32 = 0.85;
 
 pub fn execute(image_path: &Path, scope: &[PathBuf], top_k: usize) -> Result<(Vec<SearchResult>, Vec<FailedFile>)> {
+    let t_total = Instant::now();
+
+    // Pause background maintenance (the colour-tag backfill) for the duration —
+    // it saturates the same cores the sidecar needs and can stall a search by
+    // orders of magnitude. Released on every exit path, including the `?`s below.
+    let _search_guard = search_gate::begin();
+
     if !sidecar::is_ready() {
         return Err(PictoriaError::ModelNotReady);
     }
@@ -79,6 +87,7 @@ pub fn execute(image_path: &Path, scope: &[PathBuf], top_k: usize) -> Result<(Ve
     }
 
     // ── Resolve scope ─────────────────────────────────────────────────
+    let t_scope = Instant::now();
     let con = database::open()?;
     let scope_paths: Vec<String> = if scope.is_empty() {
         database::watched_folder_paths(&con)?
@@ -89,32 +98,44 @@ pub fn execute(image_path: &Path, scope: &[PathBuf], top_k: usize) -> Result<(Ve
     if scope_paths.is_empty() {
         return Err(PictoriaError::Fatal("No folders to search.  Add a folder to your Library first.".into()));
     }
+    let scope_ms = t_scope.elapsed().as_secs_f64() * 1000.0;
 
     // ── Prepare the query: trim a scan/product-shot margin if there is one,
     //    so the query vector describes the design, not the background ─────
+    let t_prep = Instant::now();
     let query_img = image_loader::load_image_detailed(image_path)?;
     let (orig_w, orig_h) = (query_img.width(), query_img.height());
     let query_img = trim_uniform_border(query_img);
-    let query_color = color::histogram(&query_img);
 
     // The sidecar takes a path, not raw pixels — write the trimmed image to
     // a temp file only when trimming actually changed anything; otherwise
     // just point it at the original.
     let trimmed = query_img.width() != orig_w || query_img.height() != orig_h;
     let (query_sidecar_path, _temp_guard) = query_path_for_sidecar(image_path, &query_img, trimmed)?;
+    let prep_ms = t_prep.elapsed().as_secs_f64() * 1000.0;
 
+    let t_describe = Instant::now();
     let described = sidecar::describe(&[query_sidecar_path.clone()], sidecar::Priority::Search)?;
+    let describe_ms = t_describe.elapsed().as_secs_f64() * 1000.0;
     let query_desc = described
         .into_iter()
         .next()
         .and_then(|(_, d)| d)
         .ok_or_else(|| PictoriaError::Fatal("Could not describe the reference image.".into()))?;
     let query_gram: Vec<f32> = query_desc.gram.into_iter().flatten().collect();
+    // Colour histogram is computed sidecar-side now (same decode as rose/gram —
+    // see pipeline.color_histogram), not a separate Rust-side pass over
+    // `query_img`. `query_sidecar_path` points at the same (possibly trimmed)
+    // image `query_img` represents, so this is the same content either way.
+    let query_color = query_desc.color;
 
     // ── Stage 1: rank every file in scope ──────────────────────────────
+    let t_store_load = Instant::now();
     let _store_guard = crate::core::vector_store::store_io_read_guard();
     let store = VectorStore::load(VECTOR_STORE_PATH.as_path())?;
+    let store_load_ms = t_store_load.elapsed().as_secs_f64() * 1000.0;
 
+    let t_id_map = Instant::now();
     let con = database::open()?;
     let mut id_map: HashMap<i64, (String, String)> = HashMap::new();
     for folder_str in &scope_paths {
@@ -123,9 +144,12 @@ pub fn execute(image_path: &Path, scope: &[PathBuf], top_k: usize) -> Result<(Ve
         }
     }
     drop(con);
+    let id_map_ms = t_id_map.elapsed().as_secs_f64() * 1000.0;
 
     let shortlist_n = (top_k * VERIFY_SHORTLIST_MULTIPLIER).max(VERIFY_SHORTLIST_MIN);
+    let t_stage1 = Instant::now();
     let stage1 = store.search(&query_desc.rose, &query_gram, &query_color, shortlist_n);
+    let stage1_ms = t_stage1.elapsed().as_secs_f64() * 1000.0;
 
     let mut seen_paths: HashSet<String> = HashSet::new();
     let query_abs = image_path.to_string_lossy().to_string();
@@ -143,12 +167,16 @@ pub fn execute(image_path: &Path, scope: &[PathBuf], top_k: usize) -> Result<(Ve
 
     // ── Stage 2: geometrically verify the whole shortlist in one call ──
     let shortlist_paths: Vec<String> = candidates.iter().map(|c| c.path.clone()).collect();
+    let n_shortlist = shortlist_paths.len();
+    let t_verify = Instant::now();
     let verify_results = sidecar::verify(&query_sidecar_path, &shortlist_paths, sidecar::Priority::Search)
         .unwrap_or_default(); // a verification failure degrades to stage-1-only ranking, not a hard error
+    let verify_ms = t_verify.elapsed().as_secs_f64() * 1000.0;
     let verify_by_path: HashMap<String, sidecar::VerifyResult> = verify_results.into_iter().collect();
 
     let scale = |v: f32| (v.clamp(0.0, 1.0) * 100.0 * 10.0).round() / 10.0;
 
+    let t_assemble = Instant::now();
     let mut results: Vec<SearchResult> = candidates
         .into_iter()
         .map(|c| {
@@ -193,6 +221,20 @@ pub fn execute(image_path: &Path, scope: &[PathBuf], top_k: usize) -> Result<(Ve
     for (i, r) in results.iter_mut().enumerate() {
         r.rank = i + 1;
     }
+    let assemble_ms = t_assemble.elapsed().as_secs_f64() * 1000.0;
+
+    log::info!(
+        "[timing] search TOTAL query={:?} scope_folders={} candidates_indexed={} \
+         shortlist={n_shortlist} results={} scope_ms={scope_ms:.2} query_prep_ms={prep_ms:.2} \
+         describe_ms={describe_ms:.2} store_load_ms={store_load_ms:.2} id_map_ms={id_map_ms:.2} \
+         stage1_rank_ms={stage1_ms:.2} verify_ms={verify_ms:.2} assemble_ms={assemble_ms:.2} \
+         total_ms={:.2}",
+        query_sidecar_path.rsplit(['/', '\\']).next().unwrap_or(&query_sidecar_path),
+        scope_paths.len(),
+        id_map.len(),
+        results.len(),
+        t_total.elapsed().as_secs_f64() * 1000.0,
+    );
 
     Ok((results, Vec::new()))
 }

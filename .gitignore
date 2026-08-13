@@ -31,3 +31,7 @@ Thumbs.db
 # Env
 .env
 .env.*
+
+# Logs (sidecar/logs/sidecar.log; Rust side logs to %APPDATA%, outside the repo)
+sidecar/logs/
+*.log

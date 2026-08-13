@@ -258,13 +258,21 @@ pub fn run() {
                 ),
             }
 
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Debug)
-                        .build(),
-                )?;
-            }
+            // Always on, not just in dev builds: the `[timing]` instrumentation
+            // throughout `services::search` / `services::sync` (folder loads,
+            // searches) is only useful if it actually lands somewhere durable.
+            // Default targets are Stdout + LogDir — on Windows that's
+            // `%APPDATA%\com.pictoria.app\logs\pictoria.log`. The plugin's own
+            // default max size (40 KB) would rotate that away in seconds under
+            // this much logging, so it's raised here; `KeepOne` (the plugin
+            // default) still caps total disk use to ~2x that.
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(if cfg!(debug_assertions) { log::LevelFilter::Debug } else { log::LevelFilter::Info })
+                    .max_file_size(5_000_000)
+                    .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                    .build(),
+            )?;
 
             // Register the global hot-key.  Silent failure is acceptable —
             // the user just won't see the hot-key behave (another app may

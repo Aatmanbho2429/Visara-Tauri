@@ -390,8 +390,9 @@ fn load_tiff_via_tiff_crate(path: &Path, target_max: u32) -> Result<DynamicImage
                         ImageBuffer::<Rgb<u8>, _>::from_raw(w, avail_h, rgb)
                     {
                         // Return the partial-height RGB image.  Downstream
-                        // preprocess_grayscale / color::histogram both resize to
-                        // their own targets, so the reduced height is fine.
+                        // consumers (preprocess_grayscale, the sidecar
+                        // descriptor pipeline) resize to their own targets,
+                        // so the reduced height is fine.
                         return Ok(DynamicImage::ImageRgb8(buf));
                     }
                 }

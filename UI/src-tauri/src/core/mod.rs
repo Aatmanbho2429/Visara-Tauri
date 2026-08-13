@@ -2,6 +2,7 @@ pub mod color;
 pub mod database;
 pub mod migrate;
 pub mod progress;
+pub mod search_gate;
 pub mod sidecar;
 pub mod thumbs;
 pub mod vector_store;

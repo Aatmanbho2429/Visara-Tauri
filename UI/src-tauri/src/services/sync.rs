@@ -3,9 +3,9 @@
 //! file now (no more region slicing — see `core::vector_store`).
 
 use crate::{
-    core::{color, database, progress, sidecar, vector_store::VectorStore},
+    core::{database, progress, sidecar, vector_store::VectorStore},
     error::{PictoriaError, Result},
-    utils::{file_utils, image_loader},
+    utils::file_utils,
 };
 use rayon::prelude::*;
 use std::{
@@ -22,13 +22,6 @@ pub struct FileError {
 
 /// Files processed together per sidecar `/describe` call and DB transaction.
 const INDEX_FILE_CHUNK: usize = 24;
-
-/// Colour histogram for one file — computed in Rust (cheap, no model needed)
-/// in parallel while the sidecar works through the same chunk's descriptors.
-fn file_color(path: &Path) -> Result<Vec<f32>> {
-    let img = image_loader::load_image_detailed(path)?;
-    Ok(color::histogram(&img))
-}
 
 pub fn sync_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec<FileError>> {
     if !sidecar::is_ready() {
@@ -192,10 +185,6 @@ fn index_chunks(
         let first_name = chunk[0].0.file_name().and_then(|n| n.to_str()).unwrap_or("");
         progress::set_progress(None, None, None, Some(first_name), None);
 
-        let t_color = Instant::now();
-        let colors: Vec<Result<Vec<f32>>> = chunk.par_iter().map(|(p, _, _)| file_color(p)).collect();
-        let color_ms = t_color.elapsed().as_secs_f64() * 1000.0;
-
         let paths: Vec<String> = chunk.iter().map(|(p, _, _)| p.to_string_lossy().to_string()).collect();
         let t_describe = Instant::now();
         let described = sidecar::describe(&paths, sidecar::Priority::Index)?;
@@ -203,17 +192,9 @@ fn index_chunks(
         let by_path: HashMap<String, Option<sidecar::Descriptor>> = described.into_iter().collect();
 
         let t_persist = Instant::now();
-        for (i, (path, hash, mtime)) in chunk.iter().enumerate() {
+        for (path, hash, mtime) in chunk.iter() {
             let path_str = path.to_string_lossy().to_string();
 
-            let color = match &colors[i] {
-                Ok(c) => c.clone(),
-                Err(e) => {
-                    errors.push(FileError { file: path_str.clone(), reason: format!("Colour extraction failed: {e}") });
-                    progress::increment_errors();
-                    continue;
-                }
-            };
             let desc = match by_path.get(&path_str) {
                 Some(Some(d)) => d.clone(),
                 _ => {
@@ -239,7 +220,18 @@ fn index_chunks(
             }
             progress::increment_file_type(path.extension().and_then(|e| e.to_str()).unwrap_or(""));
 
-            if let Err(e) = store.upsert(vector_id, &desc.rose, &gram_flat, &color) {
+            // Colour tag now, from the descriptor we already have — the sidecar
+            // derived it from the same decode. Unconditional is safe here and
+            // only here: `insert_file` above is INSERT OR REPLACE, so the row is
+            // new and its tags (which cascade off it) were just cleared. Files
+            // re-embedded in place keep their rows, and so may carry a manual
+            // colour the user set — `reembed_folder` deliberately leaves those
+            // alone and lets `tags::backfill_colors` fill only the gaps.
+            if !desc.dominant.is_empty() {
+                crate::services::tags::apply_color_tags(con, &path_str, &desc.dominant);
+            }
+
+            if let Err(e) = store.upsert(vector_id, &desc.rose, &gram_flat, &desc.color) {
                 errors.push(FileError { file: path_str, reason: format!("Index upsert failed: {e}") });
                 progress::increment_errors();
             }
@@ -247,8 +239,8 @@ fn index_chunks(
         let persist_ms = t_persist.elapsed().as_secs_f64() * 1000.0;
 
         log::info!(
-            "[timing] chunk files={} color_ms={color_ms:.2} describe_ms={describe_ms:.2} \
-             persist_ms={persist_ms:.2} avg_describe_ms_per_file={:.3}",
+            "[timing] chunk files={} describe_ms={describe_ms:.2} persist_ms={persist_ms:.2} \
+             avg_describe_ms_per_file={:.3}",
             chunk.len(),
             describe_ms / chunk.len().max(1) as f64,
         );
@@ -279,6 +271,7 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
         return Err(PictoriaError::ModelNotReady);
     }
 
+    let t_total = Instant::now();
     let folder_str = folder_path.to_string_lossy().to_string();
     let con = database::open()?;
 
@@ -300,21 +293,12 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
         let first_name = chunk[0].1.file_name().and_then(|n| n.to_str()).unwrap_or("");
         progress::set_progress(None, None, None, Some(first_name), None);
 
-        let colors: Vec<Result<Vec<f32>>> = chunk.par_iter().map(|(_, p)| file_color(p)).collect();
         let paths: Vec<String> = chunk.iter().map(|(_, p)| p.to_string_lossy().to_string()).collect();
         let described = sidecar::describe(&paths, sidecar::Priority::Index)?;
         let by_path: HashMap<String, Option<sidecar::Descriptor>> = described.into_iter().collect();
 
-        for (i, (id, path)) in chunk.iter().enumerate() {
+        for (id, path) in chunk.iter() {
             let path_str = path.to_string_lossy().to_string();
-            let color = match &colors[i] {
-                Ok(c) => c.clone(),
-                Err(e) => {
-                    errors.push(FileError { file: path_str, reason: format!("Colour extraction failed: {e}") });
-                    progress::increment_errors();
-                    continue;
-                }
-            };
             let desc = match by_path.get(&path_str) {
                 Some(Some(d)) => d.clone(),
                 _ => {
@@ -324,7 +308,7 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
                 }
             };
             let gram_flat: Vec<f32> = desc.gram.into_iter().flatten().collect();
-            if let Err(e) = store.upsert(*id, &desc.rose, &gram_flat, &color) {
+            if let Err(e) = store.upsert(*id, &desc.rose, &gram_flat, &desc.color) {
                 errors.push(FileError { file: path_str, reason: format!("Index upsert failed: {e}") });
                 progress::increment_errors();
             }
@@ -334,5 +318,10 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
         progress::set_progress(None, Some(done), None, None, None);
     }
 
+    log::info!(
+        "[timing] reembed_folder TOTAL folder={folder_str} files={total} errors={} total_ms={:.2}",
+        errors.len(),
+        t_total.elapsed().as_secs_f64() * 1000.0,
+    );
     Ok(errors)
 }

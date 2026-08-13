@@ -2,13 +2,9 @@
 //! tag-based querying.  Each public fn returns a `serde_json::Value` in the
 //! `BaseResponse` envelope, matching the other services.
 
-use crate::{
-    core::{color, database},
-    utils::image_loader,
-};
-use rayon::prelude::*;
+use crate::core::{database, search_gate, sidecar};
 use serde_json::{json, Value};
-use std::{collections::BTreeSet, path::Path};
+use std::collections::BTreeSet;
 
 /// Categories that hold a single value per file (setting one replaces the old).
 const SINGLE_VALUED: &[&str] = &["color", "size", "material", "finish", "design"];
@@ -110,8 +106,36 @@ pub fn suggest(paths: Vec<String>) -> Value {
 
 // ── Colour backfill ──────────────────────────────────────────────────────────
 
+/// Files per sidecar `/describe` call, and the granularity at which the backfill
+/// checks whether it should pause for a search.
+const BACKFILL_CHUNK: usize = 24;
+
+/// Write the auto colour tag(s) for one path. Primary bucket replaces the
+/// category, any runner-up is added alongside.
+pub fn apply_color_tags(con: &rusqlite::Connection, path: &str, colors: &[String]) {
+    for (i, name) in colors.iter().enumerate() {
+        let _ = if i == 0 {
+            database::set_single_tag(con, path, "color", name, "auto")
+        } else {
+            database::add_tag(con, path, "color", name, "auto")
+        };
+    }
+}
+
 /// Compute auto colour tags for every image under `folder` that has none yet.
-/// Blocking + parallel; call from a spawned thread.  Returns how many were done.
+/// Blocking; call from a spawned thread. Returns how many were tagged.
+///
+/// Freshly indexed files are already tagged inline by `services::sync` from the
+/// descriptor it fetched anyway, so in practice this only covers files indexed
+/// before that existed. It asks the sidecar rather than decoding here: the
+/// sidecar derives the dominant colours from the decode it already performs,
+/// where the old Rust path spent a full-resolution decode per file (~1.5 s each
+/// on a 5 MB JPEG) purely to name one colour — enough CPU to stall an
+/// interactive search by orders of magnitude.
+///
+/// Yields to searches between chunks via [`search_gate`], and the sidecar's own
+/// "index" lane lets a search cut in file-by-file within a chunk, so a search
+/// waits for at most one file rather than the whole batch.
 pub fn backfill_colors(folder: &str) -> usize {
     let paths = match database::open().and_then(|c| database::paths_missing_category_in_folder(&c, folder, "color")) {
         Ok(p) => p,
@@ -120,34 +144,46 @@ pub fn backfill_colors(folder: &str) -> usize {
     if paths.is_empty() {
         return 0;
     }
+    if !sidecar::is_ready() {
+        log::info!("[tags] colour backfill: sidecar not ready, skipping {} images under {folder}", paths.len());
+        return 0;
+    }
     log::info!("[tags] colour backfill: {} images under {folder}", paths.len());
+    let t_total = std::time::Instant::now();
 
-    let done: usize = paths
-        .par_iter()
-        .map(|p| {
-            let img = match image_loader::load_image(Path::new(p)) {
-                Ok(i) => i,
-                Err(_) => return 0,
+    let con = match database::open() {
+        Ok(c) => c,
+        Err(e) => { log::warn!("[tags] colour backfill: cannot open db: {e}"); return 0; }
+    };
+
+    let mut done = 0usize;
+    let mut paused_for_search = 0usize;
+    for chunk in paths.chunks(BACKFILL_CHUNK) {
+        // Stand aside for an interactive search, then pick up where we left off.
+        if search_gate::is_active() {
+            paused_for_search += 1;
+            search_gate::wait_while_active();
+        }
+
+        let described = match sidecar::describe(chunk, sidecar::Priority::Index) {
+            Ok(d) => d,
+            Err(e) => { log::warn!("[tags] colour backfill: describe failed: {e}"); break; }
+        };
+        for (path, desc) in described {
+            let colors = match desc {
+                Some(d) if !d.dominant.is_empty() => d.dominant,
+                _ => continue,
             };
-            let colors = color::dominant(&img);
-            if colors.is_empty() {
-                return 0;
-            }
-            // Per-thread connection (SQLite connections are not Send-shared).
-            if let Ok(con) = database::open() {
-                for (i, name) in colors.iter().enumerate() {
-                    let _ = if i == 0 {
-                        database::set_single_tag(&con, p, "color", name, "auto")
-                    } else {
-                        database::add_tag(&con, p, "color", name, "auto")
-                    };
-                }
-            }
-            1
-        })
-        .sum();
+            apply_color_tags(&con, &path, &colors);
+            done += 1;
+        }
+    }
 
-    log::info!("[tags] colour backfill done: {done} images coloured under {folder}");
+    log::info!(
+        "[timing] colour backfill done: {done} images coloured under {folder} \
+         paused_for_search={paused_for_search} total_ms={:.2}",
+        t_total.elapsed().as_secs_f64() * 1000.0,
+    );
     done
 }
 
