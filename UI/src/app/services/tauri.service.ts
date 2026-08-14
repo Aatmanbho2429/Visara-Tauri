@@ -33,6 +33,16 @@ export interface SearchEvent {
   data: any;
 }
 
+/** Emitted by `core::sidecar`'s watchdog when the sidecar process exits on
+ *  its own (not via `shutdown()`) — a crash, not a normal shutdown.
+ *  `recovering: true` means it's being relaunched; `false` means the
+ *  watchdog gave up after repeated failures (see `MAX_CONSECUTIVE_CRASHES`
+ *  in `sidecar.rs`) and a human needs to restart the app. */
+export interface SidecarCrashedEvent {
+  recovering: boolean;
+  message:    string;
+}
+
 @Injectable({ providedIn: 'root' })
 export class TauriService {
   constructor(private zone: NgZone, private loader: LoaderService) {}
@@ -180,6 +190,11 @@ export class TauriService {
   // ── Global hot-key ────────────────────────────────────────────────
   onHotkey(cb: (payload: HotkeyEvent) => void): Promise<UnlistenFn> {
     return listen<HotkeyEvent>('hotkey_pressed', e => cb(e.payload));
+  }
+
+  // ── Sidecar crash recovery ──────────────────────────────────────────
+  onSidecarCrashed(cb: (payload: SidecarCrashedEvent) => void): Promise<UnlistenFn> {
+    return listen<SidecarCrashedEvent>('sidecar_crashed', e => cb(e.payload));
   }
 
   // ── Library sync lifecycle events ─────────────────────────────────

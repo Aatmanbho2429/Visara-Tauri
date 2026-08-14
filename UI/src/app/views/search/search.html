@@ -34,13 +34,23 @@
 
       <!-- Sidecar (Gabor/Gram/SIFT) still starting up — folders exist, but
            nothing can search yet. Distinct from the "no folders" empty
-           state above: nothing to click here, just a moment to wait. -->
+           state above: nothing to click here, just a moment to wait.
+           Three sub-states share this block: plain first boot, mid-crash
+           recovery (`sidecarReconnecting`), and the watchdog having given
+           up (`sidecarErrorMessage`) — see `onSidecarCrashed` in search.ts. -->
       @if (!foldersLoading && hasWatchedFolders && !sidecarReady) {
         <div class="search-empty">
-          <i class="pi pi-spin pi-spinner search-empty__icon"></i>
-          <h2 class="search-empty__title">Model is loading…</h2>
+          <i class="pi" [class.pi-spin]="!sidecarErrorMessage"
+             [class.pi-spinner]="!sidecarErrorMessage"
+             [class.pi-exclamation-triangle]="!!sidecarErrorMessage"
+             class="search-empty__icon"></i>
+          <h2 class="search-empty__title">
+            {{ sidecarErrorMessage ? 'AI engine unavailable' : sidecarReconnecting ? 'Reconnecting…' : 'Model is loading…' }}
+          </h2>
           <p class="search-empty__hint">
-            Getting the design-match engine ready — this only takes a moment.
+            {{ sidecarErrorMessage || (sidecarReconnecting
+              ? 'The AI engine stopped unexpectedly — restarting it now…'
+              : 'Getting the design-match engine ready — this only takes a moment.') }}
           </p>
         </div>
       }

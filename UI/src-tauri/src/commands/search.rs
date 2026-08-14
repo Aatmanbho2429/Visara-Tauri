@@ -12,7 +12,7 @@
 
 use crate::{
     core::sidecar,
-    services::search,
+    services::{auth, search},
 };
 use serde_json::json;
 use std::{path::PathBuf, sync::Mutex, time::Duration};
@@ -130,6 +130,12 @@ pub async fn start_search(
 
         match search::execute(&image, &scope, top_k, on_verify_progress) {
             Ok((results, failed_files)) => {
+                // Fire-and-forget — never delays showing results, never
+                // fails the search if the backend call fails. See
+                // `auth::record_search`'s doc comment for why this is a
+                // separate call rather than piggybacking on token validation.
+                tauri::async_runtime::spawn(auth::record_search());
+
                 let _ = app_clone.emit("search_complete", json!({
                     "done":         true,
                     "results":      results,

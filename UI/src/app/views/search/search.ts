@@ -6,7 +6,8 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { PrimengComponentsModule } from '../../shared/primeng-components-module';
 import { BaseComponent } from '../../core/base.component';
-import { TauriService } from '../../services/tauri.service';
+import { TauriService, SidecarCrashedEvent } from '../../services/tauri.service';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 import { AuthService } from '../../services/auth.service';
 import { LibraryService } from '../../services/library.service';
 import { BrowseService } from '../../services/browse.service';
@@ -108,21 +109,47 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   sidecarReady           = false;
   private sidecarPollId: ReturnType<typeof setInterval> | null = null;
 
+  /** True while the backend's watchdog (`core::sidecar::watchdog`) is
+   *  relaunching a sidecar that crashed mid-session — distinct from the
+   *  plain first-boot "Model is loading…" state so the empty-state message
+   *  can say what actually happened. `sidecarErrorMessage` is set instead
+   *  when the watchdog gives up after repeated crashes (see
+   *  `MAX_CONSECUTIVE_CRASHES` in `sidecar.rs`) — a state polling alone
+   *  can't recover from, since there's nothing left relaunching it. */
+  sidecarReconnecting  = false;
+  sidecarErrorMessage  = '';
+  private unlistenSidecarCrashed: UnlistenFn | null = null;
+
   constructor() { super(); }
 
   ngOnInit(): void {
     this.refreshFolders();
     this.pollSidecarStatus();
+    this.tauri.onSidecarCrashed(e => this.onSidecarCrashed(e)).then(fn => this.unlistenSidecarCrashed = fn);
   }
 
   ngOnDestroy(): void {
     if (this.sidecarPollId !== null) clearInterval(this.sidecarPollId);
+    this.unlistenSidecarCrashed?.();
+  }
+
+  private onSidecarCrashed(e: SidecarCrashedEvent): void {
+    this.sidecarReady = false;
+    this.sidecarReconnecting = e.recovering;
+    this.sidecarErrorMessage = e.recovering ? '' : e.message;
+    this.cdr.detectChanges();
+    // The poll loop stops itself once it first sees `ready: true` (see
+    // below) — a crash after that point needs it re-armed to notice the
+    // sidecar coming back.
+    if (e.recovering) this.pollSidecarStatus();
   }
 
   private pollSidecarStatus(): void {
+    if (this.sidecarPollId !== null) return; // already polling
     const check = () => {
       this.tauri.invokeSilent<{ healthy: boolean; ready: boolean }>('sidecar_status').subscribe(res => {
         this.sidecarReady = res.success && !!res.data?.ready;
+        if (this.sidecarReady) this.sidecarReconnecting = false;
         this.cdr.detectChanges();
         if (this.sidecarReady && this.sidecarPollId !== null) {
           clearInterval(this.sidecarPollId);

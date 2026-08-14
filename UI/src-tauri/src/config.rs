@@ -76,10 +76,12 @@ pub fn set_resource_dir(resource_dir: PathBuf) {
 
 /// Frozen sidecar executable name, per-platform (matches the PyInstaller
 /// output and the Tauri `externalBin` target-triple naming convention).
+/// `pub(crate)` so `core::sidecar` can reuse the same name when sweeping up
+/// an orphaned process at startup, rather than duplicating the literal.
 #[cfg(target_os = "windows")]
-const SIDECAR_FILE: &str = "pictoria-sidecar.exe";
+pub(crate) const SIDECAR_FILE: &str = "pictoria-sidecar.exe";
 #[cfg(not(target_os = "windows"))]
-const SIDECAR_FILE: &str = "pictoria-sidecar";
+pub(crate) const SIDECAR_FILE: &str = "pictoria-sidecar";
 
 /// Resolve the frozen sidecar binary the same way `model_enc_path()` used to
 /// resolve the encrypted model — probe bundle layout, then dev fallbacks.

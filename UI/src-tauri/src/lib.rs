@@ -293,7 +293,7 @@ pub fn run() {
             // hidden, in the background. `core::sidecar::is_ready()` gates
             // search/indexing until its health check passes AND the user is
             // logged in with a current subscription.
-            crate::core::sidecar::spawn();
+            crate::core::sidecar::spawn(app.handle().clone());
 
             // Start the background folder watcher.  Its OS subscriptions and
             // initial reconciliation kick in later (once the sidecar is ready
