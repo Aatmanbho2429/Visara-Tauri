@@ -67,13 +67,26 @@ pub struct FailedFile {
 /// only once the picker grew, reshuffling the whole ranking rather than
 /// extending it. A fixed pool means the verified ("family") tier is a
 /// stable prefix no matter what `top_k` is set to.
-const VERIFY_SHORTLIST_FIXED: usize = 200;
+const VERIFY_SHORTLIST_FIXED: usize = 1500;
+
+/// Verify runs in chunks of this size rather than one request for the whole
+/// shortlist, purely so `on_verify_progress` below has something to report
+/// between chunks — SIFT/RANSAC on a 200-candidate shortlist takes tens of
+/// seconds even parallelized server-side (see `sidecar/pipeline.py`), and a
+/// single request that only resolves at the very end left the UI's progress
+/// bar sitting frozen at 0% for the whole wait, indistinguishable from hung.
+const VERIFY_CHUNK: usize = 20;
 
 /// A verified match is "found inside" rather than "same image" when its
 /// matched region covers less than this fraction of the candidate's area.
 const PARTIAL_MAX_AREA_FRACTION: f32 = 0.85;
 
-pub fn execute(image_path: &Path, scope: &[PathBuf], top_k: usize) -> Result<(Vec<SearchResult>, Vec<FailedFile>)> {
+pub fn execute(
+    image_path: &Path,
+    scope: &[PathBuf],
+    top_k: usize,
+    mut on_verify_progress: impl FnMut(usize, usize),
+) -> Result<(Vec<SearchResult>, Vec<FailedFile>)> {
     let t_total = Instant::now();
 
     // Pause background maintenance (the colour-tag backfill) for the duration —
@@ -167,14 +180,27 @@ pub fn execute(image_path: &Path, scope: &[PathBuf], top_k: usize) -> Result<(Ve
         })
         .collect();
 
-    // ── Stage 2: geometrically verify the whole shortlist in one call ──
+    // ── Stage 2: geometrically verify the shortlist, chunk by chunk ────
+    // Chunked (not one request for all of it) so `on_verify_progress` can
+    // report real progress between chunks instead of the caller sitting
+    // blind until the very end — see `VERIFY_CHUNK`'s doc comment.
     let shortlist_paths: Vec<String> = candidates.iter().map(|c| c.path.clone()).collect();
     let n_shortlist = shortlist_paths.len();
     let t_verify = Instant::now();
-    let verify_results = sidecar::verify(&query_sidecar_path, &shortlist_paths, sidecar::Priority::Search)
-        .unwrap_or_default(); // a verification failure degrades to stage-1-only ranking, not a hard error
+    let mut verify_by_path: HashMap<String, sidecar::VerifyResult> = HashMap::with_capacity(n_shortlist);
+    let mut n_done = 0usize;
+    on_verify_progress(0, n_shortlist);
+    for chunk in shortlist_paths.chunks(VERIFY_CHUNK) {
+        // A chunk failing degrades that chunk to stage-1-only ranking, not a
+        // hard error for the whole search — same fallback as before, just
+        // scoped smaller now that one slow/failing chunk can't blank out
+        // results that other, successful chunks already proved.
+        let chunk_results = sidecar::verify(&query_sidecar_path, chunk, sidecar::Priority::Search).unwrap_or_default();
+        verify_by_path.extend(chunk_results);
+        n_done += chunk.len();
+        on_verify_progress(n_done, n_shortlist);
+    }
     let verify_ms = t_verify.elapsed().as_secs_f64() * 1000.0;
-    let verify_by_path: HashMap<String, sidecar::VerifyResult> = verify_results.into_iter().collect();
 
     let scale = |v: f32| (v.clamp(0.0, 1.0) * 100.0 * 10.0).round() / 10.0;
 

@@ -92,6 +92,10 @@ pub async fn start_search(
         .to_string();
 
     let app_clone = app.clone();
+    // The initial "Searching" snapshot below (after spawn_blocking) also
+    // needs `query_name`, so the worker closure gets its own clone rather
+    // than moving the original in.
+    let query_name_for_worker = query_name.clone();
 
     // Spawn the heavy work on a blocking thread so Tokio stays responsive.
     tokio::task::spawn_blocking(move || {
@@ -102,7 +106,29 @@ pub async fn start_search(
             .map(PathBuf::from)
             .collect();
 
-        match search::execute(&image, &scope, top_k) {
+        // Real progress during the verify phase — SIFT/RANSAC over a couple
+        // hundred candidates is tens of seconds even parallelized
+        // server-side, and a single frozen "Searching" snapshot for that
+        // whole wait reads as hung. `search::execute` calls this between
+        // verify chunks; `query_name` is the same basename the initial
+        // snapshot below used, so the label doesn't jump when this takes over.
+        let on_verify_progress = |done: usize, total: usize| {
+            let percent = if total > 0 { (done as f32 / total as f32 * 100.0).min(100.0) } else { 0.0 };
+            let _ = app_clone.emit("search_progress", json!({
+                "progress": {
+                    "active":  true,
+                    "phase":   "Verifying matches",
+                    "done":    done,
+                    "total":   total,
+                    "current": query_name_for_worker,
+                    "percent": percent,
+                    "eta_sec": -1,
+                    "errors":  0,
+                }
+            }));
+        };
+
+        match search::execute(&image, &scope, top_k, on_verify_progress) {
             Ok((results, failed_files)) => {
                 let _ = app_clone.emit("search_complete", json!({
                     "done":         true,
@@ -122,9 +148,10 @@ pub async fn start_search(
         search_state().lock().unwrap().running = false;
     });
 
-    // Move the UI from "Starting…" into an active searching state.  A search is
-    // a single-image embed + cosine scan (sub-second over an indexed store), so
-    // we emit one indeterminate "Searching" snapshot rather than a granular bar.
+    // Move the UI from "Starting…" into an active searching state. This first
+    // snapshot covers query description + stage-1 ranking, which really is
+    // sub-second — `on_verify_progress` above takes over with real numbers
+    // once the (much slower) SIFT/RANSAC verify phase starts.
     //
     // Crucially we do NOT read the global sync/index progress here: a background
     // folder reconcile writes to that same state, and surfacing it would make the
