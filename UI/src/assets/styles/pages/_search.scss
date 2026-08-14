@@ -812,6 +812,10 @@
   }
 }
 
+// Custom single-select — a native <select>'s popup can't be styled in
+// WebView2 (no rounded corners, no hover state, mismatched colors), so
+// this is a plain positioned panel instead, closed by `closeScopeDropdown`
+// (bound to `document:click`) whenever a click lands outside `.scope-picker`.
 .scope-picker {
   position: relative;
 }
@@ -830,16 +834,24 @@
   font-size: $font-size-sm;
   color: $surface-100;
   transition: background 0.15s ease, border-color 0.15s ease;
+  max-width: 40rem;
 
   &:hover {
     background: rgba(217, 70, 239, 0.16);
     border-color: rgba(217, 70, 239, 0.4);
   }
 
-  i { color: $primary-400; font-size: 1.2rem; }
+  i { color: $primary-400; font-size: 1.2rem; flex-shrink: 0; }
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   &__chev {
     margin-left: 0.4rem;
+    flex-shrink: 0;
     transition: transform 0.18s ease;
     &--open { transform: rotate(180deg); }
   }
@@ -851,10 +863,10 @@
   left: 50%;
   transform: translateX(-50%);
   min-width: 28rem;
-  max-width: 38rem;
+  max-width: 46rem;
   max-height: 38rem;
   overflow-y: auto;
-  background: rgba(26, 18, 38, 0.96);
+  background: $surface-900;
   border: 1px solid rgba(217, 70, 239, 0.22);
   border-radius: $border-radius-md;
   padding: $space-2;
@@ -864,50 +876,25 @@
   flex-direction: column;
   gap: 0.2rem;
 
-  &__all {
-    appearance: none;
-    background: rgba(217, 70, 239, 0.08);
-    border: 1px solid rgba(217, 70, 239, 0.16);
-    border-radius: $border-radius-sm;
-    padding: $space-2 $space-3;
-    color: $surface-100;
-    font-family: $font-primary;
-    font-size: $font-size-sm;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-
-    &:hover {
-      background: rgba(217, 70, 239, 0.16);
-    }
-
-    i { color: $primary-400; }
-  }
-
-  &__sep {
-    margin: 0.4rem 0;
-    height: 1px;
-    background: rgba(255, 255, 255, 0.06);
-  }
-
   &__row {
+    appearance: none;
+    width: 100%;
+    background: none;
+    border: none;
     display: flex;
     align-items: center;
     gap: 0.8rem;
     padding: $space-2 $space-3;
     border-radius: $border-radius-sm;
     cursor: pointer;
+    text-align: left;
     transition: background 0.12s ease;
 
-    &:hover { background: rgba(255, 255, 255, 0.04); }
+    &:hover { background: rgba(255, 255, 255, 0.06); }
 
-    input[type="checkbox"] {
-      flex-shrink: 0;
-      width: 1.6rem;
-      height: 1.6rem;
-      accent-color: $primary-500;
-      cursor: pointer;
+    &--active {
+      background: rgba(217, 70, 239, 0.12);
+      &:hover { background: rgba(217, 70, 239, 0.18); }
     }
   }
 
@@ -927,6 +914,12 @@
     font-family: $font-primary;
     font-size: $font-size-xs;
     color: $surface-500;
+  }
+
+  &__check {
+    flex-shrink: 0;
+    color: $primary-400;
+    font-size: 1rem;
   }
 }
 

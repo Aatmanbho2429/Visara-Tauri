@@ -73,7 +73,8 @@
 
         </div>
 
-        <!-- Scope selector -->
+        <!-- Scope selector — custom single-select dropdown, always exactly
+             one folder (no "All folders" option; see `ensureScopeSelected`). -->
         <div class="scope-row">
           <span class="scope-row__label">Searching in</span>
 
@@ -86,19 +87,16 @@
 
             @if (scopeOpen) {
               <div class="scope-dropdown">
-                <button class="scope-dropdown__all" (click)="selectAllFolders()">
-                  <i class="pi pi-globe"></i>
-                  All folders
-                </button>
-                <div class="scope-dropdown__sep"></div>
                 @for (f of watchedFolders; track f.id) {
-                  <label class="scope-dropdown__row">
-                    <input type="checkbox"
-                           [checked]="isFolderInScope(f.path)"
-                           (change)="toggleFolderInScope(f.path)" />
-                    <span class="scope-dropdown__name" [title]="f.path">{{ shortName(f.path) }}</span>
+                  <button class="scope-dropdown__row"
+                          [class.scope-dropdown__row--active]="f.path === state.scopePaths[0]"
+                          (click)="selectFolder(f.path)">
+                    <span class="scope-dropdown__name" [title]="f.path">{{ f.path }}</span>
                     <span class="scope-dropdown__count">{{ f.image_count }}</span>
-                  </label>
+                    @if (f.path === state.scopePaths[0]) {
+                      <i class="pi pi-check scope-dropdown__check"></i>
+                    }
+                  </button>
                 }
               </div>
             }

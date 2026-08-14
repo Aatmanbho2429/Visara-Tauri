@@ -182,8 +182,30 @@ def _classify_vec(h, s, v):
     """Vectorized port of `color::classify` — bucket index per pixel. Conditions
     are evaluated in the same priority order as the Rust match/if-else chain
     (np.select picks the first true condition), so this must stay in lockstep
-    with the arm order in color.rs, not just the arm set."""
-    neutral = s < 0.14
+    with the arm order in color.rs, not just the arm set.
+
+    `s` (saturation) alone is unreliable near black: it's a *ratio*
+    (max-min)/max, so on a near-black pixel a tiny, often-imperceptible
+    channel imbalance gets amplified into a "highly saturated" reading. A
+    real "ABSOLUTE BLACK" granite tile has pixels like RGB (22,18,32) — a
+    14/255 spread, invisible against that dark a background — yet
+    s ≈ 0.44, comfortably past the 0.14 cutoff below, and because the blue
+    channel is consistently a few units high across the tile (a genuine but
+    imperceptible mineral/lighting cast, not sensor noise — verified
+    against the raw pixels), the resulting hue lands in blue/purple almost
+    every time. Measured: 93% of that tile's sampled pixels came out
+    "purple"/"blue" this way, outvoting the correct black/charcoal call
+    entirely. `chroma` (saturation × value — the *absolute* channel spread,
+    not the ratio) fixes this without flattening genuinely deep colours:
+    calibrated against 8 tiles literally named "black" (6 of 8 were
+    misclassified before this) and 8 named "blue" including faint ones —
+    0.06 is the highest floor that fixes every black tile while leaving
+    every real blue tile, including a fainter slate-blue at chroma ≈0.10,
+    untouched.
+    """
+    _MIN_CHROMA = 0.06
+    chroma = s * v
+    neutral = (s < 0.14) | (chroma < _MIN_CHROMA)
     muted = (~neutral) & (s < 0.34) & (v >= 0.5) & (h >= 20.0) & (h < 70.0)
     chromatic = (~neutral) & (~muted)
 

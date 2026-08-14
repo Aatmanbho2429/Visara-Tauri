@@ -140,24 +140,29 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
       this.foldersLoading = false;
       this.watchedFolders = (res.success && res.data?.folders) ? res.data.folders : [];
 
-      // Drop any cached scope entries that no longer exist (folder removed
-      // from the Library while user was on this page).
+      // Drop any cached scope entry that no longer exists (folder removed
+      // from the Library while user was on this page), then fall back to
+      // the first folder — there's no "All folders" option to fall back to.
       const valid = new Set(this.watchedFolders.map(f => f.path));
       this.state.scopePaths = this.state.scopePaths.filter(p => valid.has(p));
+      this.ensureScopeSelected();
     });
   }
 
   get hasWatchedFolders(): boolean { return this.watchedFolders.length > 0; }
-  get canSearch():       boolean   { return !!this.state.imagePath && this.hasWatchedFolders && this.sidecarReady; }
+  get canSearch():       boolean   {
+    return !!this.state.imagePath && this.hasWatchedFolders && this.state.scopePaths.length > 0 && this.sidecarReady;
+  }
   get isIdle():          boolean   { return this.state.searchState === 'idle'; }
   get isSearching():     boolean   { return this.state.searchState === 'searching'; }
   get hasResults():      boolean   { return this.state.searchState === 'results'; }
 
+  /** Scope is single-select — `scopePaths` only ever holds 0 (all folders)
+   *  or 1 (one specific folder) entries. */
   get scopeLabel(): string {
-    const n = this.state.scopePaths.length;
-    if (n === 0) return `All ${this.watchedFolders.length} folders`;
-    if (n === 1) return this.shortName(this.state.scopePaths[0]);
-    return `${n} folders`;
+    return this.state.scopePaths.length === 0
+      ? `All ${this.watchedFolders.length} folders`
+      : this.shortName(this.state.scopePaths[0]);
   }
 
   /** SIFT/RANSAC-proven results — same texture family as the query, not
@@ -204,46 +209,34 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   }
 
   // ── Scope picker ──────────────────────────────────────────────────
+  // A custom single-select dropdown, not a native <select> — WebView2's
+  // native <select> popup can't be styled (no rounded corners, no hover
+  // state, wrong colors) and rendered badly against the rest of the page.
+  // No "All folders" option, so exactly one watched folder must always be
+  // chosen; `ensureScopeSelected` guarantees that (see its call sites).
 
   toggleScopeDropdown(): void {
     this.scopeOpen = !this.scopeOpen;
   }
 
-  isFolderInScope(path: string): boolean {
-    // Empty scope = all folders selected.
-    return this.state.scopePaths.length === 0 || this.state.scopePaths.includes(path);
+  /** Bound to `(document:click)` so clicking anywhere outside the picker
+   *  closes it. `$event.stopPropagation()` on `.scope-picker` in the
+   *  template keeps clicks *inside* it from reaching this handler. */
+  @HostListener('document:click')
+  closeScopeDropdown(): void {
+    this.scopeOpen = false;
   }
 
-  toggleFolderInScope(path: string): void {
-    const isSelected = this.isFolderInScope(path);
-
-    // If scope was empty (all-on) and user is unchecking one, materialize
-    // the full list minus the clicked one.
-    if (this.state.scopePaths.length === 0 && isSelected) {
-      this.state.scopePaths = this.watchedFolders.map(f => f.path).filter(p => p !== path);
-      this.cdr.detectChanges();
-      return;
-    }
-
-    if (isSelected) {
-      // Never let the user uncheck the LAST remaining folder — the empty
-      // array would otherwise mean "all", flipping the UI's intent.
-      if (this.state.scopePaths.length <= 1) return;
-      this.state.scopePaths = this.state.scopePaths.filter(p => p !== path);
-    } else {
-      this.state.scopePaths = [...this.state.scopePaths, path];
-    }
-
-    // If the user re-selected every folder, collapse to empty (means "all").
-    if (this.state.scopePaths.length === this.watchedFolders.length) {
-      this.state.scopePaths = [];
-    }
+  selectFolder(path: string): void {
+    this.state.scopePaths = [path];
+    this.scopeOpen = false;
     this.cdr.detectChanges();
   }
 
-  selectAllFolders(): void {
-    this.state.scopePaths = [];
-    this.cdr.detectChanges();
+  private ensureScopeSelected(): void {
+    if (this.state.scopePaths.length === 0 && this.watchedFolders.length > 0) {
+      this.state.scopePaths = [this.watchedFolders[0].path];
+    }
   }
 
   goToLibrary(): void {
@@ -339,7 +332,11 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
     });
   }
 
-  newSearch(): void { this.state.reset(); this.cdr.detectChanges(); }
+  newSearch(): void {
+    this.state.reset();
+    this.ensureScopeSelected(); // reset() clears scopePaths; re-default it
+    this.cdr.detectChanges();
+  }
 
   /** Generate (or fetch the cached) thumbnail for a non-browser-safe format,
    *  then point the tile at it.  Falls back to the gradient on failure. */
