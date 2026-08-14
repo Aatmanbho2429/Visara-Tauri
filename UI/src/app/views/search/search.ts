@@ -86,6 +86,12 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
 
   readonly topKOptions = [10, 20, 50];
 
+  /** "Similar" (unverified) tier starts collapsed once there's a verified
+   *  "family" tier to lead with — expanded by default only when there are
+   *  no verified matches at all, so the page never looks empty. Set once
+   *  per search in `runSearch()`. */
+  similarExpanded = true;
+
   /** Platform-aware label for the global hot-key shown in the empty-state hint. */
   readonly hotkeyLabel = navigator.platform.toLowerCase().includes('mac')
     ? '⌘ + Shift + V'
@@ -154,10 +160,27 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
     return `${n} folders`;
   }
 
-  get masonryColumns(): SearchResult[][] {
+  /** SIFT/RANSAC-proven results — same texture family as the query, not
+   *  just similar-looking. Always shown in full; see `search.rs`'s
+   *  `family_count` split, which the backend never truncates. */
+  get familyResults(): SearchResult[] {
+    return this.state.results.filter(r => r.verified);
+  }
+
+  /** Everything else: ranked by texture similarity but not geometrically
+   *  confirmed. Capped by the `topK` picker and collapsed by default once
+   *  there's a family tier — see `similarExpanded`. */
+  get similarResults(): SearchResult[] {
+    return this.state.results.filter(r => !r.verified);
+  }
+
+  get familyColumns():  SearchResult[][] { return this.toColumns(this.familyResults); }
+  get similarColumns(): SearchResult[][] { return this.toColumns(this.similarResults); }
+
+  private toColumns(items: SearchResult[]): SearchResult[][] {
     const cols    = 3;
     const columns = Array.from({ length: cols }, (): SearchResult[] => []);
-    this.state.results.forEach((item, i) => columns[i % cols].push(item));
+    items.forEach((item, i) => columns[i % cols].push(item));
     return columns;
   }
 
@@ -304,6 +327,9 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
           }
           this.state.failedFiles = event.data?.failed_files ?? [];
           this.state.searchState = 'results';
+          // Lead with the verified family when there is one; only auto-open
+          // "Similar" when it's the only thing there is to show.
+          this.similarExpanded = this.familyResults.length === 0;
         } else if (event.type === 'error') {
           this.state.searchError = event.data?.message ?? 'Search failed. Please try again.';
           this.state.searchState = 'idle';

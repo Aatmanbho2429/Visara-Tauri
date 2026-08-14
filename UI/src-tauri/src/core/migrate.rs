@@ -48,7 +48,13 @@ use std::{
 ///     SIFT/RANSAC verification). No more region slicing — one descriptor per
 ///     file; "found inside" is now a direct geometric proof instead of a
 ///     region-vs-whole-frame score margin.
-pub const EMBED_SCHEMA_VERSION: i64 = 7;
+/// v8: gram_descriptor now runs on a desaturated (grayscale) image instead of
+///     RGB — the CNN's colour-sensitive normalisation was suppressing
+///     same-design different-colourway matches (e.g. a yellow variant of a
+///     blue tile) out of the ranking entirely. Every stored gram vector was
+///     computed against colour and is no longer comparable to a freshly
+///     computed grayscale one.
+pub const EMBED_SCHEMA_VERSION: i64 = 8;
 
 static REEMBED_PENDING: AtomicBool = AtomicBool::new(false);
 

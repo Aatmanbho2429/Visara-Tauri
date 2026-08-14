@@ -176,7 +176,9 @@
     "errors":          "errors",
     "failedFiles":     "images could not be processed",
     "noResults":       "No similar images found",
-    "maxResults":      "Max results",
+    "maxResults":      "Max similar results",
+    "familySection":   "Verified matches",
+    "similarSection":  "Similar patterns",
     "hotkeyHint":      "Or copy any image and press"
   },
 

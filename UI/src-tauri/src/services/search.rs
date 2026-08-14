@@ -59,13 +59,15 @@ pub struct FailedFile {
 
 // ── Public API ────────────────────────────────────────────────────────────
 
-/// How many stage-1 candidates get geometrically verified. Verifying more
-/// than the requested `top_k` is deliberate: stage-1 is a fuzzy texture
-/// ranking, and the true geometric match doesn't always sit in the first
-/// `top_k` slots — see the design-doc discussion on why "verify everything
-/// in the shortlist" beats a tight cutoff.
-const VERIFY_SHORTLIST_MULTIPLIER: usize = 4;
-const VERIFY_SHORTLIST_MIN: usize = 40;
+/// How many stage-1 candidates get geometrically verified — fixed,
+/// independent of `top_k` (the display picker). This used to scale with
+/// `top_k` (`top_k * 4`, min 40), which meant asking for more results
+/// changed *which* candidates got SIFT-verified, not just how many got
+/// shown: a "found inside" hit outside the smaller shortlist could appear
+/// only once the picker grew, reshuffling the whole ranking rather than
+/// extending it. A fixed pool means the verified ("family") tier is a
+/// stable prefix no matter what `top_k` is set to.
+const VERIFY_SHORTLIST_FIXED: usize = 200;
 
 /// A verified match is "found inside" rather than "same image" when its
 /// matched region covers less than this fraction of the candidate's area.
@@ -146,7 +148,7 @@ pub fn execute(image_path: &Path, scope: &[PathBuf], top_k: usize) -> Result<(Ve
     drop(con);
     let id_map_ms = t_id_map.elapsed().as_secs_f64() * 1000.0;
 
-    let shortlist_n = (top_k * VERIFY_SHORTLIST_MULTIPLIER).max(VERIFY_SHORTLIST_MIN);
+    let shortlist_n = VERIFY_SHORTLIST_FIXED;
     let t_stage1 = Instant::now();
     let stage1 = store.search(&query_desc.rose, &query_gram, &query_color, shortlist_n);
     let stage1_ms = t_stage1.elapsed().as_secs_f64() * 1000.0;
@@ -217,7 +219,13 @@ pub fn execute(image_path: &Path, scope: &[PathBuf], top_k: usize) -> Result<(Ve
     results.sort_by(|a, b| {
         b.verified.cmp(&a.verified).then_with(|| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal))
     });
-    results.truncate(top_k);
+    // Verified results are a geometric proof, not a similarity guess — keep
+    // every one of them (the "family" tier) rather than letting `top_k` cut
+    // a real match off. `top_k` instead caps only the unverified "similar"
+    // tail that follows. Since the sort above put every verified result
+    // first, `family_count` is just the length of that prefix.
+    let family_count = results.iter().take_while(|r| r.verified).count();
+    results.truncate(family_count + top_k);
     for (i, r) in results.iter_mut().enumerate() {
         r.rank = i + 1;
     }

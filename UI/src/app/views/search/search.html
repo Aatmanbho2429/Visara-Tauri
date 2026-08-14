@@ -203,75 +203,122 @@
       }
 
       @if (state.results.length > 0) {
-        <div class="masonry-grid" #masonryGrid (scroll)="onGridScroll($event)">
-          @for (col of masonryColumns; track $index) {
-            <div class="masonry-col">
-              @for (item of col; track item.rank) {
-                <div class="pin-card" (click)="openFile(item.path)">
-                  <div class="pin-card__img-wrap">
-                    @if (item.thumbnailUrl && !item.imgError) {
-                      <img [src]="item.thumbnailUrl" [alt]="item.name"
-                           class="pin-card__img" loading="lazy"
-                           [attr.data-rank]="item.rank"
-                           (load)="onImgLoad(item, $event)"
-                           (error)="onImgError(item)" />
-                    } @else if (item.imgError) {
-                      <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
-                        <i class="pi pi-image"></i>
-                      </div>
-                    } @else {
-                      <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
-                        <i class="pi pi-spin pi-spinner"></i>
-                      </div>
+        <div class="results-scroll" #masonryGrid (scroll)="onGridScroll($event)">
+
+          <!-- Verified — SIFT/RANSAC-proven this design is actually present.
+               Never truncated by the backend, so always shown in full. -->
+          @if (familyResults.length > 0) {
+            <div class="result-section">
+              <div class="result-section__header">
+                <i class="pi pi-verified"></i>
+                <span>{{ 'search.familySection' | translate }}</span>
+                <span class="result-section__count">{{ familyResults.length }}</span>
+              </div>
+              <div class="masonry-grid">
+                @for (col of familyColumns; track $index) {
+                  <div class="masonry-col">
+                    @for (item of col; track item.rank) {
+                      <ng-container *ngTemplateOutlet="resultCard; context: { item }" />
                     }
-                    @if (item.partial) {
-                      <!-- Box over the region that matched.  Its geometry is
-                           computed from the rendered image rather than set in
-                           percentages, because object-fit: cover crops the
-                           thumbnail and percentages of the card would land
-                           somewhere else entirely.  Note the crop also means a
-                           region outside the visible band is not shown at all. -->
-                      @if (item.matchBox) {
-                        <div class="pin-card__match-box" [ngStyle]="item.matchBox"></div>
+                  </div>
+                }
+              </div>
+            </div>
+          }
+
+          <!-- Similar — ranked by texture similarity but not geometrically
+               confirmed. Collapsed by default once there's a verified tier
+               to lead with (see `similarExpanded` in search.ts). -->
+          @if (similarResults.length > 0) {
+            <div class="result-section">
+              <button class="result-section__header result-section__header--toggle"
+                      (click)="similarExpanded = !similarExpanded">
+                <i class="pi pi-images"></i>
+                <span>{{ 'search.similarSection' | translate }}</span>
+                <span class="result-section__count">{{ similarResults.length }}</span>
+                <i class="pi result-section__chev"
+                   [class.pi-chevron-down]="!similarExpanded"
+                   [class.pi-chevron-up]="similarExpanded"></i>
+              </button>
+              @if (similarExpanded) {
+                <div class="masonry-grid">
+                  @for (col of similarColumns; track $index) {
+                    <div class="masonry-col">
+                      @for (item of col; track item.rank) {
+                        <ng-container *ngTemplateOutlet="resultCard; context: { item }" />
                       }
-                      <span class="pin-card__found-inside" title="Your design was found inside this one">
-                        <i class="pi pi-search-plus"></i>
-                        Found inside
-                      </span>
-                    }
-                    <div class="pin-card__overlay">
-                      <span class="pin-card__open">
-                        <i class="pi pi-external-link"></i>
-                        {{ 'search.openInExplorer' | translate }}
-                      </span>
                     </div>
-                  </div>
-                  <div class="pin-card__foot">
-                    <div class="pin-card__foot-text">
-                      <span class="pin-card__name" [title]="item.path">{{ item.name }}</span>
-                      <span class="pin-card__folder" [title]="item.path">{{ item.path }}</span>
-                    </div>
-                    <div class="pin-card__scores">
-                      <span class="pin-card__badge pin-card__badge--{{ similarityClass(item.pattern_match) }}"
-                            title="Pattern match">
-                        <i class="pi pi-th-large"></i>
-                        <span class="pin-card__badge-label">Pattern</span>
-                        {{ item.pattern_match | number:'1.0-0' }}%
-                      </span>
-                      <span class="pin-card__badge pin-card__badge--clr-{{ colorMatchClass(item.color_match) }}"
-                            title="Color match">
-                        <i class="pi pi-palette"></i>
-                        <span class="pin-card__badge-label">Color</span>
-                        {{ item.color_match | number:'1.0-0' }}%
-                      </span>
-                    </div>
-                  </div>
+                  }
                 </div>
               }
             </div>
           }
+
         </div>
       }
+
+      <ng-template #resultCard let-item="item">
+        <div class="pin-card" (click)="openFile(item.path)">
+          <div class="pin-card__img-wrap">
+            @if (item.thumbnailUrl && !item.imgError) {
+              <img [src]="item.thumbnailUrl" [alt]="item.name"
+                   class="pin-card__img" loading="lazy"
+                   [attr.data-rank]="item.rank"
+                   (load)="onImgLoad(item, $event)"
+                   (error)="onImgError(item)" />
+            } @else if (item.imgError) {
+              <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
+                <i class="pi pi-image"></i>
+              </div>
+            } @else {
+              <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
+                <i class="pi pi-spin pi-spinner"></i>
+              </div>
+            }
+            @if (item.partial) {
+              <!-- Box over the region that matched.  Its geometry is
+                   computed from the rendered image rather than set in
+                   percentages, because object-fit: cover crops the
+                   thumbnail and percentages of the card would land
+                   somewhere else entirely.  Note the crop also means a
+                   region outside the visible band is not shown at all. -->
+              @if (item.matchBox) {
+                <div class="pin-card__match-box" [ngStyle]="item.matchBox"></div>
+              }
+              <span class="pin-card__found-inside" title="Your design was found inside this one">
+                <i class="pi pi-search-plus"></i>
+                Found inside
+              </span>
+            }
+            <div class="pin-card__overlay">
+              <span class="pin-card__open">
+                <i class="pi pi-external-link"></i>
+                {{ 'search.openInExplorer' | translate }}
+              </span>
+            </div>
+          </div>
+          <div class="pin-card__foot">
+            <div class="pin-card__foot-text">
+              <span class="pin-card__name" [title]="item.path">{{ item.name }}</span>
+              <span class="pin-card__folder" [title]="item.path">{{ item.path }}</span>
+            </div>
+            <div class="pin-card__scores">
+              <span class="pin-card__badge pin-card__badge--{{ similarityClass(item.pattern_match) }}"
+                    title="Pattern match">
+                <i class="pi pi-th-large"></i>
+                <span class="pin-card__badge-label">Pattern</span>
+                {{ item.pattern_match | number:'1.0-0' }}%
+              </span>
+              <span class="pin-card__badge pin-card__badge--clr-{{ colorMatchClass(item.color_match) }}"
+                    title="Color match">
+                <i class="pi pi-palette"></i>
+                <span class="pin-card__badge-label">Color</span>
+                {{ item.color_match | number:'1.0-0' }}%
+              </span>
+            </div>
+          </div>
+        </div>
+      </ng-template>
 
       @if (state.showScrollTop) {
         <button class="scroll-top-btn" (click)="scrollToTop()">

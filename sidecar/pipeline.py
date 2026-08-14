@@ -45,10 +45,14 @@ def load_model():
     return _model
 
 
+def _new_sift():
+    return cv2.SIFT_create(nfeatures=4000, contrastThreshold=0.01, edgeThreshold=20)
+
+
 def _get_sift():
     global _sift
     if _sift is None:
-        _sift = cv2.SIFT_create(nfeatures=4000, contrastThreshold=0.01, edgeThreshold=20)
+        _sift = _new_sift()
     return _sift
 
 
@@ -92,15 +96,27 @@ def gabor_rose(img_rgb):
 @torch.no_grad()
 def gram_descriptor(img_rgb, size=224, zoom_scales=_GRAM_ZOOM_SCALES):
     """Channel-correlation texture-style descriptor at a few zoom levels, so
-    ranking isn't thrown off by two related images being different pixel scales."""
+    ranking isn't thrown off by two related images being different pixel scales.
+
+    Fed a desaturated (grayscale, replicated to 3 channels) image rather than
+    the original RGB — the CNN's ImageNet normalisation is otherwise very
+    colour-sensitive, which used to bury same-design different-colourway
+    files (e.g. a "small_yellow" variant of "small_blue") deep enough in the
+    ranking that they'd fall out of the verify shortlist entirely, even
+    though `gabor_rose` (already grayscale) recognised the shared structure
+    fine. Matching that grayscale-only convention here makes ranking
+    genuinely structure-led, with colour staying display-only via
+    `color_histogram` — see [[pictoria-search-architecture]]."""
     model = load_model()
-    h0, w0 = img_rgb.shape[:2]
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    img_struct = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+    h0, w0 = img_struct.shape[:2]
     grams = []
     for zoom in zoom_scales:
         target_short = max(8, int(round(size / zoom)))
         scale = target_short / min(h0, w0)
         rh, rw = max(size, int(round(h0 * scale))), max(size, int(round(w0 * scale)))
-        resized = cv2.resize(img_rgb, (rw, rh), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
+        resized = cv2.resize(img_struct, (rw, rh), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
         y0, x0 = (rh - size) // 2, (rw - size) // 2
         crop = resized[y0:y0 + size, x0:x0 + size]
         t = torch.from_numpy(crop).float().permute(2, 0, 1).unsqueeze(0) / 255.0
@@ -308,32 +324,51 @@ def describe(path, max_dim=512):
     return Descriptor(rose=rose.tolist(), gram=[g.tolist() for g in gram], color=color, dominant=dominant)
 
 
-def verify(query_path, candidate_path, query_cache, ratio=0.75, ransac_thresh=5.0, min_inliers=12):
-    """SIFT + RANSAC: does `query_path` actually appear inside `candidate_path`?
+def prepare_query(query_path, max_dim=800):
+    """Decode + SIFT the query once. `verify_one()` below reuses the result
+    across a whole batch of candidates for the same query — the query-side
+    SIFT pass is identical every time, so this way it only ever runs once
+    per batch, not once per candidate. Returns `None` on decode failure.
 
-    `query_cache` is a plain dict the caller reuses across a whole batch of
-    candidates for the same query, so the query's own SIFT pass — identical
-    every time — only ever runs once per batch, not once per candidate.
+    Deliberately sequential (called once, before any candidate work starts)
+    — see `verify_one` for why the per-candidate work runs on its own SIFT
+    instance instead of sharing this one."""
+    q = load_image_rgb(query_path, max_dim=max_dim)
+    if q is None:
+        return None
+    qg = cv2.cvtColor(q, cv2.COLOR_RGB2GRAY)
+    kp1, des1 = _get_sift().detectAndCompute(qg, None)
+    return {"path": query_path, "qg": qg, "kp": kp1, "des": des1}
+
+
+def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_inliers=12):
+    """SIFT + RANSAC: does the query behind `query_state` (see
+    `prepare_query`) actually appear inside `candidate_path`?
+
+    `server._run` calls this from a thread pool — one candidate's decode +
+    SIFT + RANSAC was ~350-450ms measured against the real 316-file library,
+    so a 200-candidate shortlist run serially (the original design) took
+    70-90s and blew straight through every timeout in the stack, silently
+    degrading every result to "unverified". SIFT/RANSAC are OpenCV C++ calls
+    that release the GIL, so threads scale close to linearly with cores here.
+    Each call gets its own `cv2.SIFT_create()` rather than sharing the
+    module-level instance `_get_sift()` returns, because cv2 algorithm
+    objects aren't safe to invoke from multiple threads concurrently — only
+    `query_state` (read-only past `prepare_query`) is shared.
     """
     t0 = time.perf_counter()
-    sift = _get_sift()
-    query_cache_hit = query_cache.get("path") == query_path
-    if not query_cache_hit:
-        q = load_image_rgb(query_path, max_dim=800)
-        if q is None:
-            return {"matched": False, "reason": "decode-failed"}
-        qg = cv2.cvtColor(q, cv2.COLOR_RGB2GRAY)
-        kp1, des1 = sift.detectAndCompute(qg, None)
-        query_cache.update(path=query_path, qg=qg, kp=kp1, des=des1)
-    qg, kp1, des1 = query_cache["qg"], query_cache["kp"], query_cache["des"]
-    t_query_sift = time.perf_counter()
+    if query_state is None:
+        return {"matched": False, "reason": "decode-failed"}
+    qg, kp1, des1 = query_state["qg"], query_state["kp"], query_state["des"]
+    if des1 is None or len(kp1) < 8:
+        return {"matched": False, "reason": "decode-failed"}
 
     c = load_image_rgb(candidate_path, max_dim=1600)
     t_decode = time.perf_counter()
-    if c is None or des1 is None or len(kp1) < 8:
+    if c is None:
         return {"matched": False, "reason": "decode-failed"}
     cg = cv2.cvtColor(c, cv2.COLOR_RGB2GRAY)
-    kp2, des2 = sift.detectAndCompute(cg, None)
+    kp2, des2 = _new_sift().detectAndCompute(cg, None)
     t_cand_sift = time.perf_counter()
     if des2 is None or len(kp2) < 8:
         return {"matched": False, "reason": "too-few-keypoints"}
@@ -345,10 +380,10 @@ def verify(query_path, candidate_path, query_cache, ratio=0.75, ransac_thresh=5.
 
     def log_timing(reason, **extra):
         log.debug(
-            "[timing] verify query=%s candidate=%s cache_hit=%s decode_ms=%.2f "
-            "query_sift_ms=%.2f cand_sift_ms=%.2f match_ms=%.2f ransac_ms=%.2f total_ms=%.2f reason=%s",
-            os.path.basename(query_path), os.path.basename(candidate_path), query_cache_hit,
-            (t_decode - t_query_sift) * 1000, (t_query_sift - t0) * 1000, (t_cand_sift - t_decode) * 1000,
+            "[timing] verify query=%s candidate=%s decode_ms=%.2f "
+            "cand_sift_ms=%.2f match_ms=%.2f ransac_ms=%.2f total_ms=%.2f reason=%s",
+            os.path.basename(query_state["path"]), os.path.basename(candidate_path),
+            (t_decode - t0) * 1000, (t_cand_sift - t_decode) * 1000,
             (t_match - t_cand_sift) * 1000, (time.perf_counter() - t_match) * 1000,
             (time.perf_counter() - t0) * 1000, reason,
         )

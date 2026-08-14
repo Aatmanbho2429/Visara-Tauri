@@ -33,8 +33,17 @@ fn base_url() -> String {
 /// Shared blocking client, reused across calls rather than built fresh each
 /// time. Every request sets its own `.timeout(...)` (see call sites below) —
 /// without one, a stuck sidecar (one pathological file hanging the worker)
-/// would leave a search or index call waiting forever with no error, which
-/// is exactly what happened in practice before this existed.
+/// would leave a search or index call waiting forever with no error.
+///
+/// This client existed unused for a while (along with `describe_timeout`,
+/// the old `VERIFY_TIMEOUT`, and `HEALTH_TIMEOUT` below) — every call site
+/// was building its own untimed `reqwest::blocking::Client::new()` instead,
+/// which is how `/verify` batches went unbounded: with no client-side
+/// ceiling, a 200-candidate shortlist that took 70-90s serially (see
+/// `sidecar/pipeline.py`'s `verify_one`) just hung until *something*
+/// upstream — never identified, possibly OS/AV-related — cut the connection
+/// at a suspiciously consistent ~30s, and `search::execute`'s
+/// `.unwrap_or_default()` silently turned that into "nothing verified".
 static HTTP: Lazy<reqwest::blocking::Client> =
     Lazy::new(|| reqwest::blocking::Client::builder().build().expect("reqwest client"));
 
@@ -44,11 +53,16 @@ fn describe_timeout(n_paths: usize) -> std::time::Duration {
     std::time::Duration::from_secs(30 + (n_paths as u64) * 40)
 }
 
-/// `/verify` is called one candidate at a time (see `services::search`), so
-/// a fixed ceiling is enough — generous relative to how long SIFT actually
-/// takes (well under a second normally), to comfortably cover a search
-/// waiting behind one in-flight indexing file.
-const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// `/verify` runs the whole shortlist as one batch, parallelized server-side
+/// across an 8-way thread pool (`sidecar/server.py`'s `_run`) — real-world
+/// cost is ~50-60ms/candidate at that parallelism, well under this budget's
+/// 1s/candidate; the generous margin is for a cold start (PyInstaller
+/// self-extraction + AV scan) or a shortlist arriving behind an in-flight
+/// indexing file rather than steady-state compute.
+fn verify_timeout(n_candidates: usize) -> std::time::Duration {
+    std::time::Duration::from_secs(30 + n_candidates as u64)
+}
+
 const HEALTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -93,7 +107,7 @@ pub fn spawn() {
 fn poll_health() {
     let client = reqwest::blocking::Client::new();
     loop {
-        if let Ok(resp) = client.get(format!("{}/health", base_url())).send() {
+        if let Ok(resp) = client.get(format!("{}/health", base_url())).timeout(HEALTH_TIMEOUT).send() {
             if let Ok(body) = resp.json::<HealthResp>() {
                 if body.ready {
                     HEALTHY.store(true, Ordering::SeqCst);
@@ -222,10 +236,10 @@ pub fn describe(paths: &[String], priority: Priority) -> Result<Vec<(String, Opt
     if paths.is_empty() {
         return Ok(Vec::new());
     }
-    let client = reqwest::blocking::Client::new();
     let body = DescribeReq { paths, priority: priority.as_str() };
-    let resp: DescribeResp = client
+    let resp: DescribeResp = HTTP
         .post(format!("{}/describe", base_url()))
+        .timeout(describe_timeout(paths.len()))
         .json(&body)
         .send()
         .map_err(|e| PictoriaError::Fatal(format!("sidecar /describe unreachable: {e}")))?
@@ -283,10 +297,10 @@ pub fn verify(query_path: &str, candidate_paths: &[String], priority: Priority) 
     if candidate_paths.is_empty() {
         return Ok(Vec::new());
     }
-    let client = reqwest::blocking::Client::new();
     let body = VerifyReq { query_path, candidate_paths, priority: priority.as_str() };
-    let resp: VerifyResp = client
+    let resp: VerifyResp = HTTP
         .post(format!("{}/verify", base_url()))
+        .timeout(verify_timeout(candidate_paths.len()))
         .json(&body)
         .send()
         .map_err(|e| PictoriaError::Fatal(format!("sidecar /verify unreachable: {e}")))?

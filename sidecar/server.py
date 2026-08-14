@@ -19,6 +19,7 @@ import queue
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, jsonify, request
 from waitress import serve
@@ -80,6 +81,13 @@ logging.basicConfig(
 log = logging.getLogger("sidecar")
 log.info("log directory: %s", LOG_DIR)
 
+# SIFT/RANSAC (pipeline.verify_one) are OpenCV C++ calls that release the
+# GIL, so verifying a shortlist's candidates concurrently scales close to
+# linearly with cores instead of paying ~350-450ms per candidate serially —
+# see the `verify` branch of `_run()` below and `pipeline.verify_one`'s
+# docstring for the timeout this used to blow through.
+_VERIFY_WORKERS = max(1, min(8, os.cpu_count() or 4))
+
 app = Flask(__name__)
 
 _search_q: "queue.Queue[Job]" = queue.Queue()
@@ -116,7 +124,6 @@ def _worker() -> None:
     _ready.set()
     log.info("model loaded, sidecar ready")
 
-    query_cache: dict = {}
     while True:
         try:
             job = _search_q.get_nowait()
@@ -126,14 +133,14 @@ def _worker() -> None:
             except queue.Empty:
                 continue
         try:
-            job.result = _run(job, query_cache)
+            job.result = _run(job)
         except Exception as e:  # noqa: BLE001
             log.exception("job failed: %s", job.kind)
             job.result = {"error": str(e)}
         job.event.set()
 
 
-def _drain_search(query_cache: dict) -> None:
+def _drain_search() -> None:
     """Run every search job waiting right now, to completion, before the
     caller (an index job) is allowed to touch its next file. This is what
     makes indexing 'pause' the instant a search arrives and 'resume' the
@@ -144,14 +151,14 @@ def _drain_search(query_cache: dict) -> None:
         except queue.Empty:
             return
         try:
-            job.result = _run(job, query_cache)
+            job.result = _run(job)
         except Exception as e:  # noqa: BLE001
             log.exception("job failed: %s", job.kind)
             job.result = {"error": str(e)}
         job.event.set()
 
 
-def _run(job: Job, query_cache: dict) -> dict:
+def _run(job: Job) -> dict:
     # `queue_wait_ms` is how long the job sat behind other work (mostly
     # relevant for "index" priority jobs, which yield to a just-arrived
     # search — see `_drain_search` below); `compute_ms` is the pipeline
@@ -168,7 +175,7 @@ def _run(job: Job, query_cache: dict) -> dict:
                             "dominant": d.dominant} if d
                             else {"path": p, "error": "decode-failed"})
             if job.priority != "search":
-                _drain_search(query_cache)  # let a just-arrived search cut in, file by file
+                _drain_search()  # let a just-arrived search cut in, file by file
         compute_ms = (time.perf_counter() - t_start) * 1000
         log.info(
             "[timing] job kind=describe priority=%s n=%d queue_wait_ms=%.2f compute_ms=%.2f total_ms=%.2f",
@@ -178,11 +185,16 @@ def _run(job: Job, query_cache: dict) -> dict:
 
     if job.kind == "verify":
         query_path = job.payload["query_path"]
-        results = []
-        for c in job.payload["candidate_paths"]:
-            r = pipeline.verify(query_path, c, query_cache)
+        candidates = job.payload["candidate_paths"]
+        query_state = pipeline.prepare_query(query_path)  # once, sequential — see prepare_query's docstring
+
+        def _verify(c: str) -> dict:
+            r = pipeline.verify_one(query_state, c)
             r["path"] = c
-            results.append(r)
+            return r
+
+        with ThreadPoolExecutor(max_workers=_VERIFY_WORKERS) as pool:
+            results = list(pool.map(_verify, candidates))
         compute_ms = (time.perf_counter() - t_start) * 1000
         log.info(
             "[timing] job kind=verify priority=%s n=%d queue_wait_ms=%.2f compute_ms=%.2f total_ms=%.2f",
