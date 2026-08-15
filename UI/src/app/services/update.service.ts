@@ -1,35 +1,43 @@
-import { Injectable, NgZone, inject } from '@angular/core';
+import { Injectable, computed, inject, signal } from '@angular/core';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 import { TauriService, UpdateInfo } from './tauri.service';
 
 /**
  * App-wide updater state.
  *
- * This lives in a root service rather than in `Master` because the check used
- * to run in `Master.ngOnInit`, and `Master` only mounts at `/master/...` —
- * so on a cold start nothing checked for updates until the user had logged in
- * and landed on the shell. Worse, the result was held in `Master`'s own
- * fields: the check fired once, and if the reply arrived while the component
- * was mid-route-change the banner could be missed entirely, which is why it
- * looked like navigating was what "made the update button appear".
+ * Two things make this a service of signals rather than fields on `Master`:
  *
- * Now the check starts as soon as the app boots (see `App.ngOnInit`) and the
- * answer is cached here, so whenever the shell renders the banner is already
- * populated — no navigation required. State is deliberately in-memory only:
- * `dismissed` resetting on relaunch is what makes the banner reappear on every
- * app open, which is the intended behaviour.
+ * 1. Lifecycle. The check used to run in `Master.ngOnInit`, but `Master` only
+ *    mounts at `/master/...`, so a cold start did no check until the user had
+ *    logged in and reached the shell. The check now starts at app boot (see
+ *    `App.ngOnInit`) and the answer is cached here, so the banner is already
+ *    populated whenever the shell renders.
+ *
+ * 2. Change detection. This app runs **zoneless** — Angular 21 with no zone.js
+ *    dependency at all — so `NgZone` is a no-op and `zone.run()` does not
+ *    schedule change detection. Assigning to a plain field from a Tauri event
+ *    callback updated the value but never repainted: the UI only caught up
+ *    when something else triggered a render, which is why the progress bar
+ *    appeared to move only on click and the banner only on navigation.
+ *    Signals notify the scheduler directly, so writes from outside any
+ *    framework context render immediately.
+ *
+ * State is deliberately in-memory: `dismissed` resetting on relaunch is what
+ * makes the banner reappear on every app open, which is intended.
  */
 @Injectable({ providedIn: 'root' })
 export class UpdateService {
-  info: UpdateInfo | null = null;
-  dismissed = false;
-  installing = false;
-  /** 0-100, or null when the server sent no Content-Length (indeterminate). */
-  pct: number | null = 0;
-  error: string | null = null;
+  readonly info = signal<UpdateInfo | null>(null);
+  readonly dismissed = signal(false);
+  readonly installing = signal(false);
+  /** 0-100, or null when the download has no Content-Length (indeterminate). */
+  readonly pct = signal<number | null>(0);
+  readonly error = signal<string | null>(null);
+
+  /** Banner shows when an update is known and the user hasn't waved it away. */
+  readonly visible = computed(() => this.info() !== null && !this.dismissed());
 
   private tauri = inject(TauriService);
-  private zone = inject(NgZone);
 
   private started = false;
   private unlisten: UnlistenFn[] = [];
@@ -47,24 +55,18 @@ export class UpdateService {
     // backend can emit `update_available` faster than `listen()` resolves,
     // and an event fired before we are listening is simply lost.
     Promise.all([
-      this.tauri.onUpdateAvailable(info =>
-        this.zone.run(() => {
-          this.info = info;
-          this.error = null;
-        }),
-      ),
-      this.tauri.onUpdateProgress(p =>
-        this.zone.run(() => {
-          this.installing = true;
-          this.pct = p.total ? Math.min(100, Math.round((p.downloaded / p.total) * 100)) : null;
-        }),
-      ),
-      this.tauri.onUpdateError(msg =>
-        this.zone.run(() => {
-          this.installing = false;
-          this.error = msg;
-        }),
-      ),
+      this.tauri.onUpdateAvailable(info => {
+        this.info.set(info);
+        this.error.set(null);
+      }),
+      this.tauri.onUpdateProgress(p => {
+        this.installing.set(true);
+        this.pct.set(p.total ? Math.min(100, Math.round((p.downloaded / p.total) * 100)) : null);
+      }),
+      this.tauri.onUpdateError(msg => {
+        this.installing.set(false);
+        this.error.set(msg);
+      }),
     ]).then(fns => {
       this.unlisten = fns;
       this.check();
@@ -78,14 +80,14 @@ export class UpdateService {
   }
 
   install(): void {
-    this.installing = true;
-    this.pct = 0;
-    this.error = null;
+    this.installing.set(true);
+    this.pct.set(0);
+    this.error.set(null);
     this.tauri.installUpdate();
   }
 
   dismiss(): void {
-    this.dismissed = true;
+    this.dismissed.set(true);
   }
 
   /** Only meaningful in tests — the service lives for the app's lifetime. */

@@ -1,16 +1,16 @@
 <div class="app-shell">
 
   <!-- Update notification banner -->
-  @if (updates.info && !updates.dismissed) {
-    <div class="update-banner" [class.update-banner--installing]="updates.installing">
+  @if (updates.visible()) {
+    <div class="update-banner" [class.update-banner--installing]="updates.installing()">
 
-      @if (!updates.installing) {
+      @if (!updates.installing()) {
         <div class="update-banner__content">
           <i class="pi pi-arrow-circle-up update-banner__icon"></i>
           <div class="update-banner__text">
-            <span class="update-banner__title">{{ 'update.available' | translate }} v{{ updates.info.version }}</span>
-            @if (updates.error) {
-              <span class="update-banner__error">{{ updates.error }}</span>
+            <span class="update-banner__title">{{ 'update.available' | translate }} v{{ updates.info()?.version }}</span>
+            @if (updates.error(); as err) {
+              <span class="update-banner__error">{{ err }}</span>
             }
           </div>
           <button class="update-banner__btn update-banner__btn--install" (click)="updates.install()">
@@ -26,13 +26,13 @@
           <div class="update-banner__text">
             <span class="update-banner__title">{{ 'update.downloading' | translate }}</span>
           </div>
-          <!-- `pct` is null when the download has no Content-Length: there is
+          <!-- `pct()` is null when the download has no Content-Length: there is
                no percentage to show, so the bar runs indeterminate instead of
                sitting frozen at 0%. -->
-          <div class="update-banner__progress" [class.update-banner__progress--indeterminate]="updates.pct === null">
-            <div class="update-banner__progress-bar" [style.width.%]="updates.pct ?? 100"></div>
+          <div class="update-banner__progress" [class.update-banner__progress--indeterminate]="updates.pct() === null">
+            <div class="update-banner__progress-bar" [style.width.%]="updates.pct() ?? 100"></div>
           </div>
-          <span class="update-banner__pct">{{ updates.pct === null ? '' : updates.pct + '%' }}</span>
+          <span class="update-banner__pct">{{ updates.pct() === null ? '' : updates.pct() + '%' }}</span>
         </div>
       }
 
