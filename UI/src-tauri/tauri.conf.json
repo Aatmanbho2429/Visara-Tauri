@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Pictoria",
-  "version": "1.1.30",
+  "version": "1.1.31",
   "identifier": "com.pictoria.app",
   "build": {
     "frontendDist": "../dist/UI/browser",
