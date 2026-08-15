@@ -135,15 +135,51 @@ jobs:
         run: softwareupdate --install-rosetta --agree-to-license || true
 
       # Produces sidecar/dist/pictoria-sidecar[.exe] — see sidecar/README.md.
+      #
+      # PyInstaller freezes whatever interpreter runs it, so the Intel leg has
+      # to run an *x86_64 Python process*. `setup-python`'s `architecture: x64`
+      # is not sufficient on its own: the macOS CPython it installs is a
+      # universal2 binary, and a universal2 binary on Apple Silicon runs its
+      # arm64 slice by default — which is how the first attempt still produced
+      # an arm64 sidecar despite `architecture: x64`.
+      #
+      # `arch -x86_64` selects the x86_64 slice instead. Everything downstream
+      # follows from that one choice: platform.machine(), the wheels pip
+      # resolves, and the architecture PyInstaller emits.
       - name: Freeze sidecar (PyInstaller)
         shell: bash
         working-directory: sidecar
         run: |
           set -euo pipefail
-          python -c "import platform, sys; print('freezing with', platform.machine(), 'python', sys.version)"
-          python -m pip install --upgrade pip
-          python -m pip install -r "${{ matrix.sidecar_reqs }}"
-          python -m PyInstaller --onefile --name pictoria-sidecar \
+
+          PY=(python)
+          if [ "${{ matrix.label }}" = "macos-intel" ]; then
+            PY=(arch -x86_64 python)
+          fi
+
+          echo "--- interpreter diagnostics ---"
+          echo "which python : $(which python)"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            echo "python slices: $(lipo -archs "$(python -c 'import sys; print(sys.executable)')" 2>/dev/null || echo 'n/a')"
+          fi
+          "${PY[@]}" -c "import platform, sys; print('freezing with', platform.machine(), '| python', sys.version.split()[0])"
+
+          # Fail here, with the reason, rather than 2 minutes later at the
+          # architecture check — this is the step that can actually explain it.
+          if [ "${{ matrix.label }}" = "macos-intel" ]; then
+            got="$("${PY[@]}" -c 'import platform; print(platform.machine())')"
+            if [ "$got" != "x86_64" ]; then
+              echo "::error::interpreter reports '$got', need 'x86_64'."
+              echo '::error::arch -x86_64 did not yield an x86_64 process — the installed'
+              echo '::error::CPython is probably arm64-only rather than universal2, so an'
+              echo '::error::x86_64 interpreter has to come from elsewhere (python.org installer).'
+              exit 1
+            fi
+          fi
+
+          "${PY[@]}" -m pip install --upgrade pip
+          "${PY[@]}" -m pip install -r "${{ matrix.sidecar_reqs }}"
+          "${PY[@]}" -m PyInstaller --onefile --name pictoria-sidecar \
             --distpath dist --workpath build --specpath . server.py
 
       # The whole point of the per-leg Python above is that the frozen binary
