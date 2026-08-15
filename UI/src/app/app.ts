@@ -6,6 +6,7 @@ import { MessageService } from 'primeng/api';
 import { ToastModule } from 'primeng/toast';
 import { GlobalLoader } from './shared/global-loader/global-loader';
 import { TauriService, HotkeyEvent } from './services/tauri.service';
+import { UpdateService } from './services/update.service';
 import { UserStateService } from './services/user-state.service';
 import { SearchStateService } from './services/search-state.service';
 
@@ -30,6 +31,7 @@ export class App implements OnInit, OnDestroy {
   private zone        = inject(NgZone);
   private appRef      = inject(ApplicationRef);
   private messages    = inject(MessageService);
+  private updates     = inject(UpdateService);
 
   private unlisten: UnlistenFn | null = null;
 
@@ -41,6 +43,12 @@ export class App implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.tauri.onHotkey(p => this.zone.run(() => this.handleHotkey(p)))
       .then(fn => { this.unlisten = fn; });
+
+    // Start the update check here, at app boot, rather than in `Master` —
+    // `Master` only mounts once the user reaches /master/..., so previously a
+    // cold start did no check at all until after login and the banner only
+    // turned up once something else caused a route change.
+    this.updates.start();
 
     // Show the hot-key intro tip on the user's first session after this
     // release.  Delayed so the toast appears *after* the login transition,

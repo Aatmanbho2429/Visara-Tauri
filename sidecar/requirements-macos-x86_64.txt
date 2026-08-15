@@ -1,0 +1,21 @@
+# Intel-macOS-only dependency set. Used by the x86_64-apple-darwin release leg
+# and nothing else — every other platform uses requirements.txt.
+#
+# PyTorch stopped publishing macOS x86_64 wheels after these versions:
+#
+#   torch        2.2.2    (2.3.0+ is macosx_11_0_arm64 only)
+#   torchvision  0.17.2   (0.18.0+ is macosx_11_0_arm64 only)
+#
+# so an Intel build is pinned to that pairing. It is a frozen-in-time stack:
+# it will not pick up torch security or bugfix releases, because there are
+# none for this platform. Revisit only to drop the Intel target entirely.
+#
+# numpy is capped because torch 2.2.2 predates the numpy 2.0 ABI break and
+# fails at import against numpy>=2.
+flask>=3.0
+waitress>=3.0
+opencv-python>=4.8,<5
+numpy<2
+torch==2.2.2
+torchvision==0.17.2
+pyinstaller>=6.0

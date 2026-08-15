@@ -40,6 +40,12 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "externalBin": [
+      "binaries/pictoria-sidecar"
+    ],
+    "macOS": {
+      "entitlements": "entitlements.plist"
+    },
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }

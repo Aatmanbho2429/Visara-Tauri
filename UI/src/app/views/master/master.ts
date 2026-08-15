@@ -1,4 +1,4 @@
-import { Component, inject, NgZone, OnDestroy, OnInit } from '@angular/core';
+import { Component, inject, OnDestroy, OnInit } from '@angular/core';
 import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { TranslateModule } from '@ngx-translate/core';
 import { MessageService } from 'primeng/api';
@@ -7,8 +7,7 @@ import { AuthService } from '../../services/auth.service';
 import { LibraryService } from '../../services/library.service';
 import { UserStateService } from '../../services/user-state.service';
 import { SearchStateService } from '../../services/search-state.service';
-import { TauriService, UpdateInfo } from '../../services/tauri.service';
-import type { UnlistenFn } from '@tauri-apps/api/event';
+import { UpdateService } from '../../services/update.service';
 
 @Component({
   selector: 'app-master',
@@ -24,26 +23,18 @@ export class Master implements OnInit, OnDestroy {
   expanded  = false;
   userState = inject(UserStateService);
 
-  updateInfo:     UpdateInfo | null = null;
-  updateDismissed = false;
-  installing      = false;
-  installPct      = 0;
-  updateError:    string | null = null;
+  /** Updater state is owned by the root `UpdateService`, not by this
+   *  component — the check runs at app boot and the answer is cached there,
+   *  so the banner is already populated the moment this shell renders
+   *  instead of waiting on a check that only started when it mounted. */
+  updates = inject(UpdateService);
 
   private auth        = inject(AuthService);
   private libSvc      = inject(LibraryService);
   private router      = inject(Router);
   private searchState = inject(SearchStateService);
-  private tauri       = inject(TauriService);
-  private zone        = inject(NgZone);
   private messages    = inject(MessageService);
-  private unlisten:   UnlistenFn[] = [];
-  private updateTimer: ReturnType<typeof setInterval> | null = null;
   private revalidateTimer: ReturnType<typeof setInterval> | null = null;
-
-  /** Re-check for updates every 6 hours so long-running tray sessions still
-   *  get notified without a restart. */
-  private static readonly UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
   /** Silently re-check the session/subscription against Supabase every 30
    *  minutes so a long-running tray session notices an expired/revoked
@@ -51,25 +42,6 @@ export class Master implements OnInit, OnDestroy {
   private static readonly REVALIDATE_INTERVAL_MS = 30 * 60 * 1000;
 
   ngOnInit(): void {
-    // Register the event listeners FIRST, then trigger the check — otherwise the
-    // backend can emit `update_available` before we're listening and the banner
-    // is silently missed.
-    Promise.all([
-      this.tauri.onUpdateAvailable(info => this.zone.run(() => { this.updateInfo = info; })),
-      this.tauri.onUpdateProgress(p    => this.zone.run(() => {
-        this.installing  = true;
-        this.installPct  = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
-      })),
-      this.tauri.onUpdateError(msg => this.zone.run(() => {
-        this.installing   = false;
-        this.updateError  = msg;
-      })),
-    ]).then(fns => {
-      this.unlisten = fns;
-      this.tauri.checkForUpdate();
-    });
-
-    this.updateTimer = setInterval(() => this.tauri.checkForUpdate(), Master.UPDATE_INTERVAL_MS);
     this.revalidateTimer = setInterval(() => this.revalidateSession(), Master.REVALIDATE_INTERVAL_MS);
     this.maybeShowMigrationTip();
   }
@@ -121,20 +93,7 @@ export class Master implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
-    this.unlisten.forEach(fn => fn());
-    if (this.updateTimer) clearInterval(this.updateTimer);
     if (this.revalidateTimer) clearInterval(this.revalidateTimer);
-  }
-
-  installUpdate(): void {
-    this.installing     = true;
-    this.installPct     = 0;
-    this.updateError    = null;
-    this.tauri.installUpdate();
-  }
-
-  dismissUpdate(): void {
-    this.updateDismissed = true;
   }
 
   logout(): void {

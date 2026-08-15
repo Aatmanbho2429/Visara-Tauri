@@ -311,6 +311,78 @@ def dominant_colors(img_rgb):
     return out
 
 
+# ── Geometric plausibility of an accepted homography ─────────────────────
+# A high inlier count alone does not mean the query really sits inside the
+# candidate. `findHomography` fits 8 degrees of freedom, so on a self-similar
+# surface (marble, wood grain, fabric weave) it can bend into a rotated,
+# keystoned transform that happens to collect a couple of dozen of the
+# ambiguous SIFT matches such surfaces produce, and pass `min_inliers` /
+# `inlier_ratio` on merit. The resulting "match" is geometric nonsense:
+# a real embedded crop lands as an upright, essentially unwarped rectangle.
+#
+# Thresholds measured against the full 174-distinct-image library with a
+# grey-marble screenshot as the query. The 7 genuine matches vs the 1 false
+# positive (BRASIL GREY P4.jpg) separated on every axis with room to spare:
+#
+#                       genuine (n=7)        false positive
+#   contained           0.859 - 1.000        0.582
+#   keystone            0.000 - 0.026        0.086
+#   rotation off-axis   0.0 - 1.0 deg        21.5 deg
+#
+# Each bound below independently rejects that false positive, so a texture
+# that defeats one still has to get past the other two.
+_MIN_CONTAINED = 0.75   # fraction of the projected quad that must land in-frame
+_MAX_KEYSTONE = 0.05    # perspective warp across the candidate's own span
+_MAX_ROT_OFF_DEG = 10.0  # deviation from the nearest right angle
+
+
+def _placement_geometry(H, q_shape, c_shape):
+    """Measure the projected query quad. Returns (metrics, quad)."""
+    qh, qw = q_shape
+    ch, cw = c_shape
+    corners = np.float32([[0, 0], [qw, 0], [qw, qh], [0, qh]]).reshape(-1, 1, 2)
+    quad = cv2.perspectiveTransform(corners, H).reshape(-1, 2)
+
+    x, y = quad[:, 0], quad[:, 1]
+    area = float(0.5 * np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+    # How much of the claimed region actually falls inside the candidate.
+    # "Found inside" is not a similarity judgement — it is a containment
+    # claim, so a quad hanging half-way off the frame refutes itself. The
+    # Rust side clamps this quad to the frame before drawing the highlight
+    # box (`search::quad_to_fraction_box`), which is right for drawing but
+    # means an out-of-bounds match still *looks* plausible in the UI — so
+    # it has to be caught here, before the result is reported as verified.
+    if abs(area) > 1.0:
+        frame = np.float32([[0, 0], [cw, 0], [cw, ch], [0, ch]])
+        inter, _ = cv2.intersectConvexConvex(quad.astype(np.float32), frame)
+        contained = inter / abs(area)
+    else:
+        contained = 0.0
+
+    keystone = max(abs(H[2, 0]) * cw, abs(H[2, 1]) * ch)
+
+    edge = quad[1] - quad[0]
+    rot = abs(np.degrees(np.arctan2(edge[1], edge[0]))) % 90.0
+    rot_off = min(rot, 90.0 - rot)
+
+    return {"contained": float(contained), "keystone": float(keystone),
+            "rot_off": float(rot_off), "area": area}, quad
+
+
+def _implausible_placement(geo):
+    """Reason string if this placement can't be a real embedded crop, else None."""
+    if geo["area"] <= 1.0:
+        return "degenerate-homography"
+    if geo["contained"] < _MIN_CONTAINED:
+        return "match-outside-frame"
+    if geo["keystone"] > _MAX_KEYSTONE:
+        return "implausible-warp"
+    if geo["rot_off"] > _MAX_ROT_OFF_DEG:
+        return "implausible-rotation"
+    return None
+
+
 @dataclass
 class Descriptor:
     rose: list
@@ -363,7 +435,7 @@ def prepare_query(query_path, max_dim=800):
     return {"path": query_path, "qg": qg, "kp": kp1, "des": des1}
 
 
-def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_inliers=12):
+def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_inliers=10):
     """SIFT + RANSAC: does the query behind `query_state` (see
     `prepare_query`) actually appear inside `candidate_path`?
 
@@ -416,23 +488,70 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
 
     src = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
     dst = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-    H, mask = cv2.findHomography(src, dst, cv2.RANSAC, ransac_thresh)
-    if H is None:
-        log_timing("no-homography")
-        return {"matched": False, "reason": "no-homography", "good_matches": len(good)}
+
+    # A crop of flat art is a SIMILARITY transform — rotate, uniform scale,
+    # translate (4 DOF). It is never a projective warp, so fitting the 8-DOF
+    # homography `findHomography` gives RANSAC four degrees of freedom it can
+    # only misuse. That cut both ways, measured on the real library:
+    #
+    #  - False positives: on self-similar stone, the spare DOF let RANSAC bend
+    #    a keystoned, rotated transform onto a couple of dozen ambiguous
+    #    matches (see `_MIN_CONTAINED`).
+    #  - False negatives: on a weak-but-real match (a recoloured crop, ~16
+    #    good matches) the fit is under-constrained, so the same spare DOF
+    #    bent a genuine match into a warp the geometry gate then rejected.
+    #    A grey slab that truly contains the query was being dropped this way.
+    #
+    # The constrained model cannot express either distortion, so both go away
+    # without touching the thresholds: 21/21 known colourway pairs still
+    # verify, the known false positive stays rejected, and the true matches
+    # that were being lost come back.
+    M, mask = cv2.estimateAffinePartial2D(
+        src, dst, method=cv2.RANSAC, ransacReprojThreshold=ransac_thresh,
+        maxIters=5000, confidence=0.995,
+    )
+    if M is None or mask is None:
+        log_timing("no-transform")
+        return {"matched": False, "reason": "no-transform", "good_matches": len(good)}
+    H = np.vstack([M, [0.0, 0.0, 1.0]]).astype(np.float64)
 
     inliers = int(mask.sum())
     inlier_ratio = inliers / len(good)
+    # `min_inliers` is a floor against degenerate fits, not a confidence
+    # measure — `inlier_ratio` is what actually separates signal from noise,
+    # because it is scale-free. The absolute count is not: a recoloured crop
+    # keeps only a fraction of the query's SIFT correspondences (measured:
+    # 496 inliers between two greyscale-identical images collapsed to ~12
+    # once one side was recoloured), so a fixed floor silently penalises
+    # exactly the colourway matches this app exists to find. 12 sat right on
+    # top of that cluster — a 2px border trim on the query was enough to move
+    # a real match from 12 to 11 and drop it out of the verified tier.
     matched = inliers >= min_inliers and inlier_ratio >= 0.35
     result = {"matched": matched, "good_matches": len(good), "inliers": inliers,
               "inlier_ratio": round(inlier_ratio, 3)}
+
+    reason = "matched" if matched else "low-confidence"
     if matched:
-        h, w = qg.shape
-        corners = np.float32([[0, 0], [w, 0], [w, h], [0, h]]).reshape(-1, 1, 2)
-        proj = cv2.perspectiveTransform(corners, H)
-        result["box"] = proj.reshape(-1, 2).tolist()
-        result["candidate_size"] = [c.shape[1], c.shape[0]]
-        sx, sy = float(np.hypot(H[0, 0], H[1, 0])), float(np.hypot(H[0, 1], H[1, 1]))
-        result["scale"] = round((sx + sy) / 2, 3)
-    log_timing("matched" if matched else "low-confidence")
+        # Counting votes is not enough — check the transform those votes
+        # elected is one a real embedded crop could produce. See the
+        # `_MIN_CONTAINED` block above for why and for the measured margins.
+        geo, quad = _placement_geometry(H, qg.shape, cg.shape)
+        rejected = _implausible_placement(geo)
+        if rejected:
+            log.debug(
+                "[verify] rejected candidate=%s on geometry (%s): inliers=%d ratio=%.2f "
+                "contained=%.3f keystone=%.3f rot_off=%.1f",
+                os.path.basename(candidate_path), rejected, inliers, inlier_ratio,
+                geo["contained"], geo["keystone"], geo["rot_off"],
+            )
+            matched = False
+            result["matched"] = False
+            result["reason"] = rejected
+            reason = rejected
+        else:
+            result["box"] = quad.tolist()
+            result["candidate_size"] = [c.shape[1], c.shape[0]]
+            sx, sy = float(np.hypot(H[0, 0], H[1, 0])), float(np.hypot(H[0, 1], H[1, 1]))
+            result["scale"] = round((sx + sy) / 2, 3)
+    log_timing(reason)
     return result

@@ -51,19 +51,37 @@ jobs:
             target: x86_64-pc-windows-msvc
             label: windows
             blocking: true
+            py_arch: x64
+            sidecar_reqs: requirements.txt
 
           - os: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm
             blocking: true
+            py_arch: arm64
+            sidecar_reqs: requirements.txt
 
           # Intel macOS (x86_64) is cross-compiled on the same Apple Silicon
           # runner, since GitHub's macos-13 (last Intel runner image) is no
           # longer reliably available.
+          #
+          # Rust cross-compiles from a `--target` flag, but PyInstaller cannot:
+          # it freezes whatever interpreter is running it. So this leg installs
+          # an *x86_64* Python (`py_arch`), which runs under Rosetta on the
+          # arm64 runner, and freezes the sidecar through that — otherwise the
+          # Intel .dmg ships an arm64 sidecar that Intel Macs cannot execute at
+          # all (Rosetta translates x86_64 -> arm64, never the reverse), giving
+          # users an app that opens and silently never searches.
+          #
+          # An x86_64 Python also forces pip to resolve x86_64 wheels, and
+          # torch/torchvision stopped publishing those — hence the separate,
+          # pinned `sidecar_reqs`. See sidecar/requirements-macos-x86_64.txt.
           - os: macos-latest
             target: x86_64-apple-darwin
             label: macos-intel
             blocking: false
+            py_arch: x64
+            sidecar_reqs: requirements-macos-x86_64.txt
 
     runs-on: ${{ matrix.os }}
     # Apple's notarization queue has no SLA and can take well over 90
@@ -99,21 +117,127 @@ jobs:
         run: npm install
         working-directory: UI
 
+      # `architecture` is what makes the Intel leg work: on the arm64 macOS
+      # runner it fetches an x86_64 CPython, which then runs under Rosetta.
+      # Everything downstream — pip's wheel resolution and the architecture
+      # PyInstaller freezes — follows from which interpreter this installs.
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          architecture: ${{ matrix.py_arch }}
 
-      # Produces sidecar/dist/pictoria-sidecar[.exe], which
-      # UI/src-tauri/tauri.<platform>.conf.json's `bundle.resources` expects
-      # to exist before tauri-action runs — see sidecar/README.md.
+      # Rosetta is required to run the x86_64 interpreter installed above on
+      # an Apple Silicon runner. Usually already present on GitHub's images;
+      # this is a cheap no-op when it is.
+      - name: Ensure Rosetta (Intel macOS leg)
+        if: matrix.label == 'macos-intel'
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      # Produces sidecar/dist/pictoria-sidecar[.exe] — see sidecar/README.md.
       - name: Freeze sidecar (PyInstaller)
         shell: bash
         working-directory: sidecar
         run: |
-          pip install -r requirements.txt
+          set -euo pipefail
+          python -c "import platform, sys; print('freezing with', platform.machine(), 'python', sys.version)"
+          python -m pip install --upgrade pip
+          python -m pip install -r "${{ matrix.sidecar_reqs }}"
           python -m PyInstaller --onefile --name pictoria-sidecar \
             --distpath dist --workpath build --specpath . server.py
+
+      # The whole point of the per-leg Python above is that the frozen binary
+      # matches the target. Assert it rather than trust it — a silent mismatch
+      # here is what previously shipped an arm64 sidecar to Intel users, and it
+      # is invisible until someone launches the app on real hardware.
+      - name: Verify sidecar architecture
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) want=arm64  ;;
+            x86_64-apple-darwin)  want=x86_64 ;;
+            *) echo "::error::unhandled target"; exit 1 ;;
+          esac
+          got="$(lipo -archs sidecar/dist/pictoria-sidecar)"
+          echo "sidecar archs: '$got' (want '$want' for ${{ matrix.target }})"
+          if ! echo "$got" | tr ' ' '\n' | grep -qx "$want"; then
+            echo "::error::sidecar is '$got' but ${{ matrix.target }} needs '$want' —"
+            echo "::error::PyInstaller froze the wrong interpreter; check the Setup Python step."
+            exit 1
+          fi
+
+      # `bundle.externalBin` names the sidecar `binaries/pictoria-sidecar` and
+      # resolves it per-platform as `<name>-<target-triple>[.exe]`, so the
+      # frozen binary has to be staged under that exact filename before
+      # tauri-action runs. Tauri strips the suffix again when it copies the
+      # binary into the bundle, which is why the app only ever probes the
+      # plain name (see config::sidecar_bin_path).
+      - name: Stage sidecar for externalBin
+        shell: bash
+        run: |
+          mkdir -p UI/src-tauri/binaries
+          if [ "${{ matrix.label }}" = "windows" ]; then
+            cp sidecar/dist/pictoria-sidecar.exe \
+               "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}.exe"
+          else
+            cp sidecar/dist/pictoria-sidecar \
+               "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}"
+            chmod +x "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}"
+          fi
+          ls -l UI/src-tauri/binaries/
+
+      # PyInstaller ad-hoc-signs its output (Signature=adhoc, TeamIdentifier
+      # not set, no hardened runtime). Notarization rejects that: every Mach-O
+      # inside the bundle must carry a Developer ID signature AND the hardened
+      # runtime. Sign it here, before tauri-action seals the .app around it —
+      # once the outer signature exists it is too late.
+      #
+      # Signed with the same entitlements the app declares, because the
+      # hardened runtime is what a --onefile binary trips over at startup;
+      # see UI/src-tauri/entitlements.plist for why each key is needed.
+      - name: Sign sidecar (macOS)
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE:          ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY:     ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/sidecar-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+
+          # Prepend to the search list rather than replacing it — tauri-action
+          # imports the same certificate into its own keychain afterwards, and
+          # taking over the default keychain here has broken that in the past.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          BIN="UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}"
+          codesign --force --timestamp --options runtime \
+            --entitlements UI/src-tauri/entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" "$BIN"
+
+          echo "--- verifying ---"
+          codesign -dvvv "$BIN" 2>&1 | grep -E "Authority|TeamIdentifier|flags"
+          codesign --verify --strict --verbose=2 "$BIN"
+          # Fail loudly here rather than at notarization, which is ~40 min later.
+          if codesign -dvvv "$BIN" 2>&1 | grep -q "adhoc"; then
+            echo "::error::sidecar is still ad-hoc signed — notarization would reject it"
+            exit 1
+          fi
 
       - name: Verify signing secrets are present
         shell: bash

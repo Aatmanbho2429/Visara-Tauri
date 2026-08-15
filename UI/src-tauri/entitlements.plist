@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements. Notarization requires the hardened runtime,
+  and the hardened runtime breaks a PyInstaller onefile binary unless these
+  are granted, so these exist for sidecar/dist/pictoria-sidecar rather than
+  for the Rust app, which needs none of them.
+
+  A PyInstaller onefile build is a self-extracting archive: at launch it
+  unpacks its Python interpreter, .so modules and .dylibs into a fresh
+  /var/folders/.../_MEIxxxxxx directory and dlopen()s them from there. Under
+  the hardened runtime that is exactly the behaviour library validation is
+  designed to stop, because those extracted libraries are not sealed into any
+  signature the loader trusts.
+
+  disable-library-validation
+      The load-bearing one. Without it every dlopen() of an extracted .dylib
+      is refused and the sidecar dies during startup, after notarization has
+      already succeeded, so it fails in the user's hands rather than in CI.
+
+  allow-dyld-environment-variables
+      The bootloader re-executes itself with DYLD_LIBRARY_PATH pointing at the
+      extraction directory; the hardened runtime strips DYLD_* unless allowed.
+
+  allow-unsigned-executable-memory
+      torch and numpy allocate writable-executable pages for their dispatch
+      and kernel paths.
+
+  Scoped to what the frozen Python runtime needs. Nothing here widens the
+  app's own attack surface beyond loading libraries we shipped ourselves, and
+  none of it is App Sandbox: this is Developer ID distribution, not the App
+  Store, so no com.apple.security.app-sandbox key belongs in this file.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

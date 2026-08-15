@@ -1,22 +1,22 @@
 <div class="app-shell">
 
   <!-- Update notification banner -->
-  @if (updateInfo && !updateDismissed) {
-    <div class="update-banner" [class.update-banner--installing]="installing">
+  @if (updates.info && !updates.dismissed) {
+    <div class="update-banner" [class.update-banner--installing]="updates.installing">
 
-      @if (!installing) {
+      @if (!updates.installing) {
         <div class="update-banner__content">
           <i class="pi pi-arrow-circle-up update-banner__icon"></i>
           <div class="update-banner__text">
-            <span class="update-banner__title">{{ 'update.available' | translate }} v{{ updateInfo.version }}</span>
-            @if (updateError) {
-              <span class="update-banner__error">{{ updateError }}</span>
+            <span class="update-banner__title">{{ 'update.available' | translate }} v{{ updates.info.version }}</span>
+            @if (updates.error) {
+              <span class="update-banner__error">{{ updates.error }}</span>
             }
           </div>
-          <button class="update-banner__btn update-banner__btn--install" (click)="installUpdate()">
+          <button class="update-banner__btn update-banner__btn--install" (click)="updates.install()">
             {{ 'update.installBtn' | translate }}
           </button>
-          <button class="update-banner__btn update-banner__btn--dismiss" (click)="dismissUpdate()" [title]="'update.dismiss' | translate">
+          <button class="update-banner__btn update-banner__btn--dismiss" (click)="updates.dismiss()" [title]="'update.dismiss' | translate">
             <i class="pi pi-times"></i>
           </button>
         </div>
@@ -26,10 +26,13 @@
           <div class="update-banner__text">
             <span class="update-banner__title">{{ 'update.downloading' | translate }}</span>
           </div>
-          <div class="update-banner__progress">
-            <div class="update-banner__progress-bar" [style.width.%]="installPct"></div>
+          <!-- `pct` is null when the download has no Content-Length: there is
+               no percentage to show, so the bar runs indeterminate instead of
+               sitting frozen at 0%. -->
+          <div class="update-banner__progress" [class.update-banner__progress--indeterminate]="updates.pct === null">
+            <div class="update-banner__progress-bar" [style.width.%]="updates.pct ?? 100"></div>
           </div>
-          <span class="update-banner__pct">{{ installPct }}%</span>
+          <span class="update-banner__pct">{{ updates.pct === null ? '' : updates.pct + '%' }}</span>
         </div>
       }
 

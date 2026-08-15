@@ -88,12 +88,28 @@ pub(crate) const SIDECAR_FILE: &str = "pictoria-sidecar";
 pub fn sidecar_bin_path() -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
+    // `externalBin` (see tauri.conf.json) drops the sidecar next to the main
+    // executable — `Pictoria.app/Contents/MacOS/` on macOS, the install dir on
+    // Windows, and `target/<profile>/` under `tauri dev`. This is checked
+    // first because it is where a packaged build actually puts it; the
+    // resource-dir entries below only ever matched the older `bundle.resources`
+    // layout and are kept so an installed copy from before that change keeps
+    // working across an update.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(SIDECAR_FILE));
+        }
+    }
+
     if let Some(dir) = RESOURCE_DIR.get() {
         candidates.push(dir.join("bin").join(SIDECAR_FILE));
         candidates.push(dir.join(SIDECAR_FILE));
     }
 
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Where CI stages the frozen binary for `externalBin` to pick up. The
+    // target-triple suffix Tauri requires there is stripped when it lands in
+    // the bundle, so only the plain name is probed at runtime.
     candidates.push(manifest.join("binaries").join(SIDECAR_FILE));
     candidates.push(
         manifest.join("..").join("..").join("sidecar").join("dist").join(SIDECAR_FILE),
