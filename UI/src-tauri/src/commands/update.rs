@@ -38,14 +38,29 @@ pub async fn install_update(app: tauri::AppHandle) {
         }
     };
 
+    // NOTE: this is a *second* `check()` — `check_for_update` already ran one
+    // to raise the banner. Every outcome has to report something, because by
+    // the time this command runs the UI has already switched to its
+    // downloading state. `Ok(None)` returning silently meant a bar stuck at 0%
+    // with no download, no error and no timeout: indistinguishable from a slow
+    // network, and unfalsifiable from the user's side.
     let update = match updater.check().await {
         Ok(Some(u)) => u,
-        Ok(None) => return,
+        Ok(None) => {
+            log::warn!("[updater] install requested but re-check reports no update available");
+            let _ = app.emit("update_error", serde_json::json!({
+                "message": "The update is no longer being offered. Restart Pictoria and try again.",
+            }));
+            return;
+        }
         Err(e) => {
+            log::warn!("[updater] re-check before install failed: {e}");
             let _ = app.emit("update_error", serde_json::json!({ "message": e.to_string() }));
             return;
         }
     };
+
+    log::info!("[updater] starting download of v{}", update.version);
 
     let app_clone = app.clone();
 
@@ -76,6 +91,22 @@ pub async fn install_update(app: tauri::AppHandle) {
                 if pct.is_some() && pct == last_pct {
                     return;
                 }
+
+                // Logged so a "the bar isn't moving" report can be split in
+                // half without guesswork: if these lines appear, the backend
+                // is streaming fine and the problem is in the UI; if they
+                // don't, the download itself never started reporting.
+                match (pct, last_pct) {
+                    (Some(p), _) if p % 10 == 0 => {
+                        log::info!("[updater] download {p}% ({downloaded} / {total:?} bytes)")
+                    }
+                    (None, None) => {
+                        log::info!("[updater] download progressing, no Content-Length \
+                                    (UI shows an indeterminate bar)")
+                    }
+                    _ => {}
+                }
+
                 last_pct = pct;
 
                 let _ = app_clone.emit("update_progress", serde_json::json!({

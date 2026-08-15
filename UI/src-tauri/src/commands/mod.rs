@@ -3,6 +3,7 @@ pub mod browse;
 pub mod catalog;
 pub mod hotkey;
 pub mod library;
+pub mod notice;
 pub mod search;
 pub mod subscription;
 pub mod tags;

@@ -14,6 +14,7 @@ import { BrowseService } from '../../services/browse.service';
 import { UserStateService } from '../../services/user-state.service';
 import { SearchStateService } from '../../services/search-state.service';
 import { PlansDialog } from '../../shared/plans-dialog/plans-dialog';
+import { LoaderOrb } from '../../shared/loader-orb/loader-orb';
 import { WatchedFolder } from '../../models/library.model';
 
 /** Where in a result image the query design was found, as fractions of its
@@ -68,7 +69,7 @@ export interface SearchProgress {
 
 @Component({
   selector:    'app-search',
-  imports:     [CommonModule, TranslateModule, PrimengComponentsModule, PlansDialog],
+  imports:     [CommonModule, TranslateModule, PrimengComponentsModule, PlansDialog, LoaderOrb],
   templateUrl: './search.html',
   styleUrl:    './search.scss',
 })
@@ -168,11 +169,13 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
       this.watchedFolders = (res.success && res.data?.folders) ? res.data.folders : [];
 
       // Drop any cached scope entry that no longer exists (folder removed
-      // from the Library while user was on this page), then fall back to
-      // the first folder — there's no "All folders" option to fall back to.
+      // from the Library while the user was on this page). Nothing is
+      // auto-selected in its place: the folder to search is a deliberate
+      // choice, and silently picking the first one risks searching somewhere
+      // the user never intended. `canSearch` keeps the button disabled until
+      // they pick.
       const valid = new Set(this.watchedFolders.map(f => f.path));
       this.state.scopePaths = this.state.scopePaths.filter(p => valid.has(p));
-      this.ensureScopeSelected();
     });
   }
 
@@ -184,13 +187,19 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   get isSearching():     boolean   { return this.state.searchState === 'searching'; }
   get hasResults():      boolean   { return this.state.searchState === 'results'; }
 
-  /** Scope is single-select — `scopePaths` only ever holds 0 (all folders)
-   *  or 1 (one specific folder) entries. */
+  /** Scope is single-select — `scopePaths` holds 0 (nothing chosen yet) or 1
+   *  entry. Empty is the starting state for every search, so the label has to
+   *  read as a prompt: it used to say "All N folders", which claimed a scope
+   *  the backend was never given and that the disabled button contradicted. */
   get scopeLabel(): string {
     return this.state.scopePaths.length === 0
-      ? `All ${this.watchedFolders.length} folders`
+      ? 'Select a folder'
       : this.shortName(this.state.scopePaths[0]);
   }
+
+  /** True while the user still has to choose a folder — drives the prompt
+   *  styling on the scope pill. */
+  get scopeUnset(): boolean { return this.state.scopePaths.length === 0; }
 
   /** SIFT/RANSAC-proven results — same texture family as the query, not
    *  just similar-looking. Always shown in full; see `search.rs`'s
@@ -239,8 +248,9 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   // A custom single-select dropdown, not a native <select> — WebView2's
   // native <select> popup can't be styled (no rounded corners, no hover
   // state, wrong colors) and rendered badly against the rest of the page.
-  // No "All folders" option, so exactly one watched folder must always be
-  // chosen; `ensureScopeSelected` guarantees that (see its call sites).
+  // There is no "All folders" option: a search runs against exactly one
+  // watched folder, and until the user picks one the scope stays empty and
+  // `canSearch` holds the search button disabled.
 
   toggleScopeDropdown(): void {
     this.scopeOpen = !this.scopeOpen;
@@ -258,12 +268,6 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
     this.state.scopePaths = [path];
     this.scopeOpen = false;
     this.cdr.detectChanges();
-  }
-
-  private ensureScopeSelected(): void {
-    if (this.state.scopePaths.length === 0 && this.watchedFolders.length > 0) {
-      this.state.scopePaths = [this.watchedFolders[0].path];
-    }
   }
 
   goToLibrary(): void {
@@ -360,8 +364,10 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   }
 
   newSearch(): void {
+    // `reset()` clears `scopePaths`, and it is left cleared on purpose — a new
+    // search starts with no folder chosen rather than inheriting the previous
+    // one, so the scope is always something the user picked for *this* search.
     this.state.reset();
-    this.ensureScopeSelected(); // reset() clears scopePaths; re-default it
     this.cdr.detectChanges();
   }
 

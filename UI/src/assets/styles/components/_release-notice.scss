@@ -1,0 +1,110 @@
+// ── One-time post-reset notice ─────────────────────────────────────
+// A banner, not a toast: the user has lost their watched folders and must
+// re-add them, so this stays until acknowledged rather than timing out.
+.release-notice {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: $space-4;
+
+  margin: $space-4 $space-5 0;
+  padding: $space-4 $space-5;
+  border-radius: $border-radius-lg;
+  overflow: hidden;
+
+  background: rgba(26, 18, 38, 0.96);
+  border: 1px solid rgba(217, 70, 239, 0.3);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(217, 70, 239, 0.06);
+
+  animation: release-notice-in 0.28s ease;
+
+  // Accent stripe, the same fuchsia -> orange the loader and buttons use.
+  &__bar {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: linear-gradient(180deg, $primary-400, $tertiary-400);
+  }
+
+  &__body { flex: 1; min-width: 0; }
+
+  &__head {
+    display: flex;
+    align-items: center;
+    gap: $space-2;
+    margin-bottom: $space-2;
+  }
+
+  &__icon {
+    font-size: 1.6rem;
+    color: $primary-300;
+    flex-shrink: 0;
+  }
+
+  &__title {
+    margin: 0;
+    font-size: $font-size-base;
+    font-weight: $font-weight-semibold;
+    color: $surface-100;
+  }
+
+  &__text {
+    margin: 0 0 $space-3;
+    font-size: $font-size-sm;
+    line-height: 1.55;
+    color: rgba(200, 144, 188, 0.85);
+  }
+
+  &__features {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: $space-2;
+
+    li {
+      display: flex;
+      align-items: flex-start;
+      gap: $space-2;
+      font-size: $font-size-sm;
+      color: rgba(200, 144, 188, 0.9);
+    }
+
+    i {
+      color: $tertiary-400;
+      font-size: 1.2rem;
+      margin-top: 0.15rem;
+      flex-shrink: 0;
+    }
+
+    strong { color: $surface-100; font-weight: $font-weight-semibold; }
+  }
+
+  &__close {
+    flex-shrink: 0;
+    width: 3rem;
+    height: 3rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border: none;
+    border-radius: $border-radius-sm;
+    background: rgba(217, 70, 239, 0.08);
+    color: rgba(200, 144, 188, 0.6);
+    cursor: pointer;
+    transition: background 0.18s ease, color 0.18s ease;
+
+    &:hover { background: rgba(217, 70, 239, 0.18); color: $surface-100; }
+
+    i { font-size: 1.3rem; }
+  }
+}
+
+@keyframes release-notice-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

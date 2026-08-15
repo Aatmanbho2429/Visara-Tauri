@@ -855,6 +855,17 @@
     transition: transform 0.18s ease;
     &--open { transform: rotate(180deg); }
   }
+
+  // Nothing picked yet. A new search deliberately starts with no folder, so
+  // this is the normal opening state, not an error — dashed and dimmed to read
+  // as "choose one" and to pair with the disabled search button, without the
+  // alarm of a red/invalid treatment.
+  &--unset {
+    border-style: dashed;
+    color: rgba(200, 144, 188, 0.75);
+
+    i { color: rgba(200, 144, 188, 0.6); }
+  }
 }
 
 .scope-dropdown {

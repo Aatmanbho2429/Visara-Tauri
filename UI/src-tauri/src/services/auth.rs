@@ -365,34 +365,6 @@ pub async fn periodic_revalidate() -> Value {
     serde_json::json!({ "success": true, "message": "Offline grace period exceeded", "data": { "action": "logout" } })
 }
 
-// ── Search count ─────────────────────────────────────────────────────────
-
-/// Tell the backend a search actually completed, so `users.search_count` can
-/// be incremented (see the `record-search` edge function). A dedicated
-/// endpoint rather than piggybacking on `validate-token-test` — that one also
-/// runs at login and on `periodic_revalidate`'s timer, so incrementing there
-/// would count logins and idle re-checks as searches, not just searches.
-///
-/// Best-effort and fire-and-forget by design (see the call site in
-/// `commands::search::start_search`): a user's search results are already
-/// computed and on screen by the time this runs, and a failed count-increment
-/// is not something the user should ever see or have their search blocked by.
-pub async fn record_search() {
-    let Some(token) = saved_token() else { return };
-
-    let result = reqwest::Client::new()
-        .post(format!("{SUPABASE_EDGE}/record-search"))
-        .header("Authorization", format!("Bearer {token}"))
-        .send()
-        .await;
-
-    match result {
-        Ok(resp) if resp.status().is_success() => log::debug!("[auth] search recorded"),
-        Ok(resp) => log::warn!("[auth] record-search returned {}", resp.status()),
-        Err(e) => log::warn!("[auth] record-search unreachable: {e}"),
-    }
-}
-
 /// Request a one-time verification code be emailed to `email` (registration).
 pub async fn send_otp(email: &str) -> Value {
     let result = reqwest::Client::new()

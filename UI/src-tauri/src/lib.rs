@@ -13,7 +13,7 @@ mod services;
 mod utils;
 
 use clipboard_rs::{Clipboard, ClipboardContext, common::RustImage};
-use commands::{auth, browse, catalog, hotkey, library, search, subscription, tags, update};
+use commands::{auth, browse, catalog, hotkey, library, notice, search, subscription, tags, update};
 use std::path::PathBuf;
 use tauri::{
     AppHandle, Emitter, Manager, WindowEvent,
@@ -289,6 +289,12 @@ pub fn run() {
                 log::warn!("[tray] failed to build tray: {e}");
             }
 
+            // One-time full library wipe, if this release ships one. Runs
+            // first: it deletes `meta.db`, the vector store and the thumbnail
+            // cache, so nothing may have opened them yet. Everything below
+            // either reads the DB or spawns something that eventually will.
+            crate::core::migrate::run_library_reset();
+
             // Spawn the sidecar (Gabor/Gram descriptors + SIFT verification)
             // hidden, in the background. `core::sidecar::is_ready()` gates
             // search/indexing until its health check passes AND the user is
@@ -379,6 +385,8 @@ pub fn run() {
             subscription::create_order,
             subscription::verify_payment,
             // ── Updates ──────────────────────────────────────────────
+            notice::reset_notice_pending,
+            notice::dismiss_reset_notice,
             update::check_for_update,
             update::install_update,
             // ── Library / watched folders ────────────────────────────

@@ -8,10 +8,11 @@ import { LibraryService } from '../../services/library.service';
 import { UserStateService } from '../../services/user-state.service';
 import { SearchStateService } from '../../services/search-state.service';
 import { UpdateService } from '../../services/update.service';
+import { ReleaseNotice } from '../../shared/release-notice/release-notice';
 
 @Component({
   selector: 'app-master',
-  imports: [RouterLink, RouterLinkActive, RouterOutlet, TranslateModule, RippleModule],
+  imports: [RouterLink, RouterLinkActive, RouterOutlet, TranslateModule, RippleModule, ReleaseNotice],
   templateUrl: './master.html',
   styleUrl: './master.scss',
 })

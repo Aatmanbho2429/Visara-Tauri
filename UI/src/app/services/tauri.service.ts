@@ -166,6 +166,20 @@ export class TauriService {
     invoke('open_file_path', { path }).catch(console.error);
   }
 
+  // ── One-time post-reset notice ────────────────────────────────────
+  // Unlike most commands here these resolve directly instead of emitting a
+  // `<command>_response` event — there is no streaming work behind them.
+
+  /** True while the "we cleared your library" banner still needs showing. */
+  resetNoticePending(): Promise<boolean> {
+    return invoke<boolean>('reset_notice_pending').catch(() => false);
+  }
+
+  /** Persist the dismissal so the banner does not return on next launch. */
+  dismissResetNotice(): Promise<void> {
+    return invoke<void>('dismiss_reset_notice').catch(console.error) as Promise<void>;
+  }
+
   // ── Updater ───────────────────────────────────────────────────────
   checkForUpdate(): void {
     invoke('check_for_update').catch(console.error);

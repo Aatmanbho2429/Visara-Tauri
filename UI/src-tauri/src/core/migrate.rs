@@ -20,7 +20,7 @@
 //! (see `services::sync::reembed_folder`).
 
 use crate::{
-    config::{DATA_DIR, VECTOR_STORE_PATH},
+    config::{DATA_DIR, DB_PATH, VECTOR_STORE_PATH},
     core::database,
 };
 use std::{
@@ -60,6 +60,90 @@ static REEMBED_PENDING: AtomicBool = AtomicBool::new(false);
 
 fn marker_path() -> PathBuf {
     DATA_DIR.join(".reembed_pending")
+}
+
+// ── One-time full library reset ───────────────────────────────────────────
+//
+// Distinct from the re-embed migration above. That one keeps `files` and
+// rebuilds vectors in place; this one removes the local library outright —
+// `meta.db` (including the watched-folder list), `vectors.bin` and the
+// thumbnail cache — so the user re-adds their folders and everything is
+// rebuilt by the current pipeline from scratch.
+//
+// Reserved for releases where rebuilding in place is not enough. Because it
+// costs the user their folder setup, it also arms a one-time notice the UI
+// shows as a dismissible banner (see `reset_notice_pending`).
+//
+// NOTE: the auth token lives at `~/.pictoria_token` (and/or the OS keychain),
+// *outside* `DATA_DIR`, so wiping the library never signs anyone out.
+
+/// Bump to trigger another one-time wipe on the next release.
+const LIBRARY_RESET_VERSION: u32 = 1;
+
+fn reset_done_marker() -> PathBuf {
+    DATA_DIR.join(format!(".library_reset_v{LIBRARY_RESET_VERSION}"))
+}
+
+fn reset_notice_marker() -> PathBuf {
+    DATA_DIR.join(".reset_notice_pending")
+}
+
+/// Wipe the local library exactly once per `LIBRARY_RESET_VERSION`.
+///
+/// MUST run before anything opens `meta.db` or the vector store — call it
+/// ahead of `run_startup()`, which opens the DB as its first act.
+pub fn run_library_reset() {
+    if reset_done_marker().exists() {
+        return; // already reset for this version
+    }
+
+    // Only apologise to people who actually lost something. On a fresh
+    // install there is nothing to delete, and a banner saying we removed
+    // their folders would be both wrong and alarming — so the marker is
+    // still written (this counts as done) but the notice is not armed.
+    let had_library = DB_PATH.exists() || VECTOR_STORE_PATH.exists();
+
+    let _ = std::fs::remove_file(DB_PATH.as_path());
+    let _ = std::fs::remove_file(VECTOR_STORE_PATH.as_path());
+    let _ = std::fs::remove_dir_all(DATA_DIR.join("thumbs"));
+    // Stale re-embed marker would otherwise arm a re-index of a library that
+    // no longer exists.
+    let _ = std::fs::remove_file(marker_path());
+
+    if let Err(e) = std::fs::create_dir_all(DATA_DIR.as_path()) {
+        log::warn!("[migrate] could not recreate data dir after reset: {e}");
+        return; // don't write the marker — retry on the next launch
+    }
+
+    if let Err(e) = std::fs::File::create(reset_done_marker()) {
+        // Without the marker this would wipe again every launch, so treat a
+        // failure here as fatal to the reset rather than pressing on.
+        log::warn!("[migrate] could not write reset marker: {e}");
+        return;
+    }
+
+    if had_library {
+        let _ = std::fs::File::create(reset_notice_marker());
+    }
+
+    log::info!(
+        "[migrate] library reset v{LIBRARY_RESET_VERSION} complete (had_library={had_library})"
+    );
+}
+
+/// True while the post-reset banner still needs showing. Backed by a file, not
+/// a flag, so quitting before dismissing it doesn't swallow the message.
+pub fn reset_notice_pending() -> bool {
+    reset_notice_marker().exists()
+}
+
+/// Called when the user closes the banner.
+pub fn clear_reset_notice() {
+    if let Err(e) = std::fs::remove_file(reset_notice_marker()) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            log::warn!("[migrate] could not clear reset notice: {e}");
+        }
+    }
 }
 
 /// Run once at startup, before the watcher begins reconciling.  Performs the

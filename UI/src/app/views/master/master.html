@@ -83,6 +83,12 @@
   </nav>
 
   <main class="shell-main">
+    <!-- One-time "we cleared your library" notice. Sits above the routed page
+         rather than floating over it, so it pushes content down and cannot
+         cover controls the user needs to re-add their folders. Renders nothing
+         unless the backend says a reset actually happened. -->
+    <app-release-notice />
+
     <router-outlet />
   </main>
 

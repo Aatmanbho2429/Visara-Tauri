@@ -40,10 +40,18 @@
            up (`sidecarErrorMessage`) — see `onSidecarCrashed` in search.ts. -->
       @if (!foldersLoading && hasWatchedFolders && !sidecarReady) {
         <div class="search-empty">
-          <i class="pi" [class.pi-spin]="!sidecarErrorMessage"
-             [class.pi-spinner]="!sidecarErrorMessage"
-             [class.pi-exclamation-triangle]="!!sidecarErrorMessage"
-             class="search-empty__icon"></i>
+          <!-- Waiting shows the ring orb (the app's loading design, shared
+               with GlobalLoader via <app-loader-orb>); only a genuine failure
+               falls back to an icon. Note the two states must not collapse
+               into one <i> with several [class.pi-*] bindings — `pi` and the
+               layout class have to share ONE static class attribute, since a
+               second `class` on the same element silently replaces the first
+               at compile time and drops the icon font. -->
+          @if (sidecarErrorMessage) {
+            <i class="pi pi-exclamation-triangle search-empty__icon"></i>
+          } @else {
+            <app-loader-orb />
+          }
           <h2 class="search-empty__title">
             {{ sidecarErrorMessage ? 'AI engine unavailable' : sidecarReconnecting ? 'Reconnecting…' : 'Model is loading…' }}
           </h2>
@@ -89,7 +97,7 @@
           <span class="scope-row__label">Searching in</span>
 
           <div class="scope-picker" (click)="$event.stopPropagation()">
-            <button class="scope-pill" (click)="toggleScopeDropdown()">
+            <button class="scope-pill" [class.scope-pill--unset]="scopeUnset" (click)="toggleScopeDropdown()">
               <i class="pi pi-folder"></i>
               <span>{{ scopeLabel }}</span>
               <i class="pi pi-chevron-down scope-pill__chev" [class.scope-pill__chev--open]="scopeOpen"></i>
