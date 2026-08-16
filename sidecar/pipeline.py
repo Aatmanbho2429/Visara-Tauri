@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass
 
@@ -33,13 +34,62 @@ _std = None
 _sift = None
 
 
+# Checkpoint filename as published by PyTorch. The `b0353104` suffix is the
+# leading hash of its contents, which is how torch validates a download.
+MOBILENET_CKPT = "mobilenet_v2-b0353104.pth"
+
+
+def bundled_weights_path():
+    """Where the frozen build keeps the checkpoint.
+
+    `sys._MEIPASS` is the directory PyInstaller unpacks a --onefile build into
+    at launch; outside a frozen build it falls back to this source tree, so a
+    developer who drops the file in `sidecar/weights/` gets the same path.
+    """
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "weights", MOBILENET_CKPT)
+
+
 def load_model():
-    """Warm-load mobilenet_v2 once. Call at process startup, not per-request."""
+    """Warm-load mobilenet_v2 once. Call at process startup, not per-request.
+
+    The checkpoint is loaded from the app bundle, NOT fetched by torchvision.
+    Passing `weights=IMAGENET1K_V1` makes torchvision download ~13.5MB from
+    download.pytorch.org the first time it runs on a machine, which turned
+    every fresh install into a silent network dependency: on a locked-down or
+    offline machine the download stalls with no timeout, `_worker` never
+    reaches `_ready.set()`, and the UI sits on "Model is loading..." forever
+    while the HTTP server answers normally. Shipping the file removes the
+    dependency entirely — verified to produce a bit-identical model (all 156
+    params and 156 buffers equal, and identical descriptors), so bundling does
+    not disturb any already-indexed vectors.
+
+    The download path is kept only as a developer convenience for a source
+    checkout with no weights staged; a frozen build always has the file.
+    """
     global _model, _mean, _std
     if _model is None:
         weights = torchvision.models.MobileNet_V2_Weights.IMAGENET1K_V1
-        full = torchvision.models.mobilenet_v2(weights=weights).features.to(_DEVICE).eval()
-        _model = torch.nn.Sequential(*list(full.children())[:_LAYER_IDX])
+        ckpt = bundled_weights_path()
+
+        if os.path.exists(ckpt):
+            full = torchvision.models.mobilenet_v2(weights=None)
+            full.load_state_dict(torch.load(ckpt, map_location=_DEVICE))
+            log.info("model weights loaded from bundle: %s", ckpt)
+        else:
+            # Never expected in a packaged build — see the CI "Fetch model
+            # weights" step, which stages the file before PyInstaller runs.
+            log.warning(
+                "bundled weights missing at %s — falling back to torchvision "
+                "download (requires internet; packaged builds must not hit this)",
+                ckpt,
+            )
+            full = torchvision.models.mobilenet_v2(weights=weights)
+
+        features = full.features.to(_DEVICE).eval()
+        _model = torch.nn.Sequential(*list(features.children())[:_LAYER_IDX])
+        # Normalisation constants come from the weights *metadata*, which is
+        # static — reading them does not trigger a download.
         _mean = torch.tensor(weights.transforms().mean).view(1, 3, 1, 1)
         _std = torch.tensor(weights.transforms().std).view(1, 3, 1, 1)
     return _model

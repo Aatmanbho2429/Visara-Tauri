@@ -166,6 +166,16 @@ fn spawn_process() {
     }
 }
 
+/// Outcome of waiting for the sidecar to become usable.
+enum HealthWait {
+    /// `/health` reported ready — the model is loaded and jobs can be served.
+    Ready,
+    /// The sidecar reported that loading the model failed. Terminal: the
+    /// process is alive and answering HTTP, but its worker thread is gone and
+    /// it will never become ready, so there is nothing to keep waiting for.
+    Failed(String),
+}
+
 /// What became of the child process since the watchdog last checked.
 enum ChildState {
     /// Still running.
@@ -198,7 +208,18 @@ fn watchdog(app: AppHandle) {
     let mut consecutive_crashes: u32;
 
     loop {
-        wait_for_health();
+        if let HealthWait::Failed(err) = wait_for_health() {
+            // Respawning cannot help — the usual cause is a missing or
+            // unreadable model checkpoint, which is identical on every
+            // attempt. Report it and stop, rather than loop forever behind a
+            // "Model is loading..." the user can only interpret as a hang.
+            log::error!("[sidecar] model load failed, giving up: {err}");
+            let _ = app.emit("sidecar_crashed", json!({
+                "recovering": false,
+                "message": format!("The AI engine could not start ({err}). Please reinstall Pictoria or contact support."),
+            }));
+            return;
+        }
         consecutive_crashes = 0; // reaching healthy again clears the streak
 
         loop {
@@ -239,16 +260,24 @@ fn watchdog(app: AppHandle) {
 /// too. The frontend clears its own "reconnecting" state by noticing
 /// `sidecar_status` go ready again (see `search.ts`'s re-armed poll), which
 /// only happens once it's actually been told a crash occurred.
-fn wait_for_health() {
+fn wait_for_health() -> HealthWait {
     let client = reqwest::blocking::Client::new();
     loop {
         if let Ok(resp) = client.get(format!("{}/health", base_url())).timeout(HEALTH_TIMEOUT).send() {
             if let Ok(body) = resp.json::<HealthResp>() {
+                // Checked before `ready`: a load failure is terminal, so
+                // polling on would wait forever. The sidecar's HTTP server
+                // keeps answering perfectly well in this state, which is
+                // exactly why it used to be indistinguishable from a slow
+                // start — the app sat on "Model is loading..." indefinitely.
+                if let Some(err) = body.error {
+                    return HealthWait::Failed(err);
+                }
                 if body.ready {
                     HEALTHY.store(true, Ordering::SeqCst);
                     log::info!("[sidecar] healthy — model loaded");
                     maybe_notify_ready();
-                    return;
+                    return HealthWait::Ready;
                 }
             }
         }
@@ -301,6 +330,12 @@ pub fn reset_notified() {
 #[derive(Deserialize)]
 struct HealthResp {
     ready: bool,
+    /// Set only when the sidecar's one-time model load failed outright — a
+    /// terminal state it can never recover from on its own. `default` because
+    /// an older sidecar binary (e.g. one left over from a previous install)
+    /// doesn't send the field at all, and that must not fail deserialisation.
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[derive(Clone, Copy)]

@@ -94,6 +94,13 @@ _search_q: "queue.Queue[Job]" = queue.Queue()
 _index_q: "queue.Queue[Job]" = queue.Queue()
 _ready = threading.Event()
 
+# Set when the one-time model load fails. The worker thread dies at that point
+# and `_ready` can never be set, so without recording *why*, the sidecar looks
+# identical to one that is merely slow: the HTTP server keeps answering and
+# /health keeps reporting not-ready, forever. Surfaced through /health so the
+# app can show a real error instead of an eternal "Model is loading...".
+_load_error: "str | None" = None
+
 
 class Job:
     """One unit of work handed to the worker thread; the HTTP handler blocks
@@ -120,7 +127,16 @@ def _submit(kind: str, payload: dict, priority: str) -> dict:
 def _worker() -> None:
     """Loads the model once, then serves jobs forever — search lane first,
     always, so it can only ever be blocked by one already-running index job."""
-    pipeline.load_model()
+    global _load_error
+    try:
+        pipeline.load_model()
+    except Exception as e:  # noqa: BLE001 - any failure here is terminal
+        # Nothing this thread can do to recover, but it must not die silently:
+        # every job would then block on `job.event` forever with no explanation.
+        _load_error = f"{type(e).__name__}: {e}"
+        log.exception("model load FAILED - sidecar cannot become ready")
+        return
+
     _ready.set()
     log.info("model loaded, sidecar ready")
 
@@ -207,8 +223,12 @@ def _run(job: Job) -> dict:
 
 @app.get("/health")
 def health():
-    """Readiness probe — the Rust side shows 'Model is loading...' until this is true."""
-    return jsonify({"ready": _ready.is_set()})
+    """Readiness probe — the Rust side shows 'Model is loading...' until this is true.
+
+    `error` is non-null only when the model load failed outright, which is a
+    terminal state: it will never become ready, so the app should say so rather
+    than keep waiting."""
+    return jsonify({"ready": _ready.is_set(), "error": _load_error})
 
 
 @app.post("/describe")

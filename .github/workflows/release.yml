@@ -134,6 +134,39 @@ jobs:
         if: matrix.label == 'macos-intel'
         run: softwareupdate --install-rosetta --agree-to-license || true
 
+      # The model checkpoint is shipped inside the sidecar rather than fetched
+      # at first run. torchvision's `weights=IMAGENET1K_V1` downloads ~13.5MB
+      # from download.pytorch.org the first time it runs on a machine, which
+      # made every fresh install depend on the end user's network: on a
+      # locked-down or offline machine it stalls with no timeout and the app
+      # sits on "Model is loading..." indefinitely. Downloading it here means
+      # the build machine pays that cost once, and users never do.
+      - name: Fetch model weights for bundling
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sidecar/weights
+          curl -fL --retry 3 --retry-delay 2 \
+            -o sidecar/weights/mobilenet_v2-b0353104.pth \
+            https://download.pytorch.org/models/mobilenet_v2-b0353104.pth
+
+          # Verify before it gets baked into a signed, notarised binary — a
+          # truncated or substituted checkpoint would otherwise ship silently
+          # and only surface as wrong search results.
+          EXPECTED=b03531047ffacf1e2488318dcd2aba1126cde36e3bfe1aa5cb07700aeeee9889
+          if command -v sha256sum >/dev/null; then
+            ACTUAL=$(sha256sum sidecar/weights/mobilenet_v2-b0353104.pth | cut -d' ' -f1)
+          else
+            ACTUAL=$(shasum -a 256 sidecar/weights/mobilenet_v2-b0353104.pth | cut -d' ' -f1)
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::model checkpoint hash mismatch"
+            echo "::error::expected $EXPECTED"
+            echo "::error::actual   $ACTUAL"
+            exit 1
+          fi
+          echo "checkpoint verified ($ACTUAL)"
+
       # Produces sidecar/dist/pictoria-sidecar[.exe] — see sidecar/README.md.
       #
       # PyInstaller freezes whatever interpreter runs it, so the Intel leg has
@@ -179,7 +212,15 @@ jobs:
 
           "${PY[@]}" -m pip install --upgrade pip
           "${PY[@]}" -m pip install -r "${{ matrix.sidecar_reqs }}"
+
+          # PyInstaller's --add-data separator is os.pathsep: ';' on Windows,
+          # ':' everywhere else. Getting it wrong silently produces a build with
+          # no weights, which only shows up as a hung "Model is loading..." on a
+          # machine that has never downloaded them.
+          if [ "${{ runner.os }}" = "Windows" ]; then SEP=";"; else SEP=":"; fi
+
           "${PY[@]}" -m PyInstaller --onefile --name pictoria-sidecar \
+            --add-data "weights/mobilenet_v2-b0353104.pth${SEP}weights" \
             --distpath dist --workpath build --specpath . server.py
 
       # The whole point of the per-leg Python above is that the frozen binary
