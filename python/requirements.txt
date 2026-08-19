@@ -2,3 +2,14 @@ fastapi
 uvicorn[standard]
 pydantic[email]
 requests
+
+# ── image search engine ───────────────────────────────────────────────
+numpy
+pillow
+faiss-cpu
+onnxruntime
+psd-tools
+cryptography
+
+# ── tests ─────────────────────────────────────────────────────────────
+pytest

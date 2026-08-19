@@ -4,6 +4,23 @@ from app.config import SUPABASE_EDGE, TOKEN_FILE
 from app.services.license_service import get_device_id
 
 
+def _load_model(onnx_key) -> None:
+    """
+    Decrypt and load the CLIP model once the session is known to be valid.
+
+    Imported lazily so that auth keeps working on a machine where the heavy
+    inference stack is unavailable — a failure here must not block login, it
+    only means search will report that the model is not loaded.
+    """
+    if not onnx_key:
+        return
+    try:
+        from app.core.embedder import Embedder
+        Embedder().set_key(onnx_key)
+    except Exception as e:
+        print(f"[embedder] model load failed: {e}", flush=True)
+
+
 def login(email: str, password: str) -> dict:
     try:
         r = requests.post(
@@ -18,6 +35,8 @@ def login(email: str, password: str) -> dict:
 
         with open(TOKEN_FILE, "w") as f:
             f.write(data["token"])
+
+        _load_model(data.get("onnx_key"))
 
         return {
             "success": True,
@@ -52,6 +71,8 @@ def validate_saved_token() -> dict:
         if not data.get("valid"):
             os.remove(TOKEN_FILE)
             return {"success": False, "message": data.get("message", "Session expired. Please login again."), "data": None}
+
+        _load_model(data.get("onnx_key"))
 
         return {"success": True, "message": "Session valid", "data": {"user": data["user"]}}
 

@@ -67,6 +67,44 @@ async fn auth_request_access(
     let _ = app.emit("auth_request_access_response", result);
 }
 
+#[tauri::command]
+async fn search_images(
+    app:         tauri::AppHandle,
+    query_image: String,
+    folder_path: String,
+    top_k:       Option<u32>,
+) {
+    let client = Client::new();
+    let result = match client
+        .post(format!("{}/search", API_BASE))
+        .json(&serde_json::json!({
+            "query_image": query_image,
+            "folder_path": folder_path,
+            "top_k":       top_k.unwrap_or(50),
+        }))
+        .send()
+        .await
+    {
+        Ok(res) => res.json::<Value>().await.unwrap_or_else(|_| error_response("Invalid response from server")),
+        Err(_)  => error_response("Cannot connect to Visara service. Please restart the application."),
+    };
+    let _ = app.emit("search_images_response", result);
+}
+
+#[tauri::command]
+async fn search_progress(app: tauri::AppHandle) {
+    let client = Client::new();
+    let result = match client
+        .get(format!("{}/search/progress", API_BASE))
+        .send()
+        .await
+    {
+        Ok(res) => res.json::<Value>().await.unwrap_or_else(|_| error_response("Invalid response from server")),
+        Err(_)  => error_response("Cannot connect to Visara service. Please restart the application."),
+    };
+    let _ = app.emit("search_progress_response", result);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -83,7 +121,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             auth_login,
             auth_validate_token,
-            auth_request_access
+            auth_request_access,
+            search_images,
+            search_progress
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

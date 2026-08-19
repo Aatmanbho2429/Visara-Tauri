@@ -33,6 +33,21 @@ EMB_DIM     = 768
 CLIP_MEAN = [0.48145466, 0.4578275,  0.40821073]
 CLIP_STD  = [0.26862954, 0.26130258, 0.27577711]
 
+# ── Orientation-invariant search ──────────────────────────────────────
+# CLIP embeddings are not rotation- or mirror-invariant, so a query that is a
+# flipped/rotated copy of an indexed file will not match it. At search time we
+# expand the query into this many orientations and keep the best score per file.
+#   1 = upright only (pre-fix behaviour)
+#   4 = the four rotations
+#   8 = rotations + mirrors (the full dihedral group)
+# Only the query is expanded — the index still holds one vector per file.
+SEARCH_ORIENTATIONS = 8
+
+# Each orientation is searched to top_k * this depth before results are filtered
+# down to the selected folder, so a folder match that only ranks well in one
+# orientation still survives the merge.
+SEARCH_OVERSAMPLE = 4
+
 MODEL_ENC_PATH = os.path.join(BASE_DIR, "models", "clip_vitb32.onnx.enc")
 TOKEN_FILE     = os.path.join(os.path.expanduser("~"), ".visara_token")
 
