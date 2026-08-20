@@ -49,6 +49,10 @@ pub struct SearchResult {
     /// SIFT inlier count backing `verified` — the UI's confidence badge
     /// (e.g. "embedded · 103 pts"). Zero when not verified.
     pub match_points: u32,
+    /// True when this was only provable against a horizontally-flipped
+    /// query — a book-matched or mirrored copy of the reference rather than
+    /// a straight one. Always false unless `verified`.
+    pub mirrored: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -81,11 +85,48 @@ const VERIFY_CHUNK: usize = 20;
 /// matched region covers less than this fraction of the candidate's area.
 const PARTIAL_MAX_AREA_FRACTION: f32 = 0.85;
 
+/// Run the verify shortlist through the sidecar, chunk by chunk, reporting
+/// progress between chunks. `mirror` flips the query horizontally — the only
+/// way a mirrored match can be found (see `sidecar::verify`).
+///
+/// A chunk that fails degrades those candidates to stage-1-only ranking
+/// rather than failing the whole search, but it is *logged* rather than
+/// silently swallowed: the mirrored retry below triggers on "nothing
+/// verified", and a transport failure produces exactly that state while
+/// meaning something completely different.
+fn verify_pass(
+    query_path: &str,
+    paths: &[String],
+    mirror: bool,
+    on_progress: &mut impl FnMut(usize, usize, bool),
+) -> HashMap<String, sidecar::VerifyResult> {
+    let total = paths.len();
+    let mut out = HashMap::with_capacity(total);
+    let mut done = 0usize;
+    on_progress(0, total, mirror);
+    for chunk in paths.chunks(VERIFY_CHUNK) {
+        match sidecar::verify(query_path, chunk, mirror, sidecar::Priority::Search) {
+            Ok(results) => out.extend(results),
+            Err(e) => log::warn!(
+                "[search] verify chunk failed (n={}, mirror={mirror}): {e} — \
+                 those candidates fall back to stage-1 ranking only",
+                chunk.len(),
+            ),
+        }
+        done += chunk.len();
+        on_progress(done, total, mirror);
+    }
+    out
+}
+
+/// `on_verify_progress` is `(done, total, mirrored_pass)` — the third
+/// argument lets the caller label the mirrored retry distinctly, so the bar
+/// restarting from zero reads as a second phase rather than a glitch.
 pub fn execute(
     image_path: &Path,
     scope: &[PathBuf],
     top_k: usize,
-    mut on_verify_progress: impl FnMut(usize, usize),
+    mut on_verify_progress: impl FnMut(usize, usize, bool),
 ) -> Result<(Vec<SearchResult>, Vec<FailedFile>)> {
     let t_total = Instant::now();
 
@@ -187,20 +228,41 @@ pub fn execute(
     let shortlist_paths: Vec<String> = candidates.iter().map(|c| c.path.clone()).collect();
     let n_shortlist = shortlist_paths.len();
     let t_verify = Instant::now();
-    let mut verify_by_path: HashMap<String, sidecar::VerifyResult> = HashMap::with_capacity(n_shortlist);
-    let mut n_done = 0usize;
-    on_verify_progress(0, n_shortlist);
-    for chunk in shortlist_paths.chunks(VERIFY_CHUNK) {
-        // A chunk failing degrades that chunk to stage-1-only ranking, not a
-        // hard error for the whole search — same fallback as before, just
-        // scoped smaller now that one slow/failing chunk can't blank out
-        // results that other, successful chunks already proved.
-        let chunk_results = sidecar::verify(&query_sidecar_path, chunk, sidecar::Priority::Search).unwrap_or_default();
-        verify_by_path.extend(chunk_results);
-        n_done += chunk.len();
-        on_verify_progress(n_done, n_shortlist);
-    }
+    let mut verify_by_path =
+        verify_pass(&query_sidecar_path, &shortlist_paths, false, &mut on_verify_progress);
     let verify_ms = t_verify.elapsed().as_secs_f64() * 1000.0;
+
+    // ── Stage 2b: mirrored retry ───────────────────────────────────────
+    // Neither half of the verify stage can match a reflection: SIFT
+    // descriptors are not mirror-invariant, and `estimateAffinePartial2D`
+    // fits a transform whose determinant is strictly positive, so it cannot
+    // represent one. Flipping the *query* converts the problem back into an
+    // ordinary rotation + scale + translation.
+    //
+    // Only run when the first pass proved nothing, because it costs a second
+    // full traversal of the shortlist. That puts the entire cost on searches
+    // that currently return no family tier at all — the exact case this
+    // exists to rescue — and leaves successful searches untouched.
+    let t_mirror = Instant::now();
+    let mirror_attempted = !verify_by_path.values().any(|r| r.matched) && !shortlist_paths.is_empty();
+    let mut mirror_hits = 0usize;
+    if mirror_attempted {
+        log::info!(
+            "[search] no verified matches in {n_shortlist} candidates — retrying mirrored"
+        );
+        let mirrored =
+            verify_pass(&query_sidecar_path, &shortlist_paths, true, &mut on_verify_progress);
+        // Keep only the wins. A mirrored miss carries no more information
+        // than the straight miss already recorded, and overwriting would
+        // discard the first pass's inlier counts for no reason.
+        for (path, result) in mirrored {
+            if result.matched {
+                verify_by_path.insert(path, result);
+                mirror_hits += 1;
+            }
+        }
+    }
+    let mirror_ms = if mirror_attempted { t_mirror.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
 
     let scale = |v: f32| (v.clamp(0.0, 1.0) * 100.0 * 10.0).round() / 10.0;
 
@@ -236,6 +298,7 @@ pub fn execute(
                 partial,
                 match_region,
                 match_points: if verified { v.map(|r| r.inliers).unwrap_or(0) } else { 0 },
+                mirrored: verified && v.map(|r| r.mirrored).unwrap_or(false),
             }
         })
         .collect();
@@ -261,7 +324,8 @@ pub fn execute(
         "[timing] search TOTAL query={:?} scope_folders={} candidates_indexed={} \
          shortlist={n_shortlist} results={} scope_ms={scope_ms:.2} query_prep_ms={prep_ms:.2} \
          describe_ms={describe_ms:.2} store_load_ms={store_load_ms:.2} id_map_ms={id_map_ms:.2} \
-         stage1_rank_ms={stage1_ms:.2} verify_ms={verify_ms:.2} assemble_ms={assemble_ms:.2} \
+         stage1_rank_ms={stage1_ms:.2} verify_ms={verify_ms:.2} mirror_attempted={mirror_attempted} \
+         mirror_hits={mirror_hits} mirror_ms={mirror_ms:.2} assemble_ms={assemble_ms:.2} \
          total_ms={:.2}",
         query_sidecar_path.rsplit(['/', '\\']).next().unwrap_or(&query_sidecar_path),
         scope_paths.len(),

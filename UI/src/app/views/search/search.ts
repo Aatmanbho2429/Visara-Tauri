@@ -44,6 +44,10 @@ export interface SearchResult {
   match_region:  MatchRegion;
   /** SIFT inlier count backing `verified` (0 when not verified). */
   match_points:  number;
+  /** True when the design was only provable against a horizontally-flipped
+   *  reference — a mirrored or book-matched copy, not a straight one.
+   *  Always false unless `verified`. */
+  mirrored:      boolean;
   thumbnailUrl:  string;
   imgError:      boolean;
   /** Pixel geometry of the highlight box, derived from the rendered thumbnail.

@@ -377,6 +377,10 @@ pub struct VerifyResult {
     pub quad: Option<[[f32; 2]; 4]>,
     pub candidate_size: Option<(u32, u32)>,
     pub scale: Option<f32>,
+    /// True when this match was only found against a horizontally-flipped
+    /// query (see `sidecar/pipeline.py::prepare_query`). Only meaningful
+    /// alongside `matched`.
+    pub mirrored: bool,
 }
 
 #[derive(Serialize)]
@@ -438,6 +442,11 @@ pub fn describe(paths: &[String], priority: Priority) -> Result<Vec<(String, Opt
 struct VerifyReq<'a> {
     query_path: &'a str,
     candidate_paths: &'a [String],
+    /// Flip the query horizontally before matching. The sidecar defaults it
+    /// to false, so this stays compatible with an older sidecar binary left
+    /// over from a previous install — that one just ignores the field and
+    /// the mirrored pass finds nothing, rather than erroring.
+    mirror: bool,
     priority: &'a str,
 }
 
@@ -455,6 +464,10 @@ struct VerifyRespItem {
     quad: Option<[[f32; 2]; 4]>,
     candidate_size: Option<(u32, u32)>,
     scale: Option<f32>,
+    /// Absent from an older sidecar build — defaulted rather than required,
+    /// same convention as `dominant` on the describe response.
+    #[serde(default)]
+    mirrored: bool,
 }
 
 #[derive(Deserialize)]
@@ -465,11 +478,21 @@ struct VerifyResp {
 /// Geometrically verify `query_path` against each of `candidate_paths`.
 /// Always call with `Priority::Search` for a user-initiated search — that's
 /// what lets it cut ahead of any indexing work in progress.
-pub fn verify(query_path: &str, candidate_paths: &[String], priority: Priority) -> Result<Vec<(String, VerifyResult)>> {
+///
+/// `mirror` flips the query horizontally before matching, which is the only
+/// way a mirrored match can be found — see `sidecar/pipeline.py`'s
+/// `prepare_query` for why the transform model makes it impossible
+/// otherwise.
+pub fn verify(
+    query_path: &str,
+    candidate_paths: &[String],
+    mirror: bool,
+    priority: Priority,
+) -> Result<Vec<(String, VerifyResult)>> {
     if candidate_paths.is_empty() {
         return Ok(Vec::new());
     }
-    let body = VerifyReq { query_path, candidate_paths, priority: priority.as_str() };
+    let body = VerifyReq { query_path, candidate_paths, mirror, priority: priority.as_str() };
     let resp: VerifyResp = HTTP
         .post(format!("{}/verify", base_url()))
         .timeout(verify_timeout(candidate_paths.len()))
@@ -493,6 +516,7 @@ pub fn verify(query_path: &str, candidate_paths: &[String], priority: Priority) 
                     quad: r.quad,
                     candidate_size: r.candidate_size,
                     scale: r.scale,
+                    mirrored: r.mirrored,
                 },
             )
         })

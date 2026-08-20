@@ -468,7 +468,7 @@ def describe(path, max_dim=512):
     return Descriptor(rose=rose.tolist(), gram=[g.tolist() for g in gram], color=color, dominant=dominant)
 
 
-def prepare_query(query_path, max_dim=800):
+def prepare_query(query_path, max_dim=800, mirror=False):
     """Decode + SIFT the query once. `verify_one()` below reuses the result
     across a whole batch of candidates for the same query — the query-side
     SIFT pass is identical every time, so this way it only ever runs once
@@ -476,13 +476,34 @@ def prepare_query(query_path, max_dim=800):
 
     Deliberately sequential (called once, before any candidate work starts)
     — see `verify_one` for why the per-candidate work runs on its own SIFT
-    instance instead of sharing this one."""
+    instance instead of sharing this one.
+
+    `mirror=True` horizontally flips the query before SIFT, which is how a
+    mirrored match is found. It cannot be found any other way: SIFT
+    descriptors are not mirror-invariant (the 4x4 gradient grid reflects
+    into a different 128-vector), and `estimateAffinePartial2D` below fits
+    `[[a, -b, tx], [b, a, ty]]`, whose determinant `a^2 + b^2` is strictly
+    positive — the model cannot express a reflection at all. Flipping the
+    query converts the problem back into a plain rotation + uniform scale +
+    translation, which both SIFT and that model handle normally.
+
+    A horizontal flip is sufficient for every reflection: any other one is
+    this flip composed with a rotation, and rotation is already covered
+    (SIFT is rotation-invariant, the affine model includes rotation, and the
+    geometry gate measures `rot_off` against the *nearest* right angle).
+
+    The flip preserves the image's dimensions, so `qg.shape` — which
+    `_placement_geometry` uses to project the query's corners — is unchanged
+    and the resulting quad is still the correct region *of the candidate*.
+    """
     q = load_image_rgb(query_path, max_dim=max_dim)
     if q is None:
         return None
     qg = cv2.cvtColor(q, cv2.COLOR_RGB2GRAY)
+    if mirror:
+        qg = cv2.flip(qg, 1)
     kp1, des1 = _get_sift().detectAndCompute(qg, None)
-    return {"path": query_path, "qg": qg, "kp": kp1, "des": des1}
+    return {"path": query_path, "qg": qg, "kp": kp1, "des": des1, "mirror": mirror}
 
 
 def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_inliers=10):
@@ -578,7 +599,12 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
     # a real match from 12 to 11 and drop it out of the verified tier.
     matched = inliers >= min_inliers and inlier_ratio >= 0.35
     result = {"matched": matched, "good_matches": len(good), "inliers": inliers,
-              "inlier_ratio": round(inlier_ratio, 3)}
+              "inlier_ratio": round(inlier_ratio, 3),
+              # Which orientation of the query produced this. Only meaningful
+              # when `matched`; the caller reports it so the UI can say the
+              # match is a mirror rather than silently presenting it as a
+              # straight hit (book-matched tile pairs are a real case).
+              "mirrored": bool(query_state.get("mirror", False))}
 
     reason = "matched" if matched else "low-confidence"
     if matched:

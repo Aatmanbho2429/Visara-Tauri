@@ -314,6 +314,14 @@
                 Found inside
               </span>
             }
+            @if (item.mirrored) {
+              <!-- Sits top-right so it never collides with the top-left
+                   "Found inside" chip; a match can be both. -->
+              <span class="pin-card__mirrored" title="Matched as a mirror image of your reference">
+                <i class="pi pi-arrows-h"></i>
+                Mirrored
+              </span>
+            }
             <div class="pin-card__overlay">
               <span class="pin-card__open">
                 <i class="pi pi-external-link"></i>

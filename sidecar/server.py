@@ -202,7 +202,9 @@ def _run(job: Job) -> dict:
     if job.kind == "verify":
         query_path = job.payload["query_path"]
         candidates = job.payload["candidate_paths"]
-        query_state = pipeline.prepare_query(query_path)  # once, sequential — see prepare_query's docstring
+        mirror = bool(job.payload.get("mirror", False))
+        # once, sequential — see prepare_query's docstring
+        query_state = pipeline.prepare_query(query_path, mirror=mirror)
 
         def _verify(c: str) -> dict:
             r = pipeline.verify_one(query_state, c)
@@ -213,8 +215,9 @@ def _run(job: Job) -> dict:
             results = list(pool.map(_verify, candidates))
         compute_ms = (time.perf_counter() - t_start) * 1000
         log.info(
-            "[timing] job kind=verify priority=%s n=%d queue_wait_ms=%.2f compute_ms=%.2f total_ms=%.2f",
-            job.priority, len(job.payload["candidate_paths"]), queue_wait_ms, compute_ms, queue_wait_ms + compute_ms,
+            "[timing] job kind=verify priority=%s n=%d mirror=%s queue_wait_ms=%.2f compute_ms=%.2f total_ms=%.2f",
+            job.priority, len(job.payload["candidate_paths"]), mirror,
+            queue_wait_ms, compute_ms, queue_wait_ms + compute_ms,
         )
         return {"results": results}
 
@@ -243,13 +246,19 @@ def describe_route():
 
 @app.post("/verify")
 def verify_route():
-    """Body: {query_path: str, candidate_paths: [str], priority?: 'search'|'index'}."""
+    """Body: {query_path: str, candidate_paths: [str], mirror?: bool,
+    priority?: 'search'|'index'}.
+
+    `mirror` flips the query horizontally before SIFT — see
+    `pipeline.prepare_query` for why that is the only way a mirrored match
+    can be found. Defaults false, so an older caller is unaffected."""
     body = request.get_json(force=True) or {}
     query_path = body.get("query_path")
     candidates = body.get("candidate_paths")
     if not query_path or not candidates:
         return jsonify({"error": "query_path and candidate_paths are required"}), 400
-    payload = {"query_path": query_path, "candidate_paths": candidates}
+    payload = {"query_path": query_path, "candidate_paths": candidates,
+               "mirror": bool(body.get("mirror", False))}
     return jsonify(_submit("verify", payload, body.get("priority", "search")))
 
 

@@ -112,12 +112,16 @@ pub async fn start_search(
         // whole wait reads as hung. `search::execute` calls this between
         // verify chunks; `query_name` is the same basename the initial
         // snapshot below used, so the label doesn't jump when this takes over.
-        let on_verify_progress = |done: usize, total: usize| {
+        // `mirrored` marks the second, flipped-query pass that only runs when
+        // the first proved nothing (see `search::execute`). It gets its own
+        // label because the bar restarting at zero would otherwise look like
+        // the search had glitched and started over.
+        let on_verify_progress = |done: usize, total: usize, mirrored: bool| {
             let percent = if total > 0 { (done as f32 / total as f32 * 100.0).min(100.0) } else { 0.0 };
             let _ = app_clone.emit("search_progress", json!({
                 "progress": {
                     "active":  true,
-                    "phase":   "Verifying matches",
+                    "phase":   if mirrored { "Checking mirrored orientation" } else { "Verifying matches" },
                     "done":    done,
                     "total":   total,
                     "current": query_name_for_worker,
