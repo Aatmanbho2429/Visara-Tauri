@@ -91,13 +91,14 @@
 
         </div>
 
-        <!-- Scope selector — custom single-select dropdown, always exactly
-             one folder (no "All folders" option; see `ensureScopeSelected`). -->
+        <!-- Scope selector — custom multi-select dropdown. Every watched
+             folder is in scope by default (see `isFolderInScope`); the
+             checkboxes narrow it down from there. -->
         <div class="scope-row">
           <span class="scope-row__label">Searching in</span>
 
           <div class="scope-picker" (click)="$event.stopPropagation()">
-            <button class="scope-pill" [class.scope-pill--unset]="scopeUnset" (click)="toggleScopeDropdown()">
+            <button class="scope-pill" (click)="toggleScopeDropdown()">
               <i class="pi pi-folder"></i>
               <span>{{ scopeLabel }}</span>
               <i class="pi pi-chevron-down scope-pill__chev" [class.scope-pill__chev--open]="scopeOpen"></i>
@@ -105,16 +106,19 @@
 
             @if (scopeOpen) {
               <div class="scope-dropdown">
+                <button class="scope-dropdown__all" (click)="selectAllFolders()">
+                  <i class="pi pi-globe"></i>
+                  All folders
+                </button>
+                <div class="scope-dropdown__sep"></div>
                 @for (f of watchedFolders; track f.id) {
-                  <button class="scope-dropdown__row"
-                          [class.scope-dropdown__row--active]="f.path === state.scopePaths[0]"
-                          (click)="selectFolder(f.path)">
+                  <label class="scope-dropdown__row">
+                    <input type="checkbox"
+                           [checked]="isFolderInScope(f.path)"
+                           (change)="toggleFolderInScope(f.path)" />
                     <span class="scope-dropdown__name" [title]="f.path">{{ f.path }}</span>
                     <span class="scope-dropdown__count">{{ f.image_count }}</span>
-                    @if (f.path === state.scopePaths[0]) {
-                      <i class="pi pi-check scope-dropdown__check"></i>
-                    }
-                  </button>
+                  </label>
                 }
               </div>
             }
@@ -222,29 +226,34 @@
         <div class="results-scroll" #masonryGrid (scroll)="onGridScroll($event)">
 
           <!-- Verified — SIFT/RANSAC-proven this design is actually present.
-               Never truncated by the backend, so always shown in full. -->
+               Never truncated by the backend, so always shown in full.
+               Collapsible like the tier below it, but open by default. -->
           @if (familyResults.length > 0) {
             <div class="result-section">
-              <div class="result-section__header">
+              <button class="result-section__header result-section__header--toggle"
+                      (click)="familyExpanded = !familyExpanded">
                 <i class="pi pi-verified"></i>
                 <span>{{ 'search.familySection' | translate }}</span>
                 <span class="result-section__count">{{ familyResults.length }}</span>
-              </div>
-              <div class="masonry-grid">
-                @for (col of familyColumns; track $index) {
-                  <div class="masonry-col">
-                    @for (item of col; track item.rank) {
-                      <ng-container *ngTemplateOutlet="resultCard; context: { item }" />
-                    }
-                  </div>
-                }
-              </div>
+                <i class="pi pi-chevron-down result-section__chev"
+                   [class.result-section__chev--open]="familyExpanded"></i>
+              </button>
+              @if (familyExpanded) {
+                <div class="masonry-grid">
+                  @for (col of familyColumns; track $index) {
+                    <div class="masonry-col">
+                      @for (item of col; track item.rank) {
+                        <ng-container *ngTemplateOutlet="resultCard; context: { item }" />
+                      }
+                    </div>
+                  }
+                </div>
+              }
             </div>
           }
 
           <!-- Similar — ranked by texture similarity but not geometrically
-               confirmed. Collapsed by default once there's a verified tier
-               to lead with (see `similarExpanded` in search.ts). -->
+               confirmed. Open by default, same as the verified tier. -->
           @if (similarResults.length > 0) {
             <div class="result-section">
               <button class="result-section__header result-section__header--toggle"
@@ -252,9 +261,8 @@
                 <i class="pi pi-images"></i>
                 <span>{{ 'search.similarSection' | translate }}</span>
                 <span class="result-section__count">{{ similarResults.length }}</span>
-                <i class="pi result-section__chev"
-                   [class.pi-chevron-down]="!similarExpanded"
-                   [class.pi-chevron-up]="similarExpanded"></i>
+                <i class="pi pi-chevron-down result-section__chev"
+                   [class.result-section__chev--open]="similarExpanded"></i>
               </button>
               @if (similarExpanded) {
                 <div class="masonry-grid">

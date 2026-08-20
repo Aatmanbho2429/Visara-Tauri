@@ -530,9 +530,9 @@
   align-items: center;
   gap: $space-2;
   padding: $space-5 $space-8 $space-2;
-  font-size: $font-size-sm;
+  font-size: $font-size-base;
   font-weight: $font-weight-semibold;
-  color: $surface-200;
+  color: $surface-100;
   font-family: $font-primary;
 
   > i:first-child { color: $tertiary-300; }
@@ -540,9 +540,9 @@
 
 .result-section__count {
   font-size: $font-size-xs;
-  font-weight: $font-weight-medium;
-  color: $surface-500;
-  background: rgba(255, 255, 255, 0.06);
+  font-weight: $font-weight-semibold;
+  color: $surface-300;
+  background: rgba(255, 255, 255, 0.1);
   border-radius: 999px;
   padding: 1px 8px;
 }
@@ -554,13 +554,40 @@
   cursor: pointer;
   text-align: left;
   transition: color 0.15s ease;
-  &:hover { color: $surface-100; }
+
+  &:hover {
+    color: #fff;
+
+    .result-section__chev {
+      background: rgba(217, 70, 239, 0.2);
+      border-color: rgba(217, 70, 239, 0.55);
+      color: $primary-300;
+    }
+  }
 }
 
+// The collapse control.  It was previously a bare chevron pinned to the far
+// right edge of the row, which read as decoration and was easy to miss at a
+// glance — a bordered, tinted chip sitting right after the count makes it
+// look like the button it actually is.
 .result-section__chev {
-  margin-left: auto;
-  color: $surface-500;
-  font-size: $font-size-xs;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2.2rem;
+  height: 2.2rem;
+  margin-left: $space-1;
+  border-radius: 999px;
+  border: 1px solid rgba(217, 70, 239, 0.3);
+  background: rgba(217, 70, 239, 0.12);
+  color: $primary-400;
+  font-size: 1rem;
+  transition: transform 0.2s ease, background 0.15s ease,
+              border-color 0.15s ease, color 0.15s ease;
+
+  // Icon points down when collapsed, flips up when the tier is open.
+  &--open { transform: rotate(180deg); }
 }
 
 // ══ PINTEREST MASONRY GRID ════════════════════════════════════
@@ -812,7 +839,7 @@
   }
 }
 
-// Custom single-select — a native <select>'s popup can't be styled in
+// Custom multi-select — a native <select>'s popup can't be styled in
 // WebView2 (no rounded corners, no hover state, mismatched colors), so
 // this is a plain positioned panel instead, closed by `closeScopeDropdown`
 // (bound to `document:click`) whenever a click lands outside `.scope-picker`.
@@ -855,17 +882,6 @@
     transition: transform 0.18s ease;
     &--open { transform: rotate(180deg); }
   }
-
-  // Nothing picked yet. A new search deliberately starts with no folder, so
-  // this is the normal opening state, not an error — dashed and dimmed to read
-  // as "choose one" and to pair with the disabled search button, without the
-  // alarm of a red/invalid treatment.
-  &--unset {
-    border-style: dashed;
-    color: rgba(200, 144, 188, 0.75);
-
-    i { color: rgba(200, 144, 188, 0.6); }
-  }
 }
 
 .scope-dropdown {
@@ -887,25 +903,48 @@
   flex-direction: column;
   gap: 0.2rem;
 
-  &__row {
+  &__all {
     appearance: none;
-    width: 100%;
-    background: none;
-    border: none;
+    background: rgba(217, 70, 239, 0.08);
+    border: 1px solid rgba(217, 70, 239, 0.16);
+    border-radius: $border-radius-sm;
+    padding: $space-2 $space-3;
+    color: $surface-100;
+    font-family: $font-primary;
+    font-size: $font-size-sm;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+
+    &:hover { background: rgba(217, 70, 239, 0.16); }
+
+    i { color: $primary-400; }
+  }
+
+  &__sep {
+    margin: 0.4rem 0;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  &__row {
     display: flex;
     align-items: center;
     gap: 0.8rem;
     padding: $space-2 $space-3;
     border-radius: $border-radius-sm;
     cursor: pointer;
-    text-align: left;
     transition: background 0.12s ease;
 
     &:hover { background: rgba(255, 255, 255, 0.06); }
 
-    &--active {
-      background: rgba(217, 70, 239, 0.12);
-      &:hover { background: rgba(217, 70, 239, 0.18); }
+    input[type="checkbox"] {
+      flex-shrink: 0;
+      width: 1.6rem;
+      height: 1.6rem;
+      accent-color: $primary-500;
+      cursor: pointer;
     }
   }
 
@@ -925,12 +964,6 @@
     font-family: $font-primary;
     font-size: $font-size-xs;
     color: $surface-500;
-  }
-
-  &__check {
-    flex-shrink: 0;
-    color: $primary-400;
-    font-size: 1rem;
   }
 }
 

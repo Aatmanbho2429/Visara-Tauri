@@ -88,11 +88,11 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
 
   readonly topKOptions = [10, 20, 50];
 
-  /** "Similar" (unverified) tier starts collapsed once there's a verified
-   *  "family" tier to lead with — expanded by default only when there are
-   *  no verified matches at all, so the page never looks empty. Set once
-   *  per search in `runSearch()`. */
+  /** Collapse state for the two result tiers. Both start expanded and are
+   *  re-opened for every fresh result set in `runSearch()` — collapsing is
+   *  something the user asks for, not a default the page imposes. */
   similarExpanded = true;
+  familyExpanded  = true;
 
   /** Platform-aware label for the global hot-key shown in the empty-state hint. */
   readonly hotkeyLabel = navigator.platform.toLowerCase().includes('mac')
@@ -168,12 +168,9 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
       this.foldersLoading = false;
       this.watchedFolders = (res.success && res.data?.folders) ? res.data.folders : [];
 
-      // Drop any cached scope entry that no longer exists (folder removed
-      // from the Library while the user was on this page). Nothing is
-      // auto-selected in its place: the folder to search is a deliberate
-      // choice, and silently picking the first one risks searching somewhere
-      // the user never intended. `canSearch` keeps the button disabled until
-      // they pick.
+      // Drop any cached scope entries that no longer exist (folder removed
+      // from the Library while the user was on this page). If that empties
+      // the list, scope falls back to its default meaning — all folders.
       const valid = new Set(this.watchedFolders.map(f => f.path));
       this.state.scopePaths = this.state.scopePaths.filter(p => valid.has(p));
     });
@@ -181,25 +178,21 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
 
   get hasWatchedFolders(): boolean { return this.watchedFolders.length > 0; }
   get canSearch():       boolean   {
-    return !!this.state.imagePath && this.hasWatchedFolders && this.state.scopePaths.length > 0 && this.sidecarReady;
+    return !!this.state.imagePath && this.hasWatchedFolders && this.sidecarReady;
   }
   get isIdle():          boolean   { return this.state.searchState === 'idle'; }
   get isSearching():     boolean   { return this.state.searchState === 'searching'; }
   get hasResults():      boolean   { return this.state.searchState === 'results'; }
 
-  /** Scope is single-select — `scopePaths` holds 0 (nothing chosen yet) or 1
-   *  entry. Empty is the starting state for every search, so the label has to
-   *  read as a prompt: it used to say "All N folders", which claimed a scope
-   *  the backend was never given and that the disabled button contradicted. */
+  /** An empty `scopePaths` means "every watched folder" — both here and in
+   *  the backend (`search.rs` resolves an empty scope to the full Library),
+   *  so the default state searches everything. */
   get scopeLabel(): string {
-    return this.state.scopePaths.length === 0
-      ? 'Select a folder'
-      : this.shortName(this.state.scopePaths[0]);
+    const n = this.state.scopePaths.length;
+    if (n === 0) return `All ${this.watchedFolders.length} folders`;
+    if (n === 1) return this.shortName(this.state.scopePaths[0]);
+    return `${n} folders`;
   }
-
-  /** True while the user still has to choose a folder — drives the prompt
-   *  styling on the scope pill. */
-  get scopeUnset(): boolean { return this.state.scopePaths.length === 0; }
 
   /** SIFT/RANSAC-proven results — same texture family as the query, not
    *  just similar-looking. Always shown in full; see `search.rs`'s
@@ -245,12 +238,11 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   }
 
   // ── Scope picker ──────────────────────────────────────────────────
-  // A custom single-select dropdown, not a native <select> — WebView2's
+  // A custom multi-select dropdown, not a native <select> — WebView2's
   // native <select> popup can't be styled (no rounded corners, no hover
   // state, wrong colors) and rendered badly against the rest of the page.
-  // There is no "All folders" option: a search runs against exactly one
-  // watched folder, and until the user picks one the scope stays empty and
-  // `canSearch` holds the search button disabled.
+  // Every folder starts selected; an empty `scopePaths` is the encoding of
+  // "all of them", which is also what the backend expects.
 
   toggleScopeDropdown(): void {
     this.scopeOpen = !this.scopeOpen;
@@ -264,9 +256,40 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
     this.scopeOpen = false;
   }
 
-  selectFolder(path: string): void {
-    this.state.scopePaths = [path];
-    this.scopeOpen = false;
+  isFolderInScope(path: string): boolean {
+    // Empty scope = all folders selected.
+    return this.state.scopePaths.length === 0 || this.state.scopePaths.includes(path);
+  }
+
+  toggleFolderInScope(path: string): void {
+    const isSelected = this.isFolderInScope(path);
+
+    // If scope was empty (all-on) and the user is unchecking one, materialize
+    // the full list minus the clicked one.
+    if (this.state.scopePaths.length === 0 && isSelected) {
+      this.state.scopePaths = this.watchedFolders.map(f => f.path).filter(p => p !== path);
+      this.cdr.detectChanges();
+      return;
+    }
+
+    if (isSelected) {
+      // Never let the user uncheck the LAST remaining folder — the empty
+      // array would otherwise mean "all", flipping the UI's intent.
+      if (this.state.scopePaths.length <= 1) return;
+      this.state.scopePaths = this.state.scopePaths.filter(p => p !== path);
+    } else {
+      this.state.scopePaths = [...this.state.scopePaths, path];
+    }
+
+    // If the user re-selected every folder, collapse to empty (means "all").
+    if (this.state.scopePaths.length === this.watchedFolders.length) {
+      this.state.scopePaths = [];
+    }
+    this.cdr.detectChanges();
+  }
+
+  selectAllFolders(): void {
+    this.state.scopePaths = [];
     this.cdr.detectChanges();
   }
 
@@ -351,9 +374,11 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
           }
           this.state.failedFiles = event.data?.failed_files ?? [];
           this.state.searchState = 'results';
-          // Lead with the verified family when there is one; only auto-open
-          // "Similar" when it's the only thing there is to show.
-          this.similarExpanded = this.familyResults.length === 0;
+          // Both tiers open on every fresh result set — "Similar" used to
+          // auto-collapse whenever a verified tier existed, which hid 20 of
+          // 22 results behind a control that was easy to miss.
+          this.similarExpanded = true;
+          this.familyExpanded  = true;
         } else if (event.type === 'error') {
           this.state.searchError = event.data?.message ?? 'Search failed. Please try again.';
           this.state.searchState = 'idle';
@@ -364,9 +389,9 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   }
 
   newSearch(): void {
-    // `reset()` clears `scopePaths`, and it is left cleared on purpose — a new
-    // search starts with no folder chosen rather than inheriting the previous
-    // one, so the scope is always something the user picked for *this* search.
+    // `reset()` clears `scopePaths`, which puts the scope back to its default
+    // meaning — all watched folders — rather than inheriting the narrower
+    // selection from the previous search.
     this.state.reset();
     this.cdr.detectChanges();
   }
