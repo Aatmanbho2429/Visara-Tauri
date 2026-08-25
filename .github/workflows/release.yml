@@ -242,7 +242,28 @@ jobs:
           fi
 
           "${PY[@]}" -m pip install --upgrade pip
-          "${PY[@]}" -m pip install -r "${{ matrix.sidecar_reqs }}"
+
+          # Intel leg: refuse source builds outright.
+          #
+          # This runner is arm64 executing an x86_64 interpreter under Rosetta.
+          # If pip cannot find an x86_64 wheel it falls back to the sdist, and
+          # any native extension then compiles for the *host* (arm64) rather
+          # than the target — producing a package that imports fine here but
+          # blows up at PyInstaller's PKG stage, ~15 minutes into the job:
+          #
+          #   IncompatibleBinaryArchError: .../_rust.abi3.so is incompatible
+          #   with target arch x86_64 (has arch: arm64)
+          #
+          # cryptography 49.0.0 dropping its universal2 macOS wheel is what hit
+          # this first. `--only-binary` makes pip pick the newest release that
+          # actually has a usable wheel instead, and fail immediately (naming
+          # the package) when none exists. The whole Intel set is verified to
+          # resolve wheel-only, so this constrains nothing today.
+          if [ "${{ matrix.label }}" = "macos-intel" ]; then
+            "${PY[@]}" -m pip install --only-binary=:all: -r "${{ matrix.sidecar_reqs }}"
+          else
+            "${PY[@]}" -m pip install -r "${{ matrix.sidecar_reqs }}"
+          fi
 
           # PyInstaller's --add-data separator is os.pathsep: ';' on Windows,
           # ':' everywhere else. Getting it wrong silently produces a build with

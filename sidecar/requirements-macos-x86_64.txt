@@ -21,5 +21,18 @@ torchvision==0.17.2
 # Unpinned unlike torch: onnxruntime still ships macOS x86_64 wheels on current
 # releases (verified through 1.23.x), so the Intel leg is not frozen here.
 onnxruntime>=1.17
-cryptography>=42.0
+#
+# cryptography 49.0.0 dropped its macOS universal2 wheel and now publishes
+# arm64-only wheels. With no installable wheel, pip falls back to the source
+# tarball, and its Rust extension compiles for the *host* (arm64 runner) rather
+# than the x86_64 target we are freezing for — PyInstaller then rejects it:
+#
+#   IncompatibleBinaryArchError: cryptography/hazmat/bindings/_rust.abi3.so is
+#   incompatible with target arch x86_64 (has arch: arm64)
+#
+# 48.0.1 is the last release carrying a macOS wheel that installs on x86_64
+# (cp311-abi3 universal2, which PyInstaller thins to the target arch). Revisit
+# only if cryptography restarts x86_64 macOS builds, or when the Intel target
+# is dropped along with torch.
+cryptography>=42.0,<49
 pyinstaller>=6.0
