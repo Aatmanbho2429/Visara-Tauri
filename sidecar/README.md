@@ -1,9 +1,26 @@
 # Pictoria sidecar
 
 Local-only HTTP service (127.0.0.1) that Rust spawns hidden and keeps alive
-for the app's session. Does the two things Rust doesn't have libraries for —
-Gabor/Gram-matrix descriptors and SIFT/RANSAC verification — and nothing
-else. Rust owns every read/write to `meta.db` and `vectors.bin`.
+for the app's session. Does the things Rust doesn't have libraries for — DINO
+embeddings (ONNX), Gabor/Gram-matrix descriptors, and SIFT/RANSAC verification
+— and nothing else. Rust owns every read/write to `meta.db` and `vectors.bin`.
+
+## The two models
+
+| | mobilenet_v2 (gram) | DINO (embeddings) |
+|---|---|---|
+| ships as | `weights/*.pth`, plaintext | `clip_vitb32.onnx.enc`, Fernet-encrypted |
+| loads | worker startup | when Rust posts the key to `/model` |
+| gates | `/health` `ready` | `/health` `embed_ready` |
+
+The DINO model is the licensed one. Supabase returns an `onnx_key` at
+token-validate; `services::auth` (Rust) hands it to `core::sidecar`, which
+posts it here. The plaintext model exists only in this process's memory and is
+dropped on logout or a lapsed subscription (`POST /model/reset`).
+
+The `clip_vitb32` filename is historical — the file holds DINO weights, not
+CLIP. It is kept because the published artefact and the key issued against it
+already use that name.
 
 ## Run (dev)
 
@@ -12,13 +29,23 @@ pip install -r requirements.txt
 python server.py
 ```
 
-First run downloads mobilenet_v2 weights (~14MB) via torchvision.
+First run downloads mobilenet_v2 weights (~14MB) via torchvision. The DINO
+model is read from `sidecar/clip_vitb32.onnx.enc` and needs a valid key posted
+to `/model` before `/describe` will answer — without it every describe returns
+`{"error": "embed-model-not-loaded"}` and Rust's `sidecar::is_ready()` stays
+false, so indexing and search never start.
 
 ## API
 
-- `GET /health` → `{"ready": bool}`
+- `GET /health` → `{"ready": bool, "error": str?, "embed_ready": bool, "embed_dim": int?}`
+- `POST /model` → `{"key": "..."}` → `{"ok": true, "embed_dim": int}` or `{"error"}` (500).
+  Blocks while decrypting + compiling (seconds). Idempotent — a second call
+  with the model already up returns the live dimension without rebuilding.
+- `POST /model/reset` → `{"ok": true}`. Unloads the model.
 - `POST /describe` → `{"paths": [...], "priority": "search"|"index"}` →
-  `{"results": [{"path", "rose", "gram"} | {"path", "error"}]}`
+  `{"results": [{"path", "embed", "rose", "gram", "color", "dominant"} | {"path", "error"}]}`.
+  Returns `{"error": "embed-model-not-loaded"}` for the whole batch if `/model`
+  has not been called.
 - `POST /verify` → `{"query_path": "...", "candidate_paths": [...], "priority": "search"|"index"}` →
   `{"results": [{"path", "matched", "inliers", "good_matches", "inlier_ratio",
   "box"?, "candidate_size"?, "scale"?, "reason"?}]}`
@@ -27,6 +54,13 @@ First run downloads mobilenet_v2 weights (~14MB) via torchvision.
 the comment on `_worker()` in `server.py`.
 
 ## Packaging
+
+Both models are bundled into the frozen binary via `--add-data` and resolved
+at runtime through `sys._MEIPASS` (see `pipeline.bundled_weights_path` and
+`bundled_model_path`). The mobilenet checkpoint is downloaded and hash-checked
+in CI; the encrypted DINO model comes from the repo through Git LFS, and the
+**Verify encrypted DINO model** step rejects an unexpanded LFS pointer — which
+would otherwise be bundled silently and fail only on a user's machine.
 
 `.github/workflows/release.yml` freezes this with PyInstaller
 (`--onefile --name pictoria-sidecar`) before the Tauri build step, on every

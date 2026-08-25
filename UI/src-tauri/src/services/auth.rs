@@ -242,6 +242,7 @@ pub async fn validate_saved_token() -> Value {
                 // Session lost — a fresh login is required.
                 delete_token();
                 clear_in_memory_session();
+                std::thread::spawn(sidecar::clear_model_key);
                 sidecar::reset_notified();
                 return serde_json::json!({
                     "success": false,
@@ -264,11 +265,32 @@ pub async fn validate_saved_token() -> Value {
             let subscription_ok = status != "expired" && status != "exhausted";
             SUBSCRIPTION_OK.store(subscription_ok, std::sync::atomic::Ordering::SeqCst);
             if subscription_ok {
+                // The DINO model is shipped encrypted; this response carries the
+                // only key that opens it. Push it to the sidecar in the
+                // background — decrypt + ORT compile takes seconds, and this
+                // function is on the cold-start path and every periodic
+                // re-validate, none of which should block on it.
+                //
+                // Supabase withholds `onnx_key` from lapsed accounts, so an
+                // empty key here is the licence check doing its job, not an
+                // error; `set_model_key` ignores it and the model simply never
+                // loads.
+                let onnx_key = data["onnx_key"].as_str().unwrap_or("").to_string();
+                if !onnx_key.is_empty() {
+                    tokio::task::spawn_blocking(move || {
+                        sidecar::set_model_key(&onnx_key);
+                    });
+                }
                 // Sidecar may already be healthy and waiting on this; also
                 // registers the OS watchers + runs one reconciliation pass the
                 // first time this session that both conditions are true.
                 sidecar::maybe_notify_ready();
             } else {
+                // Unload the model as well as blocking the session: without
+                // this the already-decrypted model would stay usable in the
+                // sidecar for the rest of the app's run, and the lapse would
+                // only be enforced by the UI.
+                std::thread::spawn(sidecar::clear_model_key);
                 sidecar::reset_notified();
             }
 
@@ -284,6 +306,9 @@ pub async fn validate_saved_token() -> Value {
 pub fn logout() -> Value {
     delete_token();
     clear_in_memory_session();
+    // Drops the decrypted model and forgets the key, so the next user of this
+    // machine starts from no entitlement rather than inheriting this one's.
+    std::thread::spawn(sidecar::clear_model_key);
     sidecar::reset_notified();
     serde_json::json!({
         "success": true,

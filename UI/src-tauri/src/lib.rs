@@ -13,7 +13,7 @@ mod services;
 mod utils;
 
 use clipboard_rs::{Clipboard, ClipboardContext, common::RustImage};
-use commands::{auth, browse, catalog, hotkey, library, notice, search, subscription, tags, update};
+use commands::{auth, browse, hotkey, library, notice, search, subscription, tags, update};
 use std::path::PathBuf;
 use tauri::{
     AppHandle, Emitter, Manager, WindowEvent,
@@ -408,13 +408,6 @@ pub fn run() {
             // ── Browse ───────────────────────────────────────────────
             browse::browse_directory,
             browse::get_thumbnail,
-            browse::get_catalog_image,
-            // ── Catalog themes ───────────────────────────────────────
-            catalog::catalog_save_theme,
-            catalog::catalog_list_themes,
-            catalog::catalog_get_theme,
-            catalog::catalog_delete_theme,
-            catalog::catalog_save_pdf,
             // ── Utilities ────────────────────────────────────────────
             open_file_path,
         ])

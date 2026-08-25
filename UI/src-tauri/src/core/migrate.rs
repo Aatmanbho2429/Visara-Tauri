@@ -54,7 +54,14 @@ use std::{
 ///     blue tile) out of the ranking entirely. Every stored gram vector was
 ///     computed against colour and is no longer comparable to a freshly
 ///     computed grayscale one.
-pub const EMBED_SCHEMA_VERSION: i64 = 8;
+/// v9: DINO embeddings are back, now computed sidecar-side (ONNX under the
+///     licence key, not `ort` in Rust) and stored per file alongside rose and
+///     gram, which are kept. Retrieval changed shape with them: instead of a
+///     fixed top-1500 rose+gram shortlist, `VectorStore::near_family` returns
+///     every file clearing an embedding-cosine floor and SIFT/RANSAC verifies
+///     all of them. Existing entries carry no embedding at all, so they cannot
+///     be scored and must be rebuilt.
+pub const EMBED_SCHEMA_VERSION: i64 = 9;
 
 static REEMBED_PENDING: AtomicBool = AtomicBool::new(false);
 
@@ -78,7 +85,15 @@ fn marker_path() -> PathBuf {
 // *outside* `DATA_DIR`, so wiping the library never signs anyone out.
 
 /// Bump to trigger another one-time wipe on the next release.
-const LIBRARY_RESET_VERSION: u32 = 1;
+///
+/// v2: the DINO embedding returned and retrieval changed shape with it (see
+///     `EMBED_SCHEMA_VERSION` v9), and the catalog feature was removed. The
+///     schema bump alone would have rebuilt vectors in place and kept the
+///     existing `meta.db`, but that database still carries the now-orphaned
+///     `catalog_themes` table and its saved themes, which nothing reads any
+///     more. Wiping outright is the clean line: users come back on a database
+///     this build actually created.
+const LIBRARY_RESET_VERSION: u32 = 2;
 
 fn reset_done_marker() -> PathBuf {
     DATA_DIR.join(format!(".library_reset_v{LIBRARY_RESET_VERSION}"))

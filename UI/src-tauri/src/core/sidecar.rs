@@ -1,5 +1,15 @@
-//! Process lifecycle + HTTP client for the Python sidecar (Gabor/Gram
-//! descriptors + SIFT/RANSAC verification — see `sidecar/` at the repo root).
+//! Process lifecycle + HTTP client for the Python sidecar (DINO embeddings +
+//! Gabor/Gram descriptors + SIFT/RANSAC verification — see `sidecar/` at the
+//! repo root).
+//!
+//! ## The model key
+//! The DINO model ships encrypted and the sidecar cannot decrypt it on its
+//! own. Supabase returns an `onnx_key` at token-validate time; `services::auth`
+//! hands it to [`set_model_key`], which caches it in memory and pushes it to
+//! the sidecar's `/model`. The key is never written to disk and never logged.
+//! The cache exists so the watchdog can re-push after a crash-respawn — a
+//! fresh sidecar process starts with no model, and waiting for the next
+//! periodic re-validate to notice would leave search dead for minutes.
 //!
 //! The sidecar is spawned once, hidden, and kept alive for the app's whole
 //! session, then watched by a background thread for the rest of it — see
@@ -9,7 +19,9 @@
 //! by Rust — the sidecar only computes.
 
 use crate::{
-    config::{sidecar_bin_path, SIDECAR_FILE, SIDECAR_HEALTH_POLL_MS, SIDECAR_PORT},
+    config::{
+        sidecar_bin_path, EMBED_DIM, SIDECAR_FILE, SIDECAR_HEALTH_POLL_MS, SIDECAR_PORT,
+    },
     error::{PictoriaError, Result},
     services::auth,
 };
@@ -30,6 +42,14 @@ use tauri::{AppHandle, Emitter};
 static CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
 static HEALTHY: AtomicBool = AtomicBool::new(false);
 static NOTIFIED_READY: AtomicBool = AtomicBool::new(false);
+
+/// True once `/model` has confirmed the DINO model is compiled and its
+/// embedding width matches `EMBED_DIM`.
+static EMBED_READY: AtomicBool = AtomicBool::new(false);
+
+/// Last licence key seen this session. In memory only — never persisted,
+/// never logged. Held so [`push_model_key`] can re-arm a respawned sidecar.
+static MODEL_KEY: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 
 fn base_url() -> String {
     format!("http://127.0.0.1:{SIDECAR_PORT}")
@@ -69,6 +89,13 @@ fn verify_timeout(n_candidates: usize) -> std::time::Duration {
 }
 
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// `/model` blocks while the sidecar decrypts ~175MB and compiles it into an
+/// ORT session. Slow on a cold disk and slower again behind an AV scanner, and
+/// there is no partial-progress signal to poll — so the budget is generous
+/// rather than tight. Timing out here costs the user a working search until
+/// the next re-validate, which is far worse than waiting.
+const MODEL_LOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// How often the watchdog checks whether the child process is still alive,
 /// once it's past the initial boot wait.
@@ -222,6 +249,14 @@ fn watchdog(app: AppHandle) {
         }
         consecutive_crashes = 0; // reaching healthy again clears the streak
 
+        // A freshly spawned sidecar holds no model — not at first boot and not
+        // after a crash-respawn. Re-push the cached key here rather than wait
+        // for the next periodic re-validate, which could be minutes away and
+        // would leave search and indexing dead the whole time. No-op before
+        // login, when there is no key cached yet.
+        EMBED_READY.store(false, Ordering::SeqCst);
+        push_model_key();
+
         loop {
             std::thread::sleep(Duration::from_millis(WATCHDOG_POLL_MS));
             match child_state() {
@@ -275,7 +310,16 @@ fn wait_for_health() -> HealthWait {
                 }
                 if body.ready {
                     HEALTHY.store(true, Ordering::SeqCst);
-                    log::info!("[sidecar] healthy — model loaded");
+                    // The sidecar is the authority on whether it holds the
+                    // model, so take its word rather than trusting our own
+                    // flag: after a respawn it has none, and any stale `true`
+                    // here would let indexing start against a sidecar that
+                    // cannot embed anything.
+                    EMBED_READY.store(body.embed_ready, Ordering::SeqCst);
+                    log::info!(
+                        "[sidecar] healthy — mobilenet loaded, embed_ready={}",
+                        body.embed_ready
+                    );
                     maybe_notify_ready();
                     return HealthWait::Ready;
                 }
@@ -302,12 +346,21 @@ pub fn is_healthy() -> bool {
     HEALTHY.load(Ordering::SeqCst)
 }
 
-/// The gate every indexing/search call site checks — mirrors what
-/// `embedder::is_ready()` used to answer (model loaded AND a valid,
-/// active session), just with "model loaded" now meaning "sidecar is up"
-/// rather than "decrypted with a license-issued key".
+/// True once the DINO model is decrypted, compiled, and dimension-checked.
+pub fn is_embed_ready() -> bool {
+    EMBED_READY.load(Ordering::SeqCst)
+}
+
+/// The gate every indexing/search call site checks: sidecar up, DINO model
+/// loaded, and a valid active session.
+///
+/// `is_embed_ready()` is part of it because a descriptor without its embedding
+/// is useless — the near-family scan has nothing to score against — so letting
+/// indexing start before the model is up would just write unusable rows. It
+/// also restores the licence coupling that was lost when the model moved out
+/// of Rust: no key, no embeddings, no search.
 pub fn is_ready() -> bool {
-    is_healthy() && auth::has_active_session()
+    is_healthy() && is_embed_ready() && auth::has_active_session()
 }
 
 /// Call after anything that could flip `is_ready()` from false to true
@@ -336,6 +389,126 @@ struct HealthResp {
     /// doesn't send the field at all, and that must not fail deserialisation.
     #[serde(default)]
     error: Option<String>,
+    /// Whether the licence-gated DINO model is loaded. `default` false, which
+    /// is also the correct reading for an older sidecar that predates it.
+    #[serde(default)]
+    embed_ready: bool,
+}
+
+#[derive(Serialize)]
+struct ModelReq<'a> {
+    key: &'a str,
+}
+
+#[derive(Deserialize)]
+struct ModelResp {
+    #[serde(default)]
+    embed_dim: usize,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+// ── Model key ────────────────────────────────────────────────────────────
+
+/// Cache the licence key and push it to the sidecar.
+///
+/// Called from `services::auth` on every successful token-validate, so it must
+/// stay cheap when nothing changed: the sidecar's `/model` is idempotent and
+/// returns the live dimension without rebuilding, and this returns early once
+/// the model is already up.
+pub fn set_model_key(key: &str) {
+    if key.is_empty() {
+        return;
+    }
+    *MODEL_KEY.lock().unwrap() = Some(key.to_string());
+    if is_embed_ready() {
+        return;
+    }
+    push_model_key();
+}
+
+/// Forget the key and unload the model — logout, or a lapsed subscription.
+///
+/// Clearing the cached key matters as much as the unload: without it the
+/// watchdog would happily re-arm the model on the next respawn, for a user who
+/// is no longer entitled to it.
+pub fn clear_model_key() {
+    *MODEL_KEY.lock().unwrap() = None;
+    EMBED_READY.store(false, Ordering::SeqCst);
+    match HTTP
+        .post(format!("{}/model/reset", base_url()))
+        .timeout(HEALTH_TIMEOUT)
+        .json(&json!({}))
+        .send()
+    {
+        Ok(_) => log::info!("[sidecar] embed model unloaded"),
+        // A sidecar that is down or already gone has no model loaded either,
+        // so there is nothing left to undo — log it and move on.
+        Err(e) => log::warn!("[sidecar] /model/reset failed (sidecar down?): {e}"),
+    }
+}
+
+/// Push the cached key to `/model`, blocking until the sidecar has compiled
+/// the model or failed. No-op when no key is cached.
+///
+/// Refuses a model whose embedding width disagrees with `EMBED_DIM`: the
+/// vector store's entry stride is derived from that constant, so accepting a
+/// mismatch would write rows that can never be read back correctly. Leaving
+/// `EMBED_READY` false instead keeps `is_ready()` false and stops indexing
+/// before it can corrupt anything.
+pub fn push_model_key() {
+    let key = match MODEL_KEY.lock().unwrap().clone() {
+        Some(k) => k,
+        None => return,
+    };
+
+    let t0 = std::time::Instant::now();
+    let resp = HTTP
+        .post(format!("{}/model", base_url()))
+        .timeout(MODEL_LOAD_TIMEOUT)
+        .json(&ModelReq { key: &key })
+        .send();
+
+    let parsed: ModelResp = match resp {
+        Ok(r) => match r.json() {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("[sidecar] /model bad response: {e}");
+                return;
+            }
+        },
+        Err(e) => {
+            log::error!("[sidecar] /model unreachable: {e}");
+            return;
+        }
+    };
+
+    if let Some(err) = parsed.error {
+        log::error!("[sidecar] embed model load failed: {err}");
+        EMBED_READY.store(false, Ordering::SeqCst);
+        return;
+    }
+
+    // The sidecar reports the width of ONE zoom level; the store concatenates
+    // `EMBED_ZOOM_LEVELS` of them, which is why this compares against
+    // `EMBED_DIM` and not the full stride.
+    if parsed.embed_dim != EMBED_DIM {
+        log::error!(
+            "[sidecar] embed model dim {} != expected {EMBED_DIM} — refusing to index \
+             (vectors.bin stride would be wrong)",
+            parsed.embed_dim
+        );
+        EMBED_READY.store(false, Ordering::SeqCst);
+        return;
+    }
+
+    EMBED_READY.store(true, Ordering::SeqCst);
+    log::info!(
+        "[sidecar] embed model ready dim={} load_ms={:.0}",
+        parsed.embed_dim,
+        t0.elapsed().as_secs_f64() * 1000.0
+    );
+    maybe_notify_ready();
 }
 
 #[derive(Clone, Copy)]
@@ -355,6 +528,9 @@ impl Priority {
 
 #[derive(Debug, Clone)]
 pub struct Descriptor {
+    /// DINO embedding, one `EMBED_DIM` vector per zoom level. This is what
+    /// `VectorStore::near_family` scores against.
+    pub embed: Vec<Vec<f32>>,
     pub rose: Vec<f32>,
     pub gram: Vec<Vec<f32>>,
     /// COLOR_DIM-length colour histogram — computed sidecar-side now (see
@@ -392,6 +568,7 @@ struct DescribeReq<'a> {
 #[derive(Deserialize)]
 struct DescribeRespItem {
     path: String,
+    embed: Option<Vec<Vec<f32>>>,
     rose: Option<Vec<f32>>,
     gram: Option<Vec<Vec<f32>>>,
     color: Option<Vec<f32>>,
@@ -426,9 +603,12 @@ pub fn describe(paths: &[String], priority: Priority) -> Result<Vec<(String, Opt
         .results
         .into_iter()
         .map(|r| {
-            let desc = match (r.rose, r.gram, r.color) {
-                (Some(rose), Some(gram), Some(color)) => {
-                    Some(Descriptor { rose, gram, color, dominant: r.dominant })
+            // `embed` is required, not defaulted: a descriptor without it
+            // cannot be scored at all, so treating it as optional would let
+            // unusable rows into the store instead of surfacing a failure.
+            let desc = match (r.embed, r.rose, r.gram, r.color) {
+                (Some(embed), Some(rose), Some(gram), Some(color)) => {
+                    Some(Descriptor { embed, rose, gram, color, dominant: r.dominant })
                 }
                 _ => None,
             };

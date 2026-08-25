@@ -39,8 +39,8 @@ import { TauriService } from '../../services/tauri.service';
           </p>
 
           <ul class="release-notice__features">
-            <li><i class="pi pi-bolt"></i><span><strong>Faster folder loading</strong> — indexing is significantly quicker</span></li>
-            <li><i class="pi pi-check-circle"></i><span><strong>More accurate results</strong> — better matching on recoloured and embedded designs</span></li>
+            <li><i class="pi pi-check-circle"></i><span><strong>Sharper matching</strong> — a new image model recognises a design's family more reliably, including recolours and designs used inside a larger sheet</span></li>
+            <li><i class="pi pi-search"></i><span><strong>Nothing cut off</strong> — results are no longer capped at a fixed number, so every close match is shown</span></li>
           </ul>
         </div>
 

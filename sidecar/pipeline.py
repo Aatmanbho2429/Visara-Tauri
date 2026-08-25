@@ -1,21 +1,30 @@
 """Descriptor computation and geometric verification for the Pictoria sidecar.
 
-Two jobs only, matching the HTTP API: DESCRIBE (Gabor + Gram-matrix, for
-ranking) and VERIFY (SIFT + RANSAC, for proving an actual embedded crop).
+Two jobs only, matching the HTTP API: DESCRIBE (DINO embedding + Gabor +
+Gram-matrix) and VERIFY (SIFT + RANSAC, for proving an actual embedded crop).
 Everything else — storage, ranking, caching — lives in Rust now.
+
+The DINO embedding is what selects the near family a search verifies against;
+rose/gram are still computed and stored alongside it. Unlike the bundled
+mobilenet, the DINO model ships encrypted and is only decryptable with a
+licence key Supabase hands the Rust side at token-validate time, which Rust
+then pushes to `POST /model` — so it loads after login, not at startup.
 """
 from __future__ import annotations
 
 import logging
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
+import onnxruntime as ort
 import torch
 import torchvision
+from cryptography.fernet import Fernet, InvalidToken
 
 # Child of the "sidecar" logger configured in server.py — propagates to the
 # same StreamHandler + FileHandler (sidecar/logs/sidecar.log), so these lines
@@ -33,6 +42,37 @@ _mean = None
 _std = None
 _sift = None
 
+# ── DINO embedding model (encrypted, licence-gated) ──────────────────────
+# Loaded by `load_embed_model()` when Rust posts the key to /model, never at
+# import or worker startup.  `_embed_lock` guards the load/reset transition;
+# `InferenceSession.run()` itself is thread-safe, so describe jobs read
+# `_embed_sess` without holding it.
+_embed_sess = None
+_embed_input_name = None
+_embed_output_name = None
+_embed_dim = None
+_embed_lock = threading.Lock()
+
+# Side length of the square crop fed to both descriptors. Shared, so the DINO
+# embedding and the gram matrix see byte-identical crops.
+_EMBED_INPUT_SIZE = 224
+
+# Expected width of one zoom level's embedding. Must equal Rust's
+# `config::EMBED_DIM` — the vector store's entry stride is computed from it,
+# so a mismatch is refused at load time rather than written to disk.
+EMBED_DIM = 1536
+
+# ImageNet normalisation, matching what the model was exported with (and what
+# `load_model()` reads out of the torchvision weights metadata for gram).
+# Spelled out as plain numpy here so the ONNX path carries no torch dependency.
+_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 3, 1, 1)
+_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 3, 1, 1)
+
+# Encrypted DINO checkpoint. The `clip_vitb32` name is historical — the file
+# holds DINO weights, not CLIP — and is kept deliberately: it is the name the
+# published artefact and the key issued against it already use.
+MODEL_ENC = "clip_vitb32.onnx.enc"
+
 
 # Checkpoint filename as published by PyTorch. The `b0353104` suffix is the
 # leading hash of its contents, which is how torch validates a download.
@@ -48,6 +88,129 @@ def bundled_weights_path():
     """
     base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, "weights", MOBILENET_CKPT)
+
+
+def bundled_model_path():
+    """Where the encrypted DINO checkpoint lives.
+
+    Same resolution rule as `bundled_weights_path()`: `sys._MEIPASS` in a
+    frozen build (the file is listed in `pictoria-sidecar.spec`'s `datas`),
+    the source tree otherwise — which is `sidecar/clip_vitb32.onnx.enc` for a
+    developer checkout. Rust never sends a path, only the key, so this is the
+    single place the location is decided.
+    """
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, MODEL_ENC)
+
+
+def embed_model_ready():
+    return _embed_sess is not None
+
+
+def embed_model_dim():
+    return _embed_dim
+
+
+def reset_embed_model():
+    """Drop the decrypted session — logout, or a lapsed subscription.
+
+    The plaintext model only ever exists inside this process; clearing the
+    session is what makes a licence check actually bite, since without it the
+    model would stay usable for the rest of the app's session.
+    """
+    global _embed_sess, _embed_input_name, _embed_output_name, _embed_dim
+    with _embed_lock:
+        if _embed_sess is None:
+            return
+        _embed_sess = None
+        _embed_input_name = None
+        _embed_output_name = None
+        _embed_dim = None
+    log.info("DINO embed model unloaded")
+
+
+def _fernet_decrypt(key_b64: str, token: bytes) -> bytes:
+    """Fernet: URL_SAFE_BASE64(0x80 || ts(8) || IV(16) || ct || HMAC(32)).
+
+    Same scheme the Rust `embedder::fernet_decrypt` used before this moved
+    into the sidecar, so a key issued against the published artefact keeps
+    working unchanged. `Fernet` verifies the HMAC before decrypting, so a
+    wrong key raises rather than yielding garbage bytes for ORT to choke on.
+    """
+    try:
+        return Fernet(key_b64.strip()).decrypt(token)
+    except (InvalidToken, ValueError, TypeError) as e:
+        raise ValueError(f"model decryption failed ({type(e).__name__})") from e
+
+
+def load_embed_model(key_b64: str):
+    """Decrypt and compile the DINO ONNX model. Returns its embedding width.
+
+    Idempotent: a second call while a session is live is a no-op returning the
+    live dimension, because Rust re-pushes the key on every token-validate and
+    a rebuild would cost seconds of decrypt + compile for nothing.
+
+    The output width is measured with one throwaway forward pass rather than
+    read off the graph metadata, which is frequently a symbolic dim ('batch',
+    'features') that tells us nothing. Rust refuses a mismatch against its own
+    `EMBED_DIM` — the vector store's entry stride depends on it, so guessing
+    here would corrupt `vectors.bin` rather than fail.
+    """
+    global _embed_sess, _embed_input_name, _embed_output_name, _embed_dim
+
+    with _embed_lock:
+        if _embed_sess is not None:
+            return _embed_dim
+
+        path = bundled_model_path()
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"encrypted model not found: {path}")
+
+        t0 = time.perf_counter()
+        with open(path, "rb") as f:
+            token = f.read()
+        model_bytes = _fernet_decrypt(key_b64, token)
+        t_decrypt = time.perf_counter()
+
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        # CoreML where it exists (Neural Engine on Apple Silicon, Metal on
+        # Intel), CPU everywhere else. Listing CPU explicitly as the tail
+        # provider is what makes an unsupported/unavailable CoreML fall back
+        # instead of raising.
+        providers = (["CoreMLExecutionProvider", "CPUExecutionProvider"]
+                     if sys.platform == "darwin" else ["CPUExecutionProvider"])
+        try:
+            sess = ort.InferenceSession(model_bytes, sess_options=opts, providers=providers)
+        except Exception:
+            if providers[0] == "CPUExecutionProvider":
+                raise
+            log.warning("CoreML provider unavailable — falling back to CPU", exc_info=True)
+            sess = ort.InferenceSession(model_bytes, sess_options=opts,
+                                        providers=["CPUExecutionProvider"])
+        t_compile = time.perf_counter()
+
+        in_name = sess.get_inputs()[0].name
+        out_name = sess.get_outputs()[0].name
+        probe = np.zeros((1, 3, _EMBED_INPUT_SIZE, _EMBED_INPUT_SIZE), dtype=np.float32)
+        out = sess.run([out_name], {in_name: probe})[0]
+        dim = int(np.asarray(out).reshape(1, -1).shape[1])
+
+        _embed_sess = sess
+        _embed_input_name = in_name
+        _embed_output_name = out_name
+        _embed_dim = dim
+
+    log.info(
+        "DINO embed model ready: %s dim=%d providers=%s "
+        "decrypt_ms=%.0f compile_ms=%.0f probe_ms=%.0f",
+        os.path.basename(path), dim, sess.get_providers(),
+        (t_decrypt - t0) * 1000, (t_compile - t_decrypt) * 1000,
+        (time.perf_counter() - t_compile) * 1000,
+    )
+    if dim != EMBED_DIM:
+        log.error("DINO embed dim %d != expected %d — Rust will refuse this model", dim, EMBED_DIM)
+    return dim
 
 
 def load_model():
@@ -143,32 +306,57 @@ def gabor_rose(img_rgb):
     return energies
 
 
-@torch.no_grad()
-def gram_descriptor(img_rgb, size=224, zoom_scales=_GRAM_ZOOM_SCALES):
-    """Channel-correlation texture-style descriptor at a few zoom levels, so
-    ranking isn't thrown off by two related images being different pixel scales.
+def zoom_crops(img_rgb, size=_EMBED_INPUT_SIZE, zoom_scales=_GRAM_ZOOM_SCALES):
+    """Desaturated square crops of one image, one per zoom level.
 
-    Fed a desaturated (grayscale, replicated to 3 channels) image rather than
-    the original RGB — the CNN's ImageNet normalisation is otherwise very
-    colour-sensitive, which used to bury same-design different-colourway
-    files (e.g. a "small_yellow" variant of "small_blue") deep enough in the
-    ranking that they'd fall out of the verify shortlist entirely, even
-    though `gabor_rose` (already grayscale) recognised the shared structure
-    fine. Matching that grayscale-only convention here makes ranking
+    Shared by `gram_descriptor` and `embed_descriptor` so both descriptors are
+    computed from byte-identical pixels, and the resize/crop work is done once
+    per file instead of twice.
+
+    Desaturated (grayscale, replicated to 3 channels) rather than the original
+    RGB — ImageNet normalisation is very colour-sensitive, which used to bury
+    same-design different-colourway files (e.g. a "small_yellow" variant of
+    "small_blue") deep enough that they'd fall out of the verify set entirely,
+    even though `gabor_rose` (already grayscale) recognised the shared
+    structure fine. Keeping both descriptors grayscale-only makes retrieval
     genuinely structure-led, with colour staying display-only via
-    `color_histogram` — see [[pictoria-search-architecture]]."""
-    model = load_model()
+    `color_histogram` — see [[pictoria-search-architecture]].
+
+    Resize is short-side-to-target then centre-crop; never pad. Padding gives
+    every image of the same aspect ratio an identical band artefact which then
+    dominates similarity — measured previously, a 1.98-aspect query returned
+    twenty 1.98-aspect images regardless of design while the true parent sat at
+    rank 237.
+
+    The several zoom levels are what keep matching robust to two related images
+    being at different pixel scales.
+    """
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
     img_struct = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
     h0, w0 = img_struct.shape[:2]
-    grams = []
+    crops = []
     for zoom in zoom_scales:
         target_short = max(8, int(round(size / zoom)))
         scale = target_short / min(h0, w0)
         rh, rw = max(size, int(round(h0 * scale))), max(size, int(round(w0 * scale)))
         resized = cv2.resize(img_struct, (rw, rh), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
         y0, x0 = (rh - size) // 2, (rw - size) // 2
-        crop = resized[y0:y0 + size, x0:x0 + size]
+        crops.append(resized[y0:y0 + size, x0:x0 + size])
+    return crops
+
+
+@torch.no_grad()
+def gram_descriptor(img_rgb=None, size=_EMBED_INPUT_SIZE, zoom_scales=_GRAM_ZOOM_SCALES, crops=None):
+    """Channel-correlation texture-style descriptor, one vector per zoom level.
+
+    Pass `crops` from `zoom_crops()` to reuse the crops the embedding already
+    needed; `img_rgb` is the standalone path and just computes them itself.
+    """
+    if crops is None:
+        crops = zoom_crops(img_rgb, size=size, zoom_scales=zoom_scales)
+    model = load_model()
+    grams = []
+    for crop in crops:
         t = torch.from_numpy(crop).float().permute(2, 0, 1).unsqueeze(0) / 255.0
         t = (t - _mean) / _std
         feat = model(t)
@@ -177,6 +365,35 @@ def gram_descriptor(img_rgb, size=224, zoom_scales=_GRAM_ZOOM_SCALES):
         g = (f @ f.t()) / (c * h * w)
         grams.append(g.flatten().numpy())
     return grams
+
+
+def embed_descriptor(img_rgb=None, size=_EMBED_INPUT_SIZE, zoom_scales=_GRAM_ZOOM_SCALES, crops=None):
+    """DINO embedding per zoom level — the vector the near-family scan uses.
+
+    One batched ONNX call for all zoom levels rather than one per level: the
+    crops are the same shape by construction, and a single batch of 3 is
+    materially cheaper than 3 batches of 1 on both CoreML and CPU.
+
+    Each level is L2-normalised independently so the Rust side's cosine is a
+    plain dot product and no zoom level can dominate on magnitude alone.
+
+    Raises if the model isn't loaded — callers gate on `embed_model_ready()`
+    (and Rust gates indexing/search on `/health`'s `embed_ready`), so reaching
+    here without a session is a bug worth surfacing, not a silent empty result.
+    """
+    sess = _embed_sess
+    if sess is None:
+        raise RuntimeError("DINO embed model not loaded")
+    if crops is None:
+        crops = zoom_crops(img_rgb, size=size, zoom_scales=zoom_scales)
+
+    batch = np.stack(crops).astype(np.float32).transpose(0, 3, 1, 2) / 255.0
+    batch = (batch - _IMAGENET_MEAN) / _IMAGENET_STD
+    out = sess.run([_embed_output_name], {_embed_input_name: np.ascontiguousarray(batch)})[0]
+    out = np.asarray(out, dtype=np.float32).reshape(len(crops), -1)
+    norms = np.linalg.norm(out, axis=1, keepdims=True)
+    np.maximum(norms, 1e-9, out=norms)
+    return out / norms
 
 
 # ── Colour histogram ─────────────────────────────────────────────────────
@@ -435,6 +652,7 @@ def _implausible_placement(geo):
 
 @dataclass
 class Descriptor:
+    embed: list  # DINO embedding, one EMBED_DIM vector per zoom level
     rose: list
     gram: list  # list of gram vectors, one per zoom level
     color: list  # COLOR_DIM-length, see color_histogram()
@@ -442,7 +660,12 @@ class Descriptor:
 
 
 def describe(path, max_dim=512):
-    """Full stage-1 descriptor for one image, or None if it can't be read."""
+    """Full descriptor for one image, or None if it can't be read.
+
+    The zoom crops are computed once and handed to both the DINO embedding and
+    the gram matrix — they are the same pixels, and doing the resize/crop twice
+    was pure waste.
+    """
     t0 = time.perf_counter()
     img = load_image_rgb(path, max_dim=max_dim)
     t_decode = time.perf_counter()
@@ -451,21 +674,28 @@ def describe(path, max_dim=512):
                    os.path.basename(path), (t_decode - t0) * 1000)
         return None
 
+    crops = zoom_crops(img)
+    t_crops = time.perf_counter()
+    embed = embed_descriptor(crops=crops)
+    t_embed = time.perf_counter()
     rose = gabor_rose(img)
     t_gabor = time.perf_counter()
-    gram = gram_descriptor(img)
+    gram = gram_descriptor(crops=crops)
     t_gram = time.perf_counter()
     color = color_histogram(img)
     dominant = dominant_colors(img)
     t_color = time.perf_counter()
 
     log.debug(
-        "[timing] describe path=%s dim=%dx%d decode_ms=%.2f gabor_ms=%.2f gram_ms=%.2f color_ms=%.2f total_ms=%.2f",
+        "[timing] describe path=%s dim=%dx%d decode_ms=%.2f crops_ms=%.2f embed_ms=%.2f "
+        "gabor_ms=%.2f gram_ms=%.2f color_ms=%.2f total_ms=%.2f",
         os.path.basename(path), img.shape[1], img.shape[0],
-        (t_decode - t0) * 1000, (t_gabor - t_decode) * 1000, (t_gram - t_gabor) * 1000,
+        (t_decode - t0) * 1000, (t_crops - t_decode) * 1000, (t_embed - t_crops) * 1000,
+        (t_gabor - t_embed) * 1000, (t_gram - t_gabor) * 1000,
         (t_color - t_gram) * 1000, (t_color - t0) * 1000,
     )
-    return Descriptor(rose=rose.tolist(), gram=[g.tolist() for g in gram], color=color, dominant=dominant)
+    return Descriptor(embed=[e.tolist() for e in embed], rose=rose.tolist(),
+                      gram=[g.tolist() for g in gram], color=color, dominant=dominant)
 
 
 def prepare_query(query_path, max_dim=800, mirror=False):

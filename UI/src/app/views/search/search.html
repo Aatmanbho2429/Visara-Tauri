@@ -125,18 +125,6 @@
           </div>
         </div>
 
-        <!-- Top-K selector -->
-        <div class="topk-row">
-          <span class="topk-row__label">{{ 'search.maxResults' | translate }}</span>
-          <div class="topk-row__options">
-            @for (opt of topKOptions; track opt) {
-              <button class="topk-btn" [class.topk-btn--active]="state.topK === opt" (click)="state.topK = opt">
-                {{ opt }}
-              </button>
-            }
-          </div>
-        </div>
-
         <button class="search-trigger" [class.search-trigger--ready]="canSearch"
                 [disabled]="!canSearch" (click)="doSearch()">
           <span class="search-trigger__glow"></span>
@@ -274,6 +262,18 @@
                     </div>
                   }
                 </div>
+                <!-- Reveals the next page of the near family. The count tells
+                     the user how much is left, so a long tail is obvious up
+                     front rather than after ten more clicks. -->
+                @if (hasMoreSimilar) {
+                  <div class="show-more-row">
+                    <button class="show-more-btn" (click)="showMoreSimilar()">
+                      <i class="pi pi-chevron-down"></i>
+                      <span>{{ 'search.showMore' | translate }}</span>
+                      <span class="show-more-btn__count">{{ remainingSimilar }}</span>
+                    </button>
+                  </div>
+                }
               }
             </div>
           }

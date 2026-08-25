@@ -90,7 +90,19 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   @ViewChild('masonryGrid') masonryGridRef!: ElementRef<HTMLElement>;
   @ViewChild(PlansDialog)   plansDialog!: PlansDialog;
 
-  readonly topKOptions = [10, 20, 50];
+  /** How many "Similar patterns" cards are revealed at a time.
+   *
+   *  The backend no longer truncates: `search.rs` returns every member of the
+   *  near family (everything clearing the embedding-cosine floor), which can be
+   *  hundreds of cards. Painting them all at once is what this paging avoids —
+   *  it is a rendering budget, not a result limit, so nothing is discarded and
+   *  "Show more" can always reach the end of the set. */
+  readonly SIMILAR_PAGE = 20;
+
+  /** Upper bound on how many similar cards are currently rendered. Reset to one
+   *  page on every new search — otherwise a previous search's expanded state
+   *  would carry over and dump hundreds of cards into the first paint. */
+  similarShown = this.SIMILAR_PAGE;
 
   /** Collapse state for the two result tiers. Both start expanded and are
    *  re-opened for every fresh result set in `runSearch()` — collapsing is
@@ -108,9 +120,12 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   foldersLoading                  = true;
   scopeOpen                       = false;
 
-  /** The sidecar (Gabor/Gram/SIFT) loads its model at app launch, not lazily
-   *  per-search anymore — this drives the "Model is loading…" state until
-   *  its health check passes and the session is confirmed active. */
+  /** Drives the "Model is loading…" state. Two models sit behind it and they
+   *  arrive at different times: the bundled mobilenet (Gabor/Gram/SIFT) loads
+   *  at sidecar launch, while the licensed DINO model that produces the search
+   *  embeddings only loads once auth has handed the sidecar its key — so this
+   *  stays false until the health check passes, the embed model is up, AND the
+   *  session is confirmed active. Still no per-search key handoff. */
   sidecarReady           = false;
   private sidecarPollId: ReturnType<typeof setInterval> | null = null;
 
@@ -205,15 +220,35 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
     return this.state.results.filter(r => r.verified);
   }
 
-  /** Everything else: ranked by texture similarity but not geometrically
-   *  confirmed. Capped by the `topK` picker and collapsed by default once
-   *  there's a family tier — see `similarExpanded`. */
+  /** Everything else: in the near family by texture similarity, but not
+   *  geometrically confirmed. The *full* set — used for the section count and
+   *  for deciding whether "Show more" still has anything left to give. */
   get similarResults(): SearchResult[] {
     return this.state.results.filter(r => !r.verified);
   }
 
+  /** The slice actually rendered — see `SIMILAR_PAGE`. */
+  get visibleSimilarResults(): SearchResult[] {
+    return this.similarResults.slice(0, this.similarShown);
+  }
+
+  get hasMoreSimilar(): boolean {
+    return this.similarShown < this.similarResults.length;
+  }
+
+  /** How many are still hidden, so the button can say so rather than leave the
+   *  user guessing whether one more click ends it or fifty. */
+  get remainingSimilar(): number {
+    return Math.max(0, this.similarResults.length - this.similarShown);
+  }
+
+  showMoreSimilar(): void {
+    this.similarShown += this.SIMILAR_PAGE;
+    this.cdr.detectChanges();
+  }
+
   get familyColumns():  SearchResult[][] { return this.toColumns(this.familyResults); }
-  get similarColumns(): SearchResult[][] { return this.toColumns(this.similarResults); }
+  get similarColumns(): SearchResult[][] { return this.toColumns(this.visibleSimilarResults); }
 
   private toColumns(items: SearchResult[]): SearchResult[][] {
     const cols    = 3;
@@ -359,7 +394,10 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
       }
     });
 
-    this.tauri.searchStream(this.state.imagePath, this.state.scopePaths, this.state.topK).subscribe({
+    // `top_k` no longer trims anything server-side (see `services::search`);
+    // it is logged there as "what the client asked for". Sending the page size
+    // keeps that log honest now that the picker is gone.
+    this.tauri.searchStream(this.state.imagePath, this.state.scopePaths, this.SIMILAR_PAGE).subscribe({
       next: event => {
         if (event.type === 'progress') {
           if (event.data?.progress) this.state.progress = event.data.progress;
@@ -382,6 +420,7 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
           // auto-collapse whenever a verified tier existed, which hid 20 of
           // 22 results behind a control that was easy to miss.
           this.similarExpanded = true;
+          this.similarShown    = this.SIMILAR_PAGE;
           this.familyExpanded  = true;
         } else if (event.type === 'error') {
           this.state.searchError = event.data?.message ?? 'Search failed. Please try again.';

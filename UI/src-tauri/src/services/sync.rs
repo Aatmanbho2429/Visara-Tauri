@@ -203,6 +203,7 @@ fn index_chunks(
                     continue;
                 }
             };
+            let embed_flat: Vec<f32> = desc.embed.into_iter().flatten().collect();
             let gram_flat: Vec<f32> = desc.gram.into_iter().flatten().collect();
 
             let vector_id = match database::next_vector_id(con) {
@@ -231,7 +232,7 @@ fn index_chunks(
                 crate::services::tags::apply_color_tags(con, &path_str, &desc.dominant);
             }
 
-            if let Err(e) = store.upsert(vector_id, &desc.rose, &gram_flat, &desc.color) {
+            if let Err(e) = store.upsert(vector_id, &embed_flat, &desc.rose, &gram_flat, &desc.color) {
                 errors.push(FileError { file: path_str, reason: format!("Index upsert failed: {e}") });
                 progress::increment_errors();
             }
@@ -307,8 +308,9 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
                     continue;
                 }
             };
+            let embed_flat: Vec<f32> = desc.embed.into_iter().flatten().collect();
             let gram_flat: Vec<f32> = desc.gram.into_iter().flatten().collect();
-            if let Err(e) = store.upsert(*id, &desc.rose, &gram_flat, &desc.color) {
+            if let Err(e) = store.upsert(*id, &embed_flat, &desc.rose, &gram_flat, &desc.color) {
                 errors.push(FileError { file: path_str, reason: format!("Index upsert failed: {e}") });
                 progress::increment_errors();
             }

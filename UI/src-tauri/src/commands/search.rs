@@ -1,9 +1,14 @@
 //! Tauri command handlers for the search pipeline.
 //!
-//! The sidecar loads its model once at app startup, independent of login —
-//! `core::sidecar::is_ready()` just needs the health check to have passed
-//! AND an active session, no per-search key handoff like the old
-//! license-encrypted-model flow required.
+//! Two models sit behind `core::sidecar::is_ready()`, and they become ready at
+//! different times. The bundled mobilenet loads at sidecar startup,
+//! independent of login. The DINO embedding model is shipped encrypted and
+//! only loads once `services::auth` has pushed the licence key Supabase
+//! returns at token-validate — so readiness needs the health check to have
+//! passed, the embed model to be up, AND an active session.
+//!
+//! There is still no per-search key handoff: the key goes to the sidecar once,
+//! when auth obtains it, not on the search path.
 //!
 //! Progress is streamed to Angular via three Tauri events:
 //!   search_progress  — snapshot while running
@@ -45,6 +50,10 @@ pub fn sidecar_status(app: tauri::AppHandle) {
         "data": {
             "healthy": sidecar::is_healthy(),
             "ready":   sidecar::is_ready(),
+            // Broken out so the UI can tell "sidecar still booting" apart from
+            // "waiting on the licensed model", which are minutes apart on a
+            // cold start and have completely different causes when stuck.
+            "embed_ready": sidecar::is_embed_ready(),
         }
     });
     let _ = app.emit("sidecar_status_response", result);

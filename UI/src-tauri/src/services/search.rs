@@ -1,11 +1,18 @@
-//! Search execution — describes the query via the sidecar, ranks every file
-//! in scope against it (stage 1, in-process), then geometrically verifies the
-//! shortlist through the sidecar (stage 2) before returning results.
+//! Search execution — describes the query via the sidecar, selects the near
+//! family by DINO embedding cosine over every file in scope (in-process), then
+//! geometrically verifies all of them through the sidecar before returning
+//! results.
+//!
+//! Membership is a similarity floor, not a rank cut: everything at or above
+//! `config::NEAR_FAMILY_MIN_SIM` is returned, however many that is. SIFT/RANSAC
+//! then splits that family into a verified tier (a real geometric proof, which
+//! is what "found inside" and a mirrored match mean) and an unverified
+//! "similar" tail. Neither tier is truncated here.
 //!
 //! Multi-folder model unchanged: empty `scope` means every watched folder.
 
 use crate::{
-    config::VECTOR_STORE_PATH,
+    config::{NEAR_FAMILY_MIN_SIM, VECTOR_STORE_PATH},
     core::{database, search_gate, sidecar, vector_store::VectorStore},
     error::{Result, PictoriaError},
     utils::image_loader,
@@ -63,15 +70,16 @@ pub struct FailedFile {
 
 // ── Public API ────────────────────────────────────────────────────────────
 
-/// How many stage-1 candidates get geometrically verified — fixed,
-/// independent of `top_k` (the display picker). This used to scale with
-/// `top_k` (`top_k * 4`, min 40), which meant asking for more results
-/// changed *which* candidates got SIFT-verified, not just how many got
-/// shown: a "found inside" hit outside the smaller shortlist could appear
-/// only once the picker grew, reshuffling the whole ranking rather than
-/// extending it. A fixed pool means the verified ("family") tier is a
-/// stable prefix no matter what `top_k` is set to.
-const VERIFY_SHORTLIST_FIXED: usize = 1500;
+// The verify pool is no longer a fixed shortlist. `VectorStore::near_family`
+// returns every file whose DINO embedding cosine clears
+// `config::NEAR_FAMILY_MIN_SIM` and all of them are verified, so membership is
+// decided by similarity rather than by a rank cut.
+//
+// The rank cut it replaced (a fixed 1500) had the property that a real match
+// could be excluded purely because a library held more than 1500 tiles closer
+// to the query — invisible from the outside, and unfixable by the user. The
+// trade is that the pool is unbounded by construction: `near_family_n` in the
+// timing log below is the number to watch if a search ever feels slow.
 
 /// Verify runs in chunks of this size rather than one request for the whole
 /// shortlist, purely so `on_verify_progress` below has something to report
@@ -125,6 +133,10 @@ fn verify_pass(
 pub fn execute(
     image_path: &Path,
     scope: &[PathBuf],
+    // What the client asked to display. No longer trims the result set — every
+    // near-family member is returned and the client paginates — but it is still
+    // logged, because a large gap between it and `results` is the first thing
+    // to look at if the UI feels heavy after a broad search.
     top_k: usize,
     mut on_verify_progress: impl FnMut(usize, usize, bool),
 ) -> Result<(Vec<SearchResult>, Vec<FailedFile>)> {
@@ -178,6 +190,7 @@ pub fn execute(
         .next()
         .and_then(|(_, d)| d)
         .ok_or_else(|| PictoriaError::Fatal("Could not describe the reference image.".into()))?;
+    let query_embed: Vec<f32> = query_desc.embed.into_iter().flatten().collect();
     let query_gram: Vec<f32> = query_desc.gram.into_iter().flatten().collect();
     // Colour histogram is computed sidecar-side now (same decode as rose/gram —
     // see pipeline.color_histogram), not a separate Rust-side pass over
@@ -202,10 +215,31 @@ pub fn execute(
     drop(con);
     let id_map_ms = t_id_map.elapsed().as_secs_f64() * 1000.0;
 
-    let shortlist_n = VERIFY_SHORTLIST_FIXED;
     let t_stage1 = Instant::now();
-    let stage1 = store.search(&query_desc.rose, &query_gram, &query_color, shortlist_n);
+    let stage1 = store.near_family(
+        &query_embed,
+        &query_desc.rose,
+        &query_gram,
+        &query_color,
+        NEAR_FAMILY_MIN_SIM,
+    );
     let stage1_ms = t_stage1.elapsed().as_secs_f64() * 1000.0;
+    log::info!(
+        "[search] near family: {} of {} indexed files cleared embed cosine {:.2}",
+        stage1.len(),
+        store.live_count(),
+        NEAR_FAMILY_MIN_SIM,
+    );
+    // Top hit's full breakdown. rose/gram no longer select anything, so this
+    // is the only place their disagreement with the embedding shows up — a
+    // high embed_sim next to a low design_sim is the signature of the
+    // threshold admitting something the old descriptor would have rejected.
+    if let Some(top) = stage1.first() {
+        log::debug!(
+            "[search] top hit id={} embed_sim={:.4} design_sim={:.4} rose_sim={:.4} gram_sim={:.4}",
+            top.id, top.embed_sim, top.design_sim, top.rose_sim, top.gram_sim,
+        );
+    }
 
     let mut seen_paths: HashSet<String> = HashSet::new();
     let query_abs = image_path.to_string_lossy().to_string();
@@ -221,15 +255,15 @@ pub fn execute(
         })
         .collect();
 
-    // ── Stage 2: geometrically verify the shortlist, chunk by chunk ────
+    // ── Stage 2: geometrically verify the near family, chunk by chunk ──
     // Chunked (not one request for all of it) so `on_verify_progress` can
     // report real progress between chunks instead of the caller sitting
     // blind until the very end — see `VERIFY_CHUNK`'s doc comment.
-    let shortlist_paths: Vec<String> = candidates.iter().map(|c| c.path.clone()).collect();
-    let n_shortlist = shortlist_paths.len();
+    let family_paths: Vec<String> = candidates.iter().map(|c| c.path.clone()).collect();
+    let near_family_n = family_paths.len();
     let t_verify = Instant::now();
     let mut verify_by_path =
-        verify_pass(&query_sidecar_path, &shortlist_paths, false, &mut on_verify_progress);
+        verify_pass(&query_sidecar_path, &family_paths, false, &mut on_verify_progress);
     let verify_ms = t_verify.elapsed().as_secs_f64() * 1000.0;
 
     // ── Stage 2b: mirrored retry ───────────────────────────────────────
@@ -240,18 +274,18 @@ pub fn execute(
     // ordinary rotation + scale + translation.
     //
     // Only run when the first pass proved nothing, because it costs a second
-    // full traversal of the shortlist. That puts the entire cost on searches
+    // full traversal of the near family. That puts the entire cost on searches
     // that currently return no family tier at all — the exact case this
     // exists to rescue — and leaves successful searches untouched.
     let t_mirror = Instant::now();
-    let mirror_attempted = !verify_by_path.values().any(|r| r.matched) && !shortlist_paths.is_empty();
+    let mirror_attempted = !verify_by_path.values().any(|r| r.matched) && !family_paths.is_empty();
     let mut mirror_hits = 0usize;
     if mirror_attempted {
         log::info!(
-            "[search] no verified matches in {n_shortlist} candidates — retrying mirrored"
+            "[search] no verified matches in {near_family_n} candidates — retrying mirrored"
         );
         let mirrored =
-            verify_pass(&query_sidecar_path, &shortlist_paths, true, &mut on_verify_progress);
+            verify_pass(&query_sidecar_path, &family_paths, true, &mut on_verify_progress);
         // Keep only the wins. A mirrored miss carries no more information
         // than the straight miss already recorded, and overwriting would
         // discard the first pass's inlier counts for no reason.
@@ -290,8 +324,11 @@ pub fn execute(
                 rank: 0,
                 path: c.path,
                 name,
-                similarity: scale(c.m.score),
-                pattern_match: scale(c.m.score),
+                // Both are the embedding cosine — the same number
+                // `NEAR_FAMILY_MIN_SIM` filters on, so "70% pattern match" in
+                // the UI means exactly what the threshold meant.
+                similarity: scale(c.m.embed_sim),
+                pattern_match: scale(c.m.embed_sim),
                 color_match: scale(c.m.color_sim),
                 folder: c.folder,
                 verified,
@@ -308,13 +345,16 @@ pub fn execute(
     results.sort_by(|a, b| {
         b.verified.cmp(&a.verified).then_with(|| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal))
     });
-    // Verified results are a geometric proof, not a similarity guess — keep
-    // every one of them (the "family" tier) rather than letting `top_k` cut
-    // a real match off. `top_k` instead caps only the unverified "similar"
-    // tail that follows. Since the sort above put every verified result
-    // first, `family_count` is just the length of that prefix.
-    let family_count = results.iter().take_while(|r| r.verified).count();
-    results.truncate(family_count + top_k);
+    // Nothing is truncated. Every result here is already a member of the near
+    // family — it cleared `NEAR_FAMILY_MIN_SIM` — so the set is defined by
+    // similarity, not by rank, and cutting it at `top_k` would put back the
+    // arbitrary boundary the threshold exists to remove. The verified tier
+    // leads (geometric proof), the rest follow as "similar", and the client
+    // decides how many of them to paint.
+    // Size of the verified tier — the prefix of the sort above. Logged rather
+    // than used to cut: it is the number that says whether a search actually
+    // proved anything, as distinct from merely finding neighbours.
+    let verified_n = results.iter().take_while(|r| r.verified).count();
     for (i, r) in results.iter_mut().enumerate() {
         r.rank = i + 1;
     }
@@ -322,9 +362,10 @@ pub fn execute(
 
     log::info!(
         "[timing] search TOTAL query={:?} scope_folders={} candidates_indexed={} \
-         shortlist={n_shortlist} results={} scope_ms={scope_ms:.2} query_prep_ms={prep_ms:.2} \
+         near_family_n={near_family_n} top_k_requested={top_k} verified_n={verified_n} results={} \
+         scope_ms={scope_ms:.2} query_prep_ms={prep_ms:.2} \
          describe_ms={describe_ms:.2} store_load_ms={store_load_ms:.2} id_map_ms={id_map_ms:.2} \
-         stage1_rank_ms={stage1_ms:.2} verify_ms={verify_ms:.2} mirror_attempted={mirror_attempted} \
+         near_family_ms={stage1_ms:.2} verify_ms={verify_ms:.2} mirror_attempted={mirror_attempted} \
          mirror_hits={mirror_hits} mirror_ms={mirror_ms:.2} assemble_ms={assemble_ms:.2} \
          total_ms={:.2}",
         query_sidecar_path.rsplit(['/', '\\']).next().unwrap_or(&query_sidecar_path),

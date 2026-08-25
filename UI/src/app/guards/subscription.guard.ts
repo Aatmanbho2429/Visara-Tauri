@@ -3,7 +3,7 @@ import { CanActivateFn, Router } from '@angular/router';
 import { UserStateService } from '../services/user-state.service';
 
 /**
- * Gates the AI / catalog features behind an active subscription.
+ * Gates the AI features behind an active subscription.
  *
  * Runs after `authGuard` (which guarantees a validated user in `userState`).
  * `canSearch` is true only for `trial` / `active`; `expired` / `exhausted`

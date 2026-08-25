@@ -14,7 +14,6 @@ export class SearchStateService {
   imagePreview = '';
   /** Subset of watched-folder paths to search.  Empty array = all watched. */
   scopePaths:   string[] = [];
-  topK         = 20;
 
   results:      SearchResult[] = [];
   failedFiles:  FailedFile[]   = [];

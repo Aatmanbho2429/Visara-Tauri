@@ -18,4 +18,8 @@ opencv-python>=4.8,<5
 numpy<2
 torch==2.2.2
 torchvision==0.17.2
+# Unpinned unlike torch: onnxruntime still ships macOS x86_64 wheels on current
+# releases (verified through 1.23.x), so the Intel leg is not frozen here.
+onnxruntime>=1.17
+cryptography>=42.0
 pyinstaller>=6.0

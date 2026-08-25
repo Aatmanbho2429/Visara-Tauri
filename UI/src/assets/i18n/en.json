@@ -123,7 +123,6 @@
     "search":   "Search",
     "library":  "Library",
     "browse":   "Browse",
-    "catalog":  "Catalog",
     "profile":  "Profile",
     "signOut":  "Sign Out"
   },
@@ -176,7 +175,7 @@
     "errors":          "errors",
     "failedFiles":     "images could not be processed",
     "noResults":       "No similar images found",
-    "maxResults":      "Max similar results",
+    "showMore":        "Show more",
     "familySection":   "Verified matches",
     "similarSection":  "Similar patterns",
     "hotkeyHint":      "Or copy any image and press"
@@ -352,71 +351,6 @@
       "design": "Design",
       "collection": "Collection",
       "custom": "My Tags"
-    }
-  },
-
-  "catalog": {
-    "title": "Catalogs",
-    "subtitle": "Design multi-page catalogs by hand — drag in your tiles, add text, export a PDF.",
-    "newCatalog": "New catalog",
-    "emptyTitle": "No catalogs yet",
-    "emptyHint": "Create one, then drag tiles from your tagged library onto each page.",
-    "createFirst": "Create your first catalog",
-    "deleteConfirm": "Delete this catalog?"
-  },
-
-  "editor": {
-    "untitled": "Untitled catalog",
-    "save": "Save",
-    "exporting": "Exporting…",
-    "exportPdf": "Export PDF",
-    "back": "Back",
-    "elements": "Elements",
-    "tiles": "Tiles",
-    "yourTiles": "Your tiles",
-    "heading": "Heading",
-    "text": "Text",
-    "box": "Box",
-    "line": "Line",
-    "loading": "Loading…",
-    "pageOf": "Page {{n}} / {{total}}",
-    "pageLabel": "Page",
-    "layerBack": "Send backward",
-    "layerForward": "Bring forward",
-    "delete": "Delete",
-    "font": "Font",
-    "size": "Size",
-    "color": "Color",
-    "fit": "Fit",
-    "cover": "Cover",
-    "contain": "Contain",
-    "radius": "Radius",
-    "fill": "Fill",
-    "border": "Border",
-    "borderColor": "Border color",
-    "thickness": "Thickness",
-    "background": "Background",
-    "selectHint": "Select an element to edit it, or add one from the left.",
-    "addPage": "Add page",
-    "duplicate": "Duplicate",
-    "moveLeft": "Move left",
-    "moveRight": "Move right",
-    "toastTitle": "Catalog",
-    "saved": "Saved.",
-    "saveFailed": "Save failed.",
-    "exported": "Catalog exported.",
-    "exportFailed": "Export failed.",
-    "type": {
-      "text": "Text",
-      "image": "Image",
-      "box": "Box",
-      "line": "Line"
-    },
-    "preset": {
-      "a4": "A4 Portrait",
-      "a4l": "A4 Landscape",
-      "letter": "Letter",
-      "square": "Square"
     }
   }
 }

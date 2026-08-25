@@ -58,12 +58,6 @@ image = { version = "0.25", default-features = false, features = [
 # Direct TIFF IFD navigation (IFD1 thumbnail extraction)
 tiff = "0.9"
 
-# Fernet — pure-Rust AES-128-CBC + HMAC-SHA256 (no OpenSSL dependency)
-aes     = "0.8"
-cbc     = { version = "0.1", features = ["alloc"] }
-hmac    = "0.12"
-base64  = "0.22"
-
 # Fast file fingerprinting
 sha2 = "0.10"
 hex  = "0.4"

@@ -1,6 +1,14 @@
 """HTTP sidecar for Pictoria's design-match pipeline.
 
-Endpoints: GET /health, POST /describe, POST /verify.
+Endpoints: GET /health, POST /model, POST /model/reset, POST /describe,
+POST /verify.
+
+Two models are involved and they load at different times. The bundled
+mobilenet (gram) loads on the worker thread at startup and gates `ready`. The
+encrypted DINO model (embeddings) can only load once Rust posts the licence
+key to /model after a successful token-validate, and gates `embed_ready` —
+which is what indexing and search actually wait on, since a descriptor
+without its embedding is useless to the near-family scan.
 
 One background worker thread does all the heavy work, one job at a time —
 never two Gabor/Gram/SIFT computations running concurrently, which avoids
@@ -184,11 +192,18 @@ def _run(job: Job) -> dict:
     t_start = time.perf_counter()
 
     if job.kind == "describe":
+        # Checked once for the whole batch rather than per file: without the
+        # DINO model every single describe would fail identically, and Rust
+        # gates on `embed_ready` precisely so this can't happen — so report it
+        # as one job-level error instead of N indistinguishable per-file ones.
+        if not pipeline.embed_model_ready():
+            log.error("describe rejected: DINO embed model not loaded")
+            return {"error": "embed-model-not-loaded"}
         results = []
         for p in job.payload["paths"]:
             d = pipeline.describe(p)
-            results.append({"path": p, "rose": d.rose, "gram": d.gram, "color": d.color,
-                            "dominant": d.dominant} if d
+            results.append({"path": p, "embed": d.embed, "rose": d.rose, "gram": d.gram,
+                            "color": d.color, "dominant": d.dominant} if d
                             else {"path": p, "error": "decode-failed"})
             if job.priority != "search":
                 _drain_search()  # let a just-arrived search cut in, file by file
@@ -228,10 +243,51 @@ def _run(job: Job) -> dict:
 def health():
     """Readiness probe — the Rust side shows 'Model is loading...' until this is true.
 
-    `error` is non-null only when the model load failed outright, which is a
-    terminal state: it will never become ready, so the app should say so rather
-    than keep waiting."""
-    return jsonify({"ready": _ready.is_set(), "error": _load_error})
+    `ready` covers the bundled mobilenet only; `embed_ready` reports the
+    licence-gated DINO model, which stays false (legitimately, not as an error)
+    until Rust posts a key to /model. `embed_dim` lets Rust confirm the model
+    matches the vector store's entry stride before it indexes anything.
+
+    `error` is non-null only when the startup model load failed outright, which
+    is a terminal state: it will never become ready, so the app should say so
+    rather than keep waiting."""
+    return jsonify({
+        "ready": _ready.is_set(),
+        "error": _load_error,
+        "embed_ready": pipeline.embed_model_ready(),
+        "embed_dim": pipeline.embed_model_dim(),
+    })
+
+
+@app.post("/model")
+def model_route():
+    """Body: {key: str}. Decrypt and compile the DINO model. Idempotent.
+
+    Blocks until the model is usable (decrypt + ORT compile is seconds, not
+    milliseconds) and answers with the measured embedding width, so Rust learns
+    the outcome from this one call and never has to poll for it.
+
+    The key is held only for the life of this process and is never logged or
+    written to disk — the exception text is deliberately generic for the same
+    reason.
+    """
+    body = request.get_json(force=True) or {}
+    key = body.get("key")
+    if not key:
+        return jsonify({"error": "key is required"}), 400
+    try:
+        dim = pipeline.load_embed_model(key)
+    except Exception as e:  # noqa: BLE001 - reported to Rust, not swallowed
+        log.exception("DINO embed model load FAILED")
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+    return jsonify({"ok": True, "embed_dim": dim})
+
+
+@app.post("/model/reset")
+def model_reset_route():
+    """Unload the DINO model — logout, or a subscription that lapsed."""
+    pipeline.reset_embed_model()
+    return jsonify({"ok": True})
 
 
 @app.post("/describe")

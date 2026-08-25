@@ -1,4 +1,4 @@
-//! On-demand image cache for the Browse grid and the catalog.
+//! On-demand image cache for the Browse grid.
 //!
 //! Cached renders live in `~/.pictoria/thumbs/<hash>_v<ver>_<max>.jpg`.  The key
 //! is (source path, version, size), so re-use is instant.  Generation reuses the
@@ -11,8 +11,6 @@ use std::path::{Path, PathBuf};
 
 /// Grid thumbnail size (longest edge).
 const THUMB_MAX: u32 = 256;
-/// Higher-resolution render embedded into generated catalogs.
-const CATALOG_MAX: u32 = 1100;
 
 /// Bump when the decode pipeline changes so stale renders regenerate instead of
 /// being served from cache (e.g. the TIFF colour-management fix).
@@ -32,11 +30,6 @@ fn sized_path(orig: &Path, max: u32) -> PathBuf {
 /// Grid thumbnail (256 px).
 pub fn ensure_thumb(orig: &Path) -> Result<PathBuf> {
     ensure_sized(orig, THUMB_MAX)
-}
-
-/// Catalog-quality render (1100 px).
-pub fn ensure_catalog_image(orig: &Path) -> Result<PathBuf> {
-    ensure_sized(orig, CATALOG_MAX)
 }
 
 /// Return the cached render at `max` px, generating it first if needed.

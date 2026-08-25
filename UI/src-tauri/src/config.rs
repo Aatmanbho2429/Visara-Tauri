@@ -10,7 +10,29 @@ pub const APP_VERSION:   &str = "1.1.36";
 pub const SUPABASE_EDGE: &str =
     "https://qpxvwdxuhgbthzbcppye.supabase.co/functions/v1";
 
-// ── Design descriptor (Gabor rose + Gram-matrix) ──────────────────────────
+// ── Design descriptor (DINO embedding + Gabor rose + Gram-matrix) ─────────
+
+/// DINO embedding width for one zoom level. MUST match the model's actual
+/// output — `sidecar/pipeline.py::load_embed_model` measures it and reports it
+/// through `/health`, and `core::sidecar` refuses a mismatch rather than let a
+/// wrong stride be written into `vectors.bin`.
+pub const EMBED_DIM: usize = 1536;
+
+/// Zoom levels the embedding is computed at, matching `_GRAM_ZOOM_SCALES` in
+/// `sidecar/pipeline.py` — the crops are literally shared between the two.
+pub const EMBED_ZOOM_LEVELS: usize = 3;
+
+/// Cosine floor for the near family: every file scoring at least this against
+/// the query goes to SIFT/RANSAC verification, however many that is. This
+/// replaced a fixed top-N shortlist, so it is the only thing bounding how much
+/// work a search does — see `services::search`.
+///
+/// NOT yet calibrated against the real model. Raw cosine baselines are
+/// model-specific: on a grayscale-only corpus, unrelated pairs commonly sit in
+/// the 0.4-0.6 range, so 0.70 may prove looser than "70% similar" sounds. The
+/// number to watch is `near_family_n` in the search timing log — if it is a
+/// large fraction of the library on an ordinary query, this is too low.
+pub const NEAR_FAMILY_MIN_SIM: f32 = 0.70;
 
 /// Gabor orientation-energy histogram: one bin per direction.
 pub const ROSE_DIM: usize = 8;
@@ -20,8 +42,9 @@ pub const ROSE_DIM: usize = 8;
 pub const GRAM_ZOOM_LEVELS: usize = 3;
 pub const GRAM_DIM_PER_ZOOM: usize = 576;
 
-/// Stage-1 ranking weights — how much each descriptor contributes to the
-/// combined score. Must match `sidecar/pipeline.py`'s own defaults.
+/// Weights for the secondary rose+gram score. No longer selects candidates —
+/// the DINO embedding does that — but it is still computed, stored and logged
+/// alongside, and breaks ties between two files at the same embedding cosine.
 pub const ROSE_WEIGHT: f32 = 0.4;
 pub const GRAM_WEIGHT: f32 = 0.6;
 

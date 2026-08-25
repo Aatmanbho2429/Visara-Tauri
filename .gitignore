@@ -22,6 +22,10 @@ python/venv/
 *.onnx.enc
 # Allow the bundled model inside the Tauri resources folder (tracked via Git LFS)
 !UI/src-tauri/resources/models/*.onnx.enc
+# The DINO model now lives with the sidecar that decrypts it. Tracked via Git
+# LFS (see .gitattributes) because the release workflow bundles it into the
+# frozen sidecar and has no other way to obtain it.
+!sidecar/*.onnx.enc
 index.faiss
 meta.db
 # OS

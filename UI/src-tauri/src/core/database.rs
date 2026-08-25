@@ -61,12 +61,6 @@ pub fn open() -> Result<Connection> {
         -- (category, value) is safe — those columns exist in both schemas.
         CREATE INDEX IF NOT EXISTS idx_file_tags_cat_val ON file_tags(category, value);
 
-        CREATE TABLE IF NOT EXISTS catalog_themes (
-            id         TEXT PRIMARY KEY,
-            name       TEXT NOT NULL,
-            json       TEXT NOT NULL,   -- serialized document model (pages + elements)
-            updated_at REAL NOT NULL DEFAULT 0
-        );
     ")?;
 
     // Idempotent column additions for databases created before these columns existed.
@@ -643,8 +637,7 @@ pub fn tag_facets(con: &Connection) -> Result<Vec<TagFacet>> {
 /// category are OR'd together (e.g. color = "Light Grey" OR "Beige" OR "Green"
 /// shows tiles in any of those colors), while different categories are AND'd
 /// (e.g. color must match AND finish must match). With no filters, returns
-/// every indexed image (capped) — used by the catalog editor's image-library
-/// panel to show the whole library.
+/// every indexed image (capped).
 pub fn query_paths_by_tags(con: &Connection, filters: &[(String, String)]) -> Result<Vec<String>> {
     if filters.is_empty() {
         let mut stmt = con.prepare("SELECT path FROM files ORDER BY path LIMIT 5000")?;
@@ -702,63 +695,6 @@ pub fn paths_missing_category_in_folder(con: &Connection, folder: &str, category
     Ok(rows)
 }
 
-// ── Catalog themes ──────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ThemeSummary {
-    pub id:         String,
-    pub name:       String,
-    pub updated_at: f64,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct Theme {
-    pub id:         String,
-    pub name:       String,
-    pub json:       String,
-    pub updated_at: f64,
-}
-
-pub fn save_theme(con: &Connection, id: &str, name: &str, json: &str) -> Result<()> {
-    con.execute(
-        "INSERT OR REPLACE INTO catalog_themes (id, name, json, updated_at) VALUES (?1,?2,?3,?4)",
-        params![id, name, json, now_secs()],
-    )?;
-    Ok(())
-}
-
-pub fn list_themes(con: &Connection) -> Result<Vec<ThemeSummary>> {
-    let mut stmt = con.prepare(
-        "SELECT id, name, updated_at FROM catalog_themes ORDER BY updated_at DESC",
-    )?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(ThemeSummary { id: r.get(0)?, name: r.get(1)?, updated_at: r.get(2)? })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(rows)
-}
-
-pub fn get_theme(con: &Connection, id: &str) -> Result<Option<Theme>> {
-    let mut stmt = con.prepare(
-        "SELECT id, name, json, updated_at FROM catalog_themes WHERE id = ?1",
-    )?;
-    let row = stmt.query_row(params![id], |r| {
-        Ok(Theme { id: r.get(0)?, name: r.get(1)?, json: r.get(2)?, updated_at: r.get(3)? })
-    });
-    match row {
-        Ok(t) => Ok(Some(t)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-pub fn delete_theme(con: &Connection, id: &str) -> Result<()> {
-    con.execute("DELETE FROM catalog_themes WHERE id = ?1", params![id])?;
-    Ok(())
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 fn normalise_folder_prefix(folder: &str) -> String {
@@ -783,8 +719,7 @@ mod tests {
         con.execute_batch(
             "CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, faiss_id INTEGER UNIQUE NOT NULL, mtime REAL NOT NULL DEFAULT 0);
              CREATE TABLE watched_folders (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, status TEXT NOT NULL DEFAULT 'watching', added_at REAL NOT NULL, last_event_at REAL NOT NULL DEFAULT 0);
-             CREATE TABLE file_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, category TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', created_at REAL NOT NULL DEFAULT 0, UNIQUE(file_id,category,value));
-             CREATE TABLE catalog_themes (id TEXT PRIMARY KEY, name TEXT NOT NULL, json TEXT NOT NULL, updated_at REAL NOT NULL DEFAULT 0);",
+             CREATE TABLE file_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, category TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', created_at REAL NOT NULL DEFAULT 0, UNIQUE(file_id,category,value));",
         ).unwrap();
         con
     }
@@ -890,22 +825,6 @@ mod tests {
         assert_eq!(missing.len(), 4);
     }
 
-    #[test]
-    fn catalog_theme_crud() {
-        let con = mem();
-        save_theme(&con, "t1", "My Catalog", "{\"pages\":[1]}").unwrap();
-        save_theme(&con, "t2", "Second", "{}").unwrap();
-        assert_eq!(list_themes(&con).unwrap().len(), 2);
-        let g = get_theme(&con, "t1").unwrap().unwrap();
-        assert_eq!(g.name, "My Catalog");
-        assert_eq!(g.json, "{\"pages\":[1]}");
-        save_theme(&con, "t1", "Renamed", "{\"x\":1}").unwrap(); // replace
-        assert_eq!(get_theme(&con, "t1").unwrap().unwrap().name, "Renamed");
-        assert_eq!(list_themes(&con).unwrap().len(), 2);
-        delete_theme(&con, "t1").unwrap();
-        assert!(get_theme(&con, "t1").unwrap().is_none());
-        assert_eq!(list_themes(&con).unwrap().len(), 1);
-    }
 
     #[test]
     fn file_find_move_delete() {

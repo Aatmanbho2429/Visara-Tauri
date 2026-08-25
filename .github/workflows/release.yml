@@ -167,6 +167,37 @@ jobs:
           fi
           echo "checkpoint verified ($ACTUAL)"
 
+      # The encrypted DINO model comes from the repo via Git LFS, not a
+      # download — it is the licensed artefact and there is nowhere public to
+      # fetch it from. The check that matters is the LFS one: if `lfs: true`
+      # ever regresses, or the object is missing from the LFS remote, checkout
+      # silently leaves a ~134-byte pointer *text file* in its place.
+      # PyInstaller would bundle that quite happily, and the failure would only
+      # surface on a user's machine as a decryption error behind a permanent
+      # "Model is loading...".
+      - name: Verify encrypted DINO model
+        shell: bash
+        working-directory: sidecar
+        run: |
+          set -euo pipefail
+          MODEL=clip_vitb32.onnx.enc
+          if [ ! -f "$MODEL" ]; then
+            echo "::error::$MODEL missing — it must be committed (Git LFS)."
+            exit 1
+          fi
+          if head -c 40 "$MODEL" | grep -q 'git-lfs.github.com'; then
+            echo "::error::$MODEL is an unexpanded Git LFS pointer, not the model."
+            echo "::error::Check that checkout ran with lfs:true and the LFS object exists."
+            exit 1
+          fi
+          # Fernet tokens are URL-safe base64 of a 0x80 version byte, which is
+          # always "gAAAAA" once encoded. Catches a truncated or wrong file.
+          if ! head -c 6 "$MODEL" | grep -q '^gAAAAA'; then
+            echo "::error::$MODEL is not a Fernet token (bad magic)."
+            exit 1
+          fi
+          echo "DINO model present ($(wc -c < "$MODEL") bytes)"
+
       # Produces sidecar/dist/pictoria-sidecar[.exe] — see sidecar/README.md.
       #
       # PyInstaller freezes whatever interpreter runs it, so the Intel leg has
@@ -221,6 +252,7 @@ jobs:
 
           "${PY[@]}" -m PyInstaller --onefile --name pictoria-sidecar \
             --add-data "weights/mobilenet_v2-b0353104.pth${SEP}weights" \
+            --add-data "clip_vitb32.onnx.enc${SEP}." \
             --distpath dist --workpath build --specpath . server.py
 
       # The whole point of the per-leg Python above is that the frozen binary
