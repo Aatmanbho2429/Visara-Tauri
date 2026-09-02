@@ -165,10 +165,16 @@ subscription status (`subscriptionGuard` — profile stays open even when expire
 renew). `master` is the shell layout hosting the gated feature views as router children.
 
 ## Conventions
-
-- 2-space indent, single quotes in TS (`.editorconfig`, `.prettierrc`), 100-col print width.
-- Rust doc comments at module top explain *why*, not just what — match that density when editing
-  `core::sidecar`, `services::search`, etc.; these files carry non-obvious historical context
-  (timeout tuning, platform quirks) worth preserving in comments rather than trimming.
-- App only supports `jpg`/`jpeg`/`png`.
--Use only 1 line comments to explain functions or veriables, no more than 2 lines.
+Detailed, path-scoped rules live in `.claude/rules/` and load automatically when Claude works with matching files — they don't need to be repeated here:
+ 
+| Rule file | Covers |
+|---|---|
+| `ui-framework.md` | PrimeNG usage |
+| `models.md` | Request/Response model conventions |
+| `services.md` | Entity-based service structure |
+| `api-response-format.md` | The `{statusCode, message, data}` envelope |
+| `tauri-ipc.md` | `invoke` / `emit` naming and wiring |
+| `zone-wrapper.md` | Routing every Tauri call through `ZoneWrapperService` |
+| `code-comments.md` | One-line comment style |
+ 
+There's also a `/scaffold-entity` skill (`.claude/skills/scaffold-entity/`) that walks through adding a new entity end-to-end following all of the above.
