@@ -1,4 +1,4 @@
-//! File-system utilities: directory scanning and fast content hashing.
+// File-system utilities: directory scanning and fast content hashing.
 
 use crate::{config, error::Result};
 use sha2::{Digest, Sha256};
@@ -9,13 +9,13 @@ use std::{
 };
 use walkdir::WalkDir;
 
-/// Directories silently skipped during recursive image scans.
+// Directories silently skipped during recursive image scans.
 const SKIP_DIRS: &[&str] = &["__macosx", ".DS_Store", "Thumbs.db"];
 
 // ── Directory scanning ────────────────────────────────────────────────────
 
-/// Recursively yield every image file under `folder`.
-/// Hidden / system directories are skipped.
+// Recursively yield every image file under `folder`.
+// Hidden / system directories are skipped.
 pub fn scan_images(folder: &Path) -> Vec<PathBuf> {
     WalkDir::new(folder)
         .follow_links(false)
@@ -45,10 +45,10 @@ fn is_image(path: &Path) -> bool {
 
 // ── File hashing ──────────────────────────────────────────────────────────
 
-/// SHA-256 of `file_size_bytes || first_HASH_BYTES_of_file`.
-///
-/// Using only the file size + head bytes (64 KiB) keeps hashing sub-millisecond
-/// even for gigabyte TIFFs while still reliably detecting any modification.
+// SHA-256 of `file_size_bytes || first_HASH_BYTES_of_file`.
+//
+// Using only the file size + head bytes (64 KiB) keeps hashing sub-millisecond
+// even for gigabyte TIFFs while still reliably detecting any modification.
 pub fn fast_hash(path: &Path) -> Result<String> {
     let metadata  = std::fs::metadata(path)?;
     let file_size = metadata.len();

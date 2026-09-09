@@ -43,7 +43,7 @@ npm test -- --list-tests                                  # discover without run
 # Rust — from UI/src-tauri/, or `cargo check --manifest-path UI/src-tauri/Cargo.toml`
 cargo check
 cargo build
-cargo test                     # unit tests live in core::database, core::vector_store, services::search
+cargo test                     # unit tests live in core::database, core::vector_store, services::search::search_service
 cargo test vector_store        # one module
 
 # Full desktop build/package
@@ -97,22 +97,30 @@ seals the `.app`, then builds/publishes the Tauri bundle.
 ### Rust backend layering (`UI/src-tauri/src/`)
 
 ```
-commands/  — #[tauri::command] entry points. Thin: parse args, call a services::* fn, emit
-             a `<command>_response` event (see IPC pattern below). One file per feature area.
-services/  — business logic: auth, browse, library, license, search, subscription, sync, tags.
-             Orchestrate core/* primitives; this is where most real work should be added.
+commands/  — #[tauri::command] entry points, one file per entity: <entity>_commands.rs. Thin:
+             parse args, call a services::* fn, emit `<command>_response` carrying the
+             ApiResponse envelope (see IPC pattern below).
+services/  — business logic, one folder per entity: services/<entity>/<entity>_service.rs,
+             re-exported through services/<entity>/mod.rs so `services::auth::login(...)` etc.
+             still resolves without callers caring about the extra directory level. Orchestrates
+             core/* primitives and returns ApiResponse<T>; this is where most real work goes.
+models/    — the IPC-boundary types: models/request/ and models/response/, one module per
+             entity, mirroring UI/src/app/models/ field-for-field (`#[serde(rename_all =
+             "camelCase")]` on every struct). ApiResponse<T> lives in
+             models/response/api_response.rs.
 core/      — low-level primitives with no Tauri dependency: database (SQLite), vector_store
              (custom flat-vector index, replaces FAISS), sidecar (process lifecycle + HTTP
              client to the Python service), watcher (filesystem watching for Watch Folders),
              thumbs, color, search_gate, migrate, progress.
 config.rs  — ALL paths, ports, tuning constants, and filesystem-path resolution live here.
              Nothing is hard-coded elsewhere — `use crate::config::*`.
-error.rs   — PictoriaError + Result alias used throughout.
-utils/     — file_utils, image_loader.
+error.rs   — PictoriaError + Result alias used throughout; `.to_response::<T>()` builds the
+             error-range ApiResponse<T> straight from a PictoriaError's status_code() mapping.
+utils/     — file_utils, image_loader, hotkey (clipboard temp-file path).
 lib.rs     — Tauri::Builder wiring only: plugins, tray, global hot-key, invoke_handler list,
-             app lifecycle (setup/window-close-to-tray/exit cleanup). No business logic.
-main.rs    — three lines; just calls `pictoria_lib::run()`. New commands are registered in
-             lib.rs, not here.
+             app lifecycle (setup/window-close-to-tray/exit cleanup). No business logic. New
+             commands are registered here, not in main.rs.
+main.rs    — three lines; just calls `pictoria_lib::run()`.
 ```
 
 Key invariant: **Rust owns every disk write** to `~/.pictoria/meta.db` (SQLite metadata +
@@ -158,40 +166,50 @@ cached "valid" subscription state survives with no network before forcing a re-v
 
 ### IPC pattern (Angular ↔ Rust)
 
-Commands are **not** simple request/response. `TauriService.invoke()`
-([tauri.service.ts](UI/src/app/services/tauri.service.ts)) calls `invoke(command, args)` but
-resolves via a Tauri *event* named `<command>_response`, not the invoke's own return value —
-commands emit that event from Rust (typically after spawning async work) rather than returning a
-value directly. When adding a new Tauri command, follow this event-emission pattern.
+Commands are **not** simple request/response. `ZoneWrapperService.invoke()`
+([zone-wrapper.service.ts](UI/src/app/core/zone-wrapper/zone-wrapper.service.ts)) calls
+`invoke(command, {...args, requestId})` but resolves via a Tauri *event* named
+`<command>_response`, not the invoke's own return value — commands emit that event from Rust
+(typically after spawning async work) rather than returning a value directly. The client-generated
+`requestId` is echoed back in the envelope and matched before the Observable resolves, so a
+command fired concurrently more than once (`browse_get_thumbnail` — the Browse grid asks for
+dozens at once) can't have one response satisfy the wrong caller. When adding a new Tauri command,
+follow this event-emission pattern and thread `request_id: Option<String>` through it.
 
-`TauriService` is also the NgZone boundary: it listens outside Angular's zone and re-enters via
-`zone.run()`, so callers get change detection for free. It is the only file that should import
-`@tauri-apps/api` — Angular services (`auth.service.ts`, `library.service.ts`, …) inject
-`TauriService` and pass the command name as a string literal.
+`ZoneWrapperService` is also the NgZone boundary — it listens outside Angular's zone and re-enters
+via `zone.run()` — and the **only** file that imports `@tauri-apps/api` (including
+`convertFileSrc`, wrapped as `toAssetUrl()`). Angular services (`auth.service.ts`,
+`library.service.ts`, …) inject it and pass command/event names from the registries in
+`UI/src/app/core/tauri/` (`tauri-commands.const.ts`, `tauri-events.const.ts`) rather than string
+literals.
 
-Four call shapes:
+Five call shapes:
 
 | Method | Use |
 |---|---|
-| `invoke<T>()` | normal command; shows the global loader |
+| `invoke<T>()` | normal command; shows the global loader; resolves with `data`, errors with `ApiError` on a non-2xx `statusCode` |
 | `invokeSilent<T>()` | background/periodic work (e.g. licence re-validation); no loader |
-| `searchStream()` | `search_progress` / `search_complete` / `search_error` |
-| `onLibrarySync()` | `library_sync_started` / `_progress` / `_complete` / `_error` |
+| `invokeFireAndForget()` | a command with no `_response` counterpart — `search_start`/`update_check`/`update_install` report entirely through their own broadcast events |
+| `listen<T>()` | subscribe to a broadcast event; returns the full `ApiResponse<T>` envelope, since a stream can carry more than one outcome over its lifetime |
+| `toAssetUrl()` | `convertFileSrc` passthrough, so this stays the only `@tauri-apps/api` import site |
 
-Every event-based command carries the same envelope, `BaseResponse<T>`
-([base-response.model.ts](UI/src/app/models/base-response.model.ts)):
+Every command/event response carries the same envelope, `ApiResponse<T>`
+([api_response.rs](UI/src-tauri/src/models/response/api_response.rs) ↔
+[apiResponse.ts](UI/src/app/models/response/apiResponse.ts)):
 
 ```ts
-{ success: boolean; message: string; data: T | null }
+{ statusCode: number; message: string; data: T | null; requestId?: string }
 ```
 
-Rust builds it inline with `serde_json::json!` in `services/*` — there is no shared
-`ApiResponse<T>` struct.
+`PictoriaError::to_response::<T>()` builds the error-range envelope directly from a
+`PictoriaError`'s `status_code()` mapping (401 for session errors, 409 `SearchBusy`, 422 image
+decode, 503 network/model-not-ready, 500 everything else). Components never check `.success` —
+`BaseComponent.handle(obs, onSuccess, onError?)` (or a raw `.subscribe({next, error})`) is how the
+error branch is reached, with `onError` receiving the thrown `ApiError`.
 
-Deliberate exceptions that don't emit a `_response` event: `get_thumbnail` resolves the invoke
-promise directly (the Browse grid fires dozens concurrently and a shared `_response` event would
-cross-wire them), as do `reset_notice_pending` and `dismiss_reset_notice` (no async work behind
-them); `open_file_path` is fire-and-forget. The first three carry a comment saying why.
+Every command emits its `_response` event — there is no more direct-return exception for
+`get_thumbnail`/`reset_notice_pending`/`dismiss_reset_notice`; the `requestId` correlation above
+is what makes that safe even under the Browse grid's concurrent thumbnail requests.
 
 `UI/src-tauri/capabilities/default.json` lists **plugin** permissions (dialog, global-shortcut,
 autostart, window), not commands. A new `#[tauri::command]` needs registering in the
@@ -199,14 +217,16 @@ autostart, window), not commands. A new `#[tauri::command]` needs registering in
 
 ### Angular structure (`UI/src/app/`)
 
-Standalone-components style (Angular 21, PrimeNG UI kit). `views/` are routed pages (login,
-master shell with search/library/browse/profile children — see `app.routes.ts`), `services/`
-wrap Tauri IPC + app state, `guards/` gate routes on auth (`authGuard`/`loginGuard`) and
-subscription status (`subscriptionGuard` — profile stays open even when expired, so users can
-renew). `master` is the shell layout hosting the gated feature views as router children.
+Standalone-components style (Angular 21, PrimeNG UI kit, per-component module imports — no shared
+barrel). `views/` are routed pages (login, master shell with search/library/browse/profile
+children — see `app.routes.ts`), `services/` (one folder per entity, e.g. `services/auth/`) wrap
+Tauri IPC + app state, `guards/` gate routes on auth (`authGuard`/`loginGuard`) and subscription
+status (`subscriptionGuard` — profile stays open even when expired, so users can renew). `master`
+is the shell layout hosting the gated feature views as router children.
 
-Services and models are flat files, not per-entity folders: `services/<name>.service.ts`,
-`models/<name>.model.ts` (interfaces for both directions live in the same file).
+`models/request/` and `models/response/` mirror the Rust `models/` tree field-for-field (both
+camelCase); a shared shape (e.g. `requestPath { path }`) is factored into one file and reused
+across the commands that take it, rather than one file per literal command.
 
 ## Cross-file invariants
 
@@ -233,33 +253,25 @@ machine, not at build time.
 
 ## Conventions
 
-`.claude/rules/` holds path-scoped rules that load automatically when Claude works with matching
-files. Only `code-format.md` (one-line `//` comments, no JSDoc, no `///` on the Rust side)
-describes the code as it exists today.
+`.claude/rules/` holds path-scoped rules (globs rooted at `UI/`, so they load automatically when
+Claude works with matching files) — all seven now describe the code as it exists.
 
-| Rule file | Covers | Status |
-|---|---|---|
-| `code-format.md` | One-line comment style | matches the codebase |
-| `ui-framework.md` | PrimeNG + PrimeIcons usage | matches the codebase |
-| `models.md` | `models/request/` + `models/response/` split | **aspirational** |
-| `services.md` | Per-entity service folders, `ApiResponse<T>` | **aspirational** |
-| `api-response-format.md` | `{statusCode, message, data}` envelope | **aspirational** |
-| `tauri-ipc.md` | Command-name const registry, capabilities allowlist | **aspirational** |
-| `zone-wrapper.md` | `ZoneWrapperService` | **aspirational** |
+| Rule file | Covers |
+|---|---|
+| `code-format.md` | One-line `//` comment style — no JSDoc, no `///`/`//!` on the Rust side |
+| `ui-framework.md` | PrimeNG + PrimeIcons usage, per-component module imports |
+| `models.md` | `models/request/` + `models/response/` split, camelCase, mirrored trees |
+| `services.md` | Per-entity service folders, `ApiResponse<T>` |
+| `api-response-format.md` | `{statusCode, message, data}` envelope |
+| `tauri-ipc.md` | Command-name const registry, capabilities allowlist, `lib.rs` registration |
+| `zone-wrapper.md` | `ZoneWrapperService` as the sole `@tauri-apps/api` import site |
 
-The rows marked aspirational describe a target structure the tree has not been migrated to.
-Where they conflict with what's actually in the repo, **the repo wins** — follow the surrounding
-code, and don't "fix" existing files to match a rule. Concretely, today:
+One deliberate, documented simplification versus a literal reading of `models.md`: a request/
+response shape shared by several commands (e.g. `requestPath { path }`, used by
+`browse_directory`, `library_add_folder`, `library_rescan_folder`, …) lives in one file
+(`request_common.rs` / `requestCommon.ts`) rather than being duplicated per command. The "mirrored
+trees" invariant still holds — both sides define the same shape under the same name — it's just
+not literally one-file-per-command where the command's own shape adds nothing.
 
-- The envelope is `BaseResponse { success, message, data }`, not `ApiResponse { statusCode, … }`.
-- There is no `ZoneWrapperService`; `services/tauri.service.ts` is the zone boundary.
-- There is no `src-tauri/src/models/` tree and no `core/tauri/tauri-commands.const.ts` registry —
-  command names are string literals at the call site.
-- Rust services and commands are flat files (`services/auth.rs`, `commands/auth.rs`), not
-  `services/auth/auth_service.rs` / `commands/auth_commands.rs`.
-- Commands are registered in `lib.rs`, not `main.rs`, and need no capabilities entry.
-- The rules' `paths:` globs are rooted at `src/` and `src-tauri/`, but the real tree is under
-  `UI/` — so they do not currently auto-load for any file.
-
-The `/scaffold-entity` skill (`.claude/skills/scaffold-entity/`) walks the same aspirational
-structure and carries the same caveat.
+The `/scaffold-entity` skill (`.claude/skills/scaffold-entity/`) walks the same structure new
+entities should follow.

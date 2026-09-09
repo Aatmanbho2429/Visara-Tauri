@@ -1,5 +1,5 @@
-//! Central configuration — all paths, constants, and tuning knobs live here.
-//! Nothing is hard-coded elsewhere; other modules `use crate::config::*`.
+// Central configuration — all paths, constants, and tuning knobs live here.
+// Nothing is hard-coded elsewhere; other modules `use crate::config::*`.
 
 use std::path::PathBuf;
 use once_cell::sync::Lazy;
@@ -12,71 +12,71 @@ pub const SUPABASE_EDGE: &str =
 
 // ── Design descriptor (DINO embedding + Gabor rose + Gram-matrix) ─────────
 
-/// DINO embedding width for one zoom level. MUST match the model's actual
-/// output — `sidecar/pipeline.py::load_embed_model` measures it and reports it
-/// through `/health`, and `core::sidecar` refuses a mismatch rather than let a
-/// wrong stride be written into `vectors.bin`.
+// DINO embedding width for one zoom level. MUST match the model's actual
+// output — `sidecar/pipeline.py::load_embed_model` measures it and reports it
+// through `/health`, and `core::sidecar` refuses a mismatch rather than let a
+// wrong stride be written into `vectors.bin`.
 pub const EMBED_DIM: usize = 1536;
 
-/// Zoom levels the embedding is computed at, matching `_GRAM_ZOOM_SCALES` in
-/// `sidecar/pipeline.py` — the crops are literally shared between the two.
+// Zoom levels the embedding is computed at, matching `_GRAM_ZOOM_SCALES` in
+// `sidecar/pipeline.py` — the crops are literally shared between the two.
 pub const EMBED_ZOOM_LEVELS: usize = 3;
 
-/// Cosine floor for the near family: every file scoring at least this against
-/// the query goes to SIFT/RANSAC verification, however many that is. This
-/// replaced a fixed top-N shortlist, so it is the only thing bounding how much
-/// work a search does — see `services::search`.
-///
-/// NOT yet calibrated against the real model. Raw cosine baselines are
-/// model-specific: on a grayscale-only corpus, unrelated pairs commonly sit in
-/// the 0.4-0.6 range, so 0.70 may prove looser than "70% similar" sounds. The
-/// number to watch is `near_family_n` in the search timing log — if it is a
-/// large fraction of the library on an ordinary query, this is too low.
+// Cosine floor for the near family: every file scoring at least this against
+// the query goes to SIFT/RANSAC verification, however many that is. This
+// replaced a fixed top-N shortlist, so it is the only thing bounding how much
+// work a search does — see `services::search`.
+//
+// NOT yet calibrated against the real model. Raw cosine baselines are
+// model-specific: on a grayscale-only corpus, unrelated pairs commonly sit in
+// the 0.4-0.6 range, so 0.70 may prove looser than "70% similar" sounds. The
+// number to watch is `near_family_n` in the search timing log — if it is a
+// large fraction of the library on an ordinary query, this is too low.
 pub const NEAR_FAMILY_MIN_SIM: f32 = 0.70;
 
-/// Gabor orientation-energy histogram: one bin per direction.
+// Gabor orientation-energy histogram: one bin per direction.
 pub const ROSE_DIM: usize = 8;
 
-/// Gram-matrix texture descriptor: 3 zoom levels x 24x24 flattened channel
-/// correlations (mobilenet_v2 block 4).
+// Gram-matrix texture descriptor: 3 zoom levels x 24x24 flattened channel
+// correlations (mobilenet_v2 block 4).
 pub const GRAM_ZOOM_LEVELS: usize = 3;
 pub const GRAM_DIM_PER_ZOOM: usize = 576;
 
-/// Weights for the secondary rose+gram score. No longer selects candidates —
-/// the DINO embedding does that — but it is still computed, stored and logged
-/// alongside, and breaks ties between two files at the same embedding cosine.
+// Weights for the secondary rose+gram score. No longer selects candidates —
+// the DINO embedding does that — but it is still computed, stored and logged
+// alongside, and breaks ties between two files at the same embedding cosine.
 pub const ROSE_WEIGHT: f32 = 0.4;
 pub const GRAM_WEIGHT: f32 = 0.6;
 
 // ── Sidecar (Python: Gabor/Gram descriptors + SIFT/RANSAC verification) ──
 
-/// Localhost port the sidecar's HTTP server listens on.
+// Localhost port the sidecar's HTTP server listens on.
 pub const SIDECAR_PORT: u16 = 8756;
 
-/// How often `core::sidecar` polls `/health` while waiting for the model to
-/// finish loading at startup.
+// How often `core::sidecar` polls `/health` while waiting for the model to
+// finish loading at startup.
 pub const SIDECAR_HEALTH_POLL_MS: u64 = 300;
 
 // ── Processing ────────────────────────────────────────────────────────────
 
-/// Rayon thread-pool size for parallel image pre-processing.
+// Rayon thread-pool size for parallel image pre-processing.
 pub const NUM_WORKERS: usize = 8;
 
-/// Number of bytes read from the start of each file for the fast hash.
+// Number of bytes read from the start of each file for the fast hash.
 pub const HASH_BYTES: u64 = 65_536; // 64 KiB
 
-/// How often the background watcher streams a progress snapshot to the UI
-/// while a folder is being indexed.
+// How often the background watcher streams a progress snapshot to the UI
+// while a folder is being indexed.
 pub const PROGRESS_EMIT_INTERVAL_MS: u64 = 400;
 
 // ── Licensing ─────────────────────────────────────────────────────────────
 
-/// How long the app may run on a cached "valid" subscription state without
-/// being able to reach Supabase (e.g. no internet) before it forces a fresh
-/// `validate-token-test` round-trip and unloads the AI model if that fails
-/// too. Keeps the app usable offline for short periods (flights, poor
-/// connectivity) without allowing an indefinitely-cached "expired but still
-/// works" session.
+// How long the app may run on a cached "valid" subscription state without
+// being able to reach Supabase (e.g. no internet) before it forces a fresh
+// `validate-token-test` round-trip and unloads the AI model if that fails
+// too. Keeps the app usable offline for short periods (flights, poor
+// connectivity) without allowing an indefinitely-cached "expired but still
+// works" session.
 pub const OFFLINE_GRACE_SECS: i64 = 3 * 24 * 3600; // 3 days
 
 // ── Supported image extensions ────────────────────────────────────────────
@@ -86,28 +86,28 @@ pub const IMAGE_EXTENSIONS: &[&str] =
 
 // ── Filesystem paths (resolved once at startup) ───────────────────────────
 
-/// Resource directory resolved at startup from `app.path().resource_dir()`.
-/// Layout differs between platforms and dev/packaged builds, so we never assume
-/// a single sub-path — `model_enc_path()` probes several candidates below.
+// Resource directory resolved at startup from `app.path().resource_dir()`.
+// Layout differs between platforms and dev/packaged builds, so we never assume
+// a single sub-path — `model_enc_path()` probes several candidates below.
 static RESOURCE_DIR: once_cell::sync::OnceCell<PathBuf> =
     once_cell::sync::OnceCell::new();
 
-/// Called from `setup()` once the Tauri `AppHandle` is available.
+// Called from `setup()` once the Tauri `AppHandle` is available.
 pub fn set_resource_dir(resource_dir: PathBuf) {
     let _ = RESOURCE_DIR.set(resource_dir);
 }
 
-/// Frozen sidecar executable name, per-platform (matches the PyInstaller
-/// output and the Tauri `externalBin` target-triple naming convention).
-/// `pub(crate)` so `core::sidecar` can reuse the same name when sweeping up
-/// an orphaned process at startup, rather than duplicating the literal.
+// Frozen sidecar executable name, per-platform (matches the PyInstaller
+// output and the Tauri `externalBin` target-triple naming convention).
+// `pub(crate)` so `core::sidecar` can reuse the same name when sweeping up
+// an orphaned process at startup, rather than duplicating the literal.
 #[cfg(target_os = "windows")]
 pub(crate) const SIDECAR_FILE: &str = "pictoria-sidecar.exe";
 #[cfg(not(target_os = "windows"))]
 pub(crate) const SIDECAR_FILE: &str = "pictoria-sidecar";
 
-/// Resolve the frozen sidecar binary the same way `model_enc_path()` used to
-/// resolve the encrypted model — probe bundle layout, then dev fallbacks.
+// Resolve the frozen sidecar binary the same way `model_enc_path()` used to
+// resolve the encrypted model — probe bundle layout, then dev fallbacks.
 pub fn sidecar_bin_path() -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -156,23 +156,23 @@ pub fn sidecar_bin_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(SIDECAR_FILE))
 }
 
-/// User-scoped data directory:  ~/.pictoria/   (created on first run).
+// User-scoped data directory:  ~/.pictoria/   (created on first run).
 pub static DATA_DIR: Lazy<PathBuf> = Lazy::new(|| {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".pictoria")
 });
 
-/// SQLite database that maps file paths ↔ vector IDs.
+// SQLite database that maps file paths ↔ vector IDs.
 pub static DB_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("meta.db"));
 
-/// Custom flat-vector store (replaces FAISS index).
+// Custom flat-vector store (replaces FAISS index).
 pub static VECTOR_STORE_PATH: Lazy<PathBuf> =
     Lazy::new(|| DATA_DIR.join("vectors.bin"));
 
-/// Bearer-token persisted between sessions.
-/// This is the ONLY file written to disk — deleted on logout.
-/// The model key and user data live in memory only (sourced from validate-token).
+// Bearer-token persisted between sessions.
+// This is the ONLY file written to disk — deleted on logout.
+// The model key and user data live in memory only (sourced from validate-token).
 pub static TOKEN_FILE: Lazy<PathBuf> =
     Lazy::new(|| dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))

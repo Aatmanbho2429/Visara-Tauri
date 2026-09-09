@@ -1,14 +1,14 @@
-import { ApplicationRef, Component, inject, NgZone, OnDestroy, OnInit } from '@angular/core';
+import { ApplicationRef, Component, inject, OnDestroy, OnInit } from '@angular/core';
 import { Router, RouterOutlet } from '@angular/router';
 import { TranslateService } from '@ngx-translate/core';
-import type { UnlistenFn } from '@tauri-apps/api/event';
 import { MessageService } from 'primeng/api';
 import { ToastModule } from 'primeng/toast';
 import { GlobalLoader } from './shared/global-loader/global-loader';
-import { TauriService, HotkeyEvent } from './services/tauri.service';
-import { UpdateService } from './services/update.service';
-import { UserStateService } from './services/user-state.service';
-import { SearchStateService } from './services/search-state.service';
+import { HotkeyService } from './services/hotkey/hotkey.service';
+import { responseHotkeyPressed } from './models/response/responseMisc';
+import { UpdateService } from './services/update/update.service';
+import { UserStateService } from './services/user/user-state.service';
+import { SearchStateService } from './services/search/search-state.service';
 
 @Component({
   selector: 'app-root',
@@ -18,22 +18,21 @@ import { SearchStateService } from './services/search-state.service';
   styleUrl: './app.scss'
 })
 export class App implements OnInit, OnDestroy {
-  /** Key under which we stash a pending clipboard image path while user is logged out. */
+  // Key under which we stash a pending clipboard image path while user is logged out.
   static readonly PENDING_IMAGE_KEY = 'pictoria_pending_hotkey_image';
 
-  /** Persistent flag — once true, never show the intro tip again. */
+  // Persistent flag — once true, never show the intro tip again.
   private static readonly TIP_SEEN_KEY = 'pictoria_hotkey_tip_seen_v1';
 
-  private tauri       = inject(TauriService);
-  private userState   = inject(UserStateService);
-  private searchState = inject(SearchStateService);
-  private router      = inject(Router);
-  private zone        = inject(NgZone);
-  private appRef      = inject(ApplicationRef);
-  private messages    = inject(MessageService);
-  private updates     = inject(UpdateService);
+  private hotkey       = inject(HotkeyService);
+  private userState    = inject(UserStateService);
+  private searchState  = inject(SearchStateService);
+  private router       = inject(Router);
+  private appRef       = inject(ApplicationRef);
+  private messages     = inject(MessageService);
+  private updates      = inject(UpdateService);
 
-  private unlisten: UnlistenFn | null = null;
+  private unlisten: (() => void) | null = null;
 
   constructor(translate: TranslateService) {
     translate.setDefaultLang('en');
@@ -41,8 +40,7 @@ export class App implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
-    this.tauri.onHotkey(p => this.zone.run(() => this.handleHotkey(p)))
-      .then(fn => { this.unlisten = fn; });
+    this.unlisten = this.hotkey.onHotkey(p => this.handleHotkey(p));
 
     // Start the update check here, at app boot, rather than in `Master` —
     // `Master` only mounts once the user reaches /master/..., so previously a
@@ -85,10 +83,10 @@ export class App implements OnInit, OnDestroy {
     this.unlisten?.();
   }
 
-  private handleHotkey(payload: HotkeyEvent): void {
+  private handleHotkey(payload: responseHotkeyPressed): void {
     if (this.userState.user) {
-      if (payload.has_image) {
-        this.loadClipboardIntoSearchState(payload.image_path);
+      if (payload.hasImage) {
+        this.loadClipboardIntoSearchState(payload.imagePath);
         this.messages.add({
           key: 'app',
           severity: 'success',
@@ -111,10 +109,10 @@ export class App implements OnInit, OnDestroy {
         // state mutations made from a Tauri event callback.
         this.appRef.tick();
       });
-    } else if (payload.has_image) {
+    } else if (payload.hasImage) {
       // Logged out → remember the captured image path; login.ts will pick
       // it up after sign-in.
-      sessionStorage.setItem(App.PENDING_IMAGE_KEY, payload.image_path);
+      sessionStorage.setItem(App.PENDING_IMAGE_KEY, payload.imagePath);
     }
   }
 

@@ -1,8 +1,8 @@
-//! Smart image loading that handles every format Pictoria indexes:
-//! JPEG, PNG, TIFF (including multi-page), PSD, and PSB.
-//!
-//! All functions return a decoded `image::DynamicImage` in RGB8 colour space,
-//! ready for the CLIP pre-processing pipeline.
+// Smart image loading that handles every format Pictoria indexes:
+// JPEG, PNG, TIFF (including multi-page), PSD, and PSB.
+//
+// All functions return a decoded `image::DynamicImage` in RGB8 colour space,
+// ready for the CLIP pre-processing pipeline.
 
 use crate::error::{Result, PictoriaError};
 use image::{DynamicImage, ImageReader};
@@ -13,30 +13,30 @@ use std::{
 
 // ── Public entry point ────────────────────────────────────────────────────
 
-/// Load any supported image format from disk and return it as `DynamicImage`.
-///
-/// Strategy per format:
-/// - **JPEG / PNG / BMP / WebP / GIF** — decoded directly by the `image` crate.
-/// - **TIFF** — tries the embedded IFD1 thumbnail first; falls back to the
-///   main image with an integer downscale hint to avoid loading huge raw files.
-/// - **PSD / PSB** — tries the embedded JPEG thumbnail in the resource section
-///   (fast, avoids full composite render); falls back to `image` crate decode.
+// Load any supported image format from disk and return it as `DynamicImage`.
+//
+// Strategy per format:
+// - **JPEG / PNG / BMP / WebP / GIF** — decoded directly by the `image` crate.
+// - **TIFF** — tries the embedded IFD1 thumbnail first; falls back to the
+//   main image with an integer downscale hint to avoid loading huge raw files.
+// - **PSD / PSB** — tries the embedded JPEG thumbnail in the resource section
+//   (fast, avoids full composite render); falls back to `image` crate decode.
 pub fn load_image(path: &Path) -> Result<DynamicImage> {
     load_image_at(path, TIFF_TARGET_MAX)
 }
 
-/// Load at a resolution high enough to be sliced into regions.
-///
-/// The whole-image embedding only ever needs 224px, so [`load_image`] happily
-/// returns a 512px reduction.  Region slicing is different: a 1/9 window of a
-/// 512px carpet is ~170px, which then has to be *upscaled* to 224 — blurrier
-/// than the original and useless for matching.  Cutting the same window out of
-/// a 2048px load gives ~680px of real detail to downsample from instead.
-///
-/// This costs more than [`load_image`], but far less than the ratio suggests:
-/// the expensive part for a large TIFF/PSB is decompressing the source, which
-/// is paid either way.  Only the resample and (for `sips`) the intermediate
-/// PNG grow.
+// Load at a resolution high enough to be sliced into regions.
+//
+// The whole-image embedding only ever needs 224px, so [`load_image`] happily
+// returns a 512px reduction.  Region slicing is different: a 1/9 window of a
+// 512px carpet is ~170px, which then has to be *upscaled* to 224 — blurrier
+// than the original and useless for matching.  Cutting the same window out of
+// a 2048px load gives ~680px of real detail to downsample from instead.
+//
+// This costs more than [`load_image`], but far less than the ratio suggests:
+// the expensive part for a large TIFF/PSB is decompressing the source, which
+// is paid either way.  Only the resample and (for `sips`) the intermediate
+// PNG grow.
 pub fn load_image_detailed(path: &Path) -> Result<DynamicImage> {
     load_image_at(path, INDEX_DETAIL_MAX)
 }
@@ -71,9 +71,9 @@ fn load_image_at(path: &Path, target_max: u32) -> Result<DynamicImage> {
     }
 }
 
-/// macOS fallback: render any image the OS can read into a small downscaled PNG
-/// we can embed.  Spawns `sips`, which streams the conversion (low memory) and
-/// applies proper colour management for CMYK.
+// macOS fallback: render any image the OS can read into a small downscaled PNG
+// we can embed.  Spawns `sips`, which streams the conversion (low memory) and
+// applies proper colour management for CMYK.
 #[cfg(target_os = "macos")]
 fn load_via_sips(path: &Path, target_max: u32) -> Result<DynamicImage> {
     use std::process::{Command, Stdio};
@@ -185,12 +185,12 @@ fn try_tiff_thumbnail(path: &Path) -> Result<DynamicImage> {
     tiff_result_to_dynamic(result, w as u32, h as u32)
 }
 
-/// Extract the Photoshop-embedded JPEG preview from a TIFF file.
-///
-/// Photoshop stores a JPEG thumbnail in TIFF tag 34377 (the "Photoshop" private
-/// tag) using exactly the same 8BIM image-resources format as PSD/PSB files.
-/// Crucially, Photoshop renders this thumbnail *with ICC colour management*, so
-/// the CMYK → sRGB conversion is perceptually correct — no colour drift.
+// Extract the Photoshop-embedded JPEG preview from a TIFF file.
+//
+// Photoshop stores a JPEG thumbnail in TIFF tag 34377 (the "Photoshop" private
+// tag) using exactly the same 8BIM image-resources format as PSD/PSB files.
+// Crucially, Photoshop renders this thumbnail *with ICC colour management*, so
+// the CMYK → sRGB conversion is perceptually correct — no colour drift.
 fn try_tiff_photoshop_preview(path: &Path) -> Result<DynamicImage> {
     let f = std::fs::File::open(path)?;
     let mut r = BufReader::new(f);
@@ -198,7 +198,7 @@ fn try_tiff_photoshop_preview(path: &Path) -> Result<DynamicImage> {
     parse_8bim_jpeg_preview(&ps_data)
 }
 
-/// Walk the TIFF IFD0 looking for tag 34377 and return its raw bytes.
+// Walk the TIFF IFD0 looking for tag 34377 and return its raw bytes.
 fn tiff_read_tag_34377<R: Read + Seek>(r: &mut R) -> Result<Vec<u8>> {
     r.seek(SeekFrom::Start(0))?;
 
@@ -249,9 +249,9 @@ fn tiff_ru32<R: Read>(r: &mut R, le: bool) -> Result<u32> {
     Ok(if le { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) })
 }
 
-/// Parse a sequence of Photoshop 8BIM resource blocks and return the first
-/// JPEG thumbnail found (resource IDs 1033 or 1036).  Used for both the TIFF
-/// tag-34377 path and the PSD/PSB image-resources section.
+// Parse a sequence of Photoshop 8BIM resource blocks and return the first
+// JPEG thumbnail found (resource IDs 1033 or 1036).  Used for both the TIFF
+// tag-34377 path and the PSD/PSB image-resources section.
 fn parse_8bim_jpeg_preview(data: &[u8]) -> Result<DynamicImage> {
     let mut cur = Cursor::new(data);
 
@@ -287,16 +287,16 @@ fn parse_8bim_jpeg_preview(data: &[u8]) -> Result<DynamicImage> {
     Err(PictoriaError::Fatal("No JPEG thumbnail in Photoshop 8BIM blocks".into()))
 }
 
-/// Down-scaled longest edge fed toward the CLIP pipeline (which finally wants
-/// 224px).  Sampling to this size straight out of the decoded TIFF buffer avoids
-/// allocating a second full-resolution image.
+// Down-scaled longest edge fed toward the CLIP pipeline (which finally wants
+// 224px).  Sampling to this size straight out of the decoded TIFF buffer avoids
+// allocating a second full-resolution image.
 const TIFF_TARGET_MAX: u32 = 512;
 
-/// Longest edge used when an image is being indexed for region slicing.
-///
-/// Sized so a 1/5-scale window (the smallest level the region planner emits)
-/// still yields ~400px of source for the 224px model input, i.e. every slice
-/// is downsampled rather than upscaled.
+// Longest edge used when an image is being indexed for region slicing.
+//
+// Sized so a 1/5-scale window (the smallest level the region planner emits)
+// still yields ~400px of source for the 224px model input, i.e. every slice
+// is downsampled rather than upscaled.
 pub const INDEX_DETAIL_MAX: u32 = 2048;
 
 fn load_tiff_main(path: &Path, target_max: u32) -> Result<DynamicImage> {
@@ -408,9 +408,9 @@ fn load_tiff_via_tiff_crate(path: &Path, target_max: u32) -> Result<DynamicImage
     tiff_to_downscaled_rgb(result, w, h, color, target_max)
 }
 
-/// Convert a decoded TIFF buffer to a down-sampled RGB image in a single pass.
-/// Sampling with an integer stride out of the source buffer keeps peak memory at
-/// just the decoded buffer (no intermediate full-resolution RGB copy).
+// Convert a decoded TIFF buffer to a down-sampled RGB image in a single pass.
+// Sampling with an integer stride out of the source buffer keeps peak memory at
+// just the decoded buffer (no intermediate full-resolution RGB copy).
 fn tiff_to_downscaled_rgb(
     result:     tiff::decoder::DecodingResult,
     w:          u32,
@@ -462,7 +462,7 @@ fn tiff_to_downscaled_rgb(
     Ok(DynamicImage::ImageRgb8(buf))
 }
 
-/// Map one interleaved TIFF sample to RGB based on the file's colour type.
+// Map one interleaved TIFF sample to RGB based on the file's colour type.
 fn sample_to_rgb(s: &[u8], channels: usize, color: tiff::ColorType) -> (u8, u8, u8) {
     use tiff::ColorType;
     match color {
@@ -479,7 +479,7 @@ fn sample_to_rgb(s: &[u8], channels: usize, color: tiff::ColorType) -> (u8, u8, 
     }
 }
 
-/// Resize so the longest edge is at most `target_max`, preserving aspect ratio.
+// Resize so the longest edge is at most `target_max`, preserving aspect ratio.
 fn downscale(img: DynamicImage, target_max: u32) -> DynamicImage {
     let (w, h) = (img.width(), img.height());
     if w.max(h) > target_max {
@@ -547,13 +547,13 @@ fn tiff_result_to_dynamic(
 
 // ── PSD / PSB ─────────────────────────────────────────────────────────────
 
-/// Extract the embedded JPEG thumbnail from a PSD/PSB resource section.
-/// This avoids decompressing and compositing the full layer stack, which can
-/// be extremely slow for large design files.
-///
-/// The PSD/PSB resource section contains blocks identified by a 2-byte
-/// resource ID.  IDs 1033 and 1036 hold a JPEG thumbnail prefixed by a
-/// 28-byte header (format, width, height, etc.).
+// Extract the embedded JPEG thumbnail from a PSD/PSB resource section.
+// This avoids decompressing and compositing the full layer stack, which can
+// be extremely slow for large design files.
+//
+// The PSD/PSB resource section contains blocks identified by a 2-byte
+// resource ID.  IDs 1033 and 1036 hold a JPEG thumbnail prefixed by a
+// 28-byte header (format, width, height, etc.).
 fn load_psd_psb(path: &Path, target_max: u32) -> Result<DynamicImage> {
     // When indexing for region slicing, the embedded thumbnail is not good
     // enough — Photoshop stores it at a couple of hundred pixels, which leaves

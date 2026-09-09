@@ -12,10 +12,13 @@ import {
 import { Router } from '@angular/router';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { MessageService } from 'primeng/api';
-import { PrimengComponentsModule } from '../../shared/primeng-components-module';
-import { AuthService } from '../../services/auth.service';
-import { UserStateService } from '../../services/user-state.service';
-import { SearchStateService } from '../../services/search-state.service';
+import { ButtonModule } from 'primeng/button';
+import { InputTextModule } from 'primeng/inputtext';
+import { PasswordModule } from 'primeng/password';
+import { ToastModule } from 'primeng/toast';
+import { AuthService } from '../../services/auth/auth.service';
+import { UserStateService } from '../../services/user/user-state.service';
+import { SearchStateService } from '../../services/search/search-state.service';
 import { App } from '../../app';
 
 function passwordMatchValidator(group: AbstractControl): ValidationErrors | null {
@@ -43,7 +46,7 @@ function phoneValidator(control: AbstractControl): ValidationErrors | null {
 
 @Component({
   selector: 'app-login',
-  imports: [CommonModule, ReactiveFormsModule, TranslateModule, PrimengComponentsModule],
+  imports: [CommonModule, ReactiveFormsModule, TranslateModule, ButtonModule, InputTextModule, PasswordModule, ToastModule],
   providers: [MessageService],
   templateUrl: './login.html',
   styleUrl: './login.scss'
@@ -141,12 +144,13 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
     this.loginLoading = true;
     this.loginError   = '';
     const { email, password } = this.loginForm.value;
-    this.handle(this.authService.login({ email: email!, password: password! }), res => {
-      this.loginLoading = false;
-      if (res.success && res.data) {
-        this.loginSuccess   = true;
-        this.loginFirstName = res.data.user.first_name;
-        this.userState.set(res.data.user); // pre-populate so authGuard skips validate
+    this.handle(
+      this.authService.login({ email: email!, password: password! }),
+      data => {
+        this.loginLoading    = false;
+        this.loginSuccess    = true;
+        this.loginFirstName  = data.user.firstName;
+        this.userState.set(data.user); // pre-populate so authGuard skips validate
 
         // authGuard will now skip validateToken(), but that call is also what
         // confirms the subscription is active and notifies the watcher to
@@ -165,13 +169,15 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
         } else {
           setTimeout(() => this.router.navigate(['/master']), 1500);
         }
-      } else {
-        this.loginError = res.message;
-      }
-    });
+      },
+      err => {
+        this.loginLoading = false;
+        this.loginError   = err.message;
+      },
+    );
   }
 
-  /** Step 1 → email a verification code, then move to the OTP step. */
+  // Step 1 → email a verification code, then move to the OTP step.
   sendCode(): void {
     if (this.registerForm.invalid) {
       this.registerForm.markAllAsTouched();
@@ -180,20 +186,23 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
     this.sendingOtp    = true;
     this.registerError = '';
     const email = this.registerForm.get('email')!.value!;
-    this.handle(this.authService.sendOtp(email), res => {
-      this.sendingOtp = false;
-      if (res.success) {
+    this.handle(
+      this.authService.sendOtp(email),
+      () => {
+        this.sendingOtp    = false;
         this.registerEmail = email;
         this.registerStep  = 'otp';
         this.otpControl.reset();
         this.startCooldown();
-      } else {
-        this.registerError = res.message;
-      }
-    });
+      },
+      err => {
+        this.sendingOtp    = false;
+        this.registerError = err.message;
+      },
+    );
   }
 
-  /** Step 2 → verify the code and create the account. */
+  // Step 2 → verify the code and create the account.
   verifyAndRegister(): void {
     if (this.otpControl.invalid) {
       this.otpControl.markAsTouched();
@@ -202,38 +211,44 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
     this.registerLoading = true;
     this.registerError   = '';
     const v = this.registerForm.value;
-    this.handle(this.authService.requestAccess({
-      first_name:   v.first_name!,
-      last_name:    v.last_name!,
-      email:        v.email!,
-      password:     v.password!,
-      phone_number: v.phone_number ?? undefined,
-      company_name: v.company_name ?? undefined,
-      otp_code:     this.otpControl.value!,
-    }), res => {
-      this.registerLoading = false;
-      if (res.success) {
+    this.handle(
+      this.authService.requestAccess({
+        firstName:   v.first_name!,
+        lastName:    v.last_name!,
+        email:       v.email!,
+        password:    v.password!,
+        phoneNumber: v.phone_number ?? undefined,
+        companyName: v.company_name ?? undefined,
+        otpCode:     this.otpControl.value!,
+      }),
+      () => {
+        this.registerLoading = false;
         this.registerSuccess = true;
         this.registerEmail   = v.email!;
-      } else {
-        this.registerError = res.message;
-      }
-    });
+      },
+      err => {
+        this.registerLoading = false;
+        this.registerError   = err.message;
+      },
+    );
   }
 
   resendOtp(): void {
     if (this.resendIn > 0 || this.sendingOtp) return;
     this.sendingOtp    = true;
     this.registerError = '';
-    this.handle(this.authService.sendOtp(this.registerEmail), res => {
-      this.sendingOtp = false;
-      if (res.success) {
+    this.handle(
+      this.authService.sendOtp(this.registerEmail),
+      () => {
+        this.sendingOtp = false;
         this.startCooldown();
         this.messageService.add({ severity: 'success', summary: this.translate.instant('register.otp.resentTitle'), detail: this.translate.instant('register.otp.resentDetail', { email: this.registerEmail }), life: 3000 });
-      } else {
-        this.registerError = res.message;
-      }
-    });
+      },
+      err => {
+        this.sendingOtp    = false;
+        this.registerError = err.message;
+      },
+    );
   }
 
   backToDetails(): void {
@@ -271,7 +286,7 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
     this.clearForgotCooldown();
   }
 
-  /** Step 1 → email a verification code to the registered address. */
+  // Step 1 → email a verification code to the registered address.
   sendForgotOtp(): void {
     if (this.forgotEmailControl.invalid) {
       this.forgotEmailControl.markAsTouched();
@@ -280,20 +295,23 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
     this.sendingForgotOtp = true;
     this.forgotError      = '';
     const email = this.forgotEmailControl.value!;
-    this.handle(this.authService.forgotPasswordSendOtp(email), res => {
-      this.sendingForgotOtp = false;
-      if (res.success) {
+    this.handle(
+      this.authService.forgotPasswordSendOtp(email),
+      () => {
+        this.sendingForgotOtp = false;
         this.forgotEmail = email;
         this.forgotStep  = 'otp';
         this.forgotOtpControl.reset();
         this.startForgotCooldown();
-      } else {
-        this.forgotError = res.message;
-      }
-    });
+      },
+      err => {
+        this.sendingForgotOtp = false;
+        this.forgotError      = err.message;
+      },
+    );
   }
 
-  /** Step 2 → verify the code; on success a new password is emailed. */
+  // Step 2 → verify the code; on success a new password is emailed.
   verifyForgotOtp(): void {
     if (this.forgotOtpControl.invalid) {
       this.forgotOtpControl.markAsTouched();
@@ -301,30 +319,36 @@ export class Login extends BaseComponent implements OnInit, OnDestroy {
     }
     this.forgotLoading = true;
     this.forgotError   = '';
-    this.handle(this.authService.forgotPasswordVerifyOtp(this.forgotEmail, this.forgotOtpControl.value!), res => {
-      this.forgotLoading = false;
-      if (res.success) {
+    this.handle(
+      this.authService.forgotPasswordVerifyOtp(this.forgotEmail, this.forgotOtpControl.value!),
+      () => {
+        this.forgotLoading = false;
         this.forgotStep = 'done';
         this.clearForgotCooldown();
-      } else {
-        this.forgotError = res.message;
-      }
-    });
+      },
+      err => {
+        this.forgotLoading = false;
+        this.forgotError   = err.message;
+      },
+    );
   }
 
   resendForgotOtp(): void {
     if (this.forgotResendIn > 0 || this.sendingForgotOtp) return;
     this.sendingForgotOtp = true;
     this.forgotError      = '';
-    this.handle(this.authService.forgotPasswordSendOtp(this.forgotEmail), res => {
-      this.sendingForgotOtp = false;
-      if (res.success) {
+    this.handle(
+      this.authService.forgotPasswordSendOtp(this.forgotEmail),
+      () => {
+        this.sendingForgotOtp = false;
         this.startForgotCooldown();
         this.messageService.add({ severity: 'success', summary: this.translate.instant('register.otp.resentTitle'), detail: this.translate.instant('register.otp.resentDetail', { email: this.forgotEmail }), life: 3000 });
-      } else {
-        this.forgotError = res.message;
-      }
-    });
+      },
+      err => {
+        this.sendingForgotOtp = false;
+        this.forgotError      = err.message;
+      },
+    );
   }
 
   backToForgotEmail(): void {

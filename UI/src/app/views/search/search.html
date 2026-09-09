@@ -117,7 +117,7 @@
                            [checked]="isFolderInScope(f.path)"
                            (change)="toggleFolderInScope(f.path)" />
                     <span class="scope-dropdown__name" [title]="f.path">{{ f.path }}</span>
-                    <span class="scope-dropdown__count">{{ f.image_count }}</span>
+                    <span class="scope-dropdown__count">{{ f.imageCount }}</span>
                   </label>
                 }
               </div>
@@ -160,7 +160,7 @@
           <span class="scan-progress__file">{{ state.progress.current }}</span>
           <span class="scan-progress__stats">
             @if (state.progress.total > 0) { {{ state.progress.done }}/{{ state.progress.total }} }
-            @if (state.progress.eta_sec > 0) { &nbsp;•&nbsp; ~{{ state.progress.eta_sec }}s }
+            @if (state.progress.etaSec > 0) { &nbsp;•&nbsp; ~{{ state.progress.etaSec }}s }
             @if (state.progress.errors > 0) {
               &nbsp;•&nbsp;
               <span class="scan-progress__errors">{{ state.progress.errors }} {{ 'search.errors' | translate }}</span>
@@ -335,17 +335,17 @@
               <span class="pin-card__folder" [title]="item.path">{{ item.path }}</span>
             </div>
             <div class="pin-card__scores">
-              <span class="pin-card__badge pin-card__badge--{{ similarityClass(item.pattern_match) }}"
+              <span class="pin-card__badge pin-card__badge--{{ similarityClass(item.patternMatch) }}"
                     title="Pattern match">
                 <i class="pi pi-th-large"></i>
                 <span class="pin-card__badge-label">Pattern</span>
-                {{ item.pattern_match | number:'1.0-0' }}%
+                {{ item.patternMatch | number:'1.0-0' }}%
               </span>
-              <span class="pin-card__badge pin-card__badge--clr-{{ colorMatchClass(item.color_match) }}"
+              <span class="pin-card__badge pin-card__badge--clr-{{ colorMatchClass(item.colorMatch) }}"
                     title="Color match">
                 <i class="pi pi-palette"></i>
                 <span class="pin-card__badge-label">Color</span>
-                {{ item.color_match | number:'1.0-0' }}%
+                {{ item.colorMatch | number:'1.0-0' }}%
               </span>
             </div>
           </div>

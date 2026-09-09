@@ -1,23 +1,21 @@
 import { Component, inject, signal } from '@angular/core';
-import { TauriService } from '../../services/tauri.service';
+import { NoticeService } from '../../services/notice/notice.service';
 
-/**
- * One-time banner shown after a release that wiped the local library
- * (`core::migrate::run_library_reset` on the Rust side).
- *
- * A banner rather than a toast on purpose: the user has lost their watched
- * folders and has to re-add them, so the message must sit there until they
- * acknowledge it instead of disappearing on a timer.
- *
- * Whether to show it is asked of the backend, not stored in localStorage — the
- * wipe happens in Rust before the webview exists, and only Rust knows whether
- * anything was actually deleted (a fresh install gets no apology for data it
- * never had). Dismissal is likewise persisted backend-side, so quitting
- * without closing the banner does not swallow the message.
- *
- * State is signals because the app runs zoneless (Angular 21, no zone.js), so
- * a plain field assigned from a promise callback would not repaint.
- */
+// One-time banner shown after a release that wiped the local library
+// (`core::migrate::run_library_reset` on the Rust side).
+//
+// A banner rather than a toast on purpose: the user has lost their watched
+// folders and has to re-add them, so the message must sit there until they
+// acknowledge it instead of disappearing on a timer.
+//
+// Whether to show it is asked of the backend, not stored in localStorage — the
+// wipe happens in Rust before the webview exists, and only Rust knows whether
+// anything was actually deleted (a fresh install gets no apology for data it
+// never had). Dismissal is likewise persisted backend-side, so quitting
+// without closing the banner does not swallow the message.
+//
+// State is signals because the app runs zoneless (Angular 21, no zone.js), so
+// a plain field assigned from a promise callback would not repaint.
 @Component({
   selector: 'app-release-notice',
   template: `
@@ -54,16 +52,19 @@ import { TauriService } from '../../services/tauri.service';
 export class ReleaseNotice {
   readonly visible = signal(false);
 
-  private tauri = inject(TauriService);
+  private notice = inject(NoticeService);
 
   constructor() {
-    this.tauri.resetNoticePending().then(pending => this.visible.set(pending));
+    this.notice.resetNoticePending().subscribe({
+      next: pending => this.visible.set(pending),
+      error: () => this.visible.set(false),
+    });
   }
 
   dismiss(): void {
     // Hide immediately — the button should never feel like it did nothing
     // while the backend write is in flight.
     this.visible.set(false);
-    void this.tauri.dismissResetNotice();
+    this.notice.dismissResetNotice().subscribe();
   }
 }

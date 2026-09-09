@@ -13,8 +13,8 @@
       <div class="profile-identity__info">
         <h1 class="profile-identity__name">{{ userState.fullName }}</h1>
         <p class="profile-identity__email">{{ userState.user?.email }}</p>
-        <p class="profile-identity__company" *ngIf="userState.user?.company_name">
-          {{ userState.user?.company_name }}
+        <p class="profile-identity__company" *ngIf="userState.user?.companyName">
+          {{ userState.user?.companyName }}
         </p>
       </div>
     </div>
@@ -72,9 +72,9 @@
 
     <!-- Account details -->
     <div class="profile-details">
-      <div class="profile-detail-row" *ngIf="userState.user?.phone_number">
+      <div class="profile-detail-row" *ngIf="userState.user?.phoneNumber">
         <i class="pi pi-phone"></i>
-        <span>{{ userState.user?.phone_number }}</span>
+        <span>{{ userState.user?.phoneNumber }}</span>
       </div>
     </div>
 
@@ -227,9 +227,9 @@
 
               <div class="pay-row__info">
                 <span class="pay-row__plan">{{ sub.plans?.name ?? 'Plan' }} Plan</span>
-                <span class="pay-row__date">Purchased {{ formatDate(sub.created_at) }}</span>
+                <span class="pay-row__date">Purchased {{ formatDate(sub.createdAt) }}</span>
                 <span class="pay-row__validity">
-                  {{ formatDate(sub.start_date) }} → {{ formatDate(sub.end_date) }}
+                  {{ formatDate(sub.startDate) }} → {{ formatDate(sub.endDate) }}
                 </span>
               </div>
 

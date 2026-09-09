@@ -1,45 +1,45 @@
-//! Custom flat vector store for the DINO embedding that drives retrieval,
-//! the Gabor-rose + Gram-matrix descriptor kept alongside it, and a colour
-//! histogram per file.
-//!
-//! ## v7: retrieval is a threshold over the DINO embedding
-//! There is no top-N shortlist any more. `near_family` returns *every* entry
-//! whose embedding cosine clears `NEAR_FAMILY_MIN_SIM`, and SIFT/RANSAC
-//! verification runs over all of them — so the embedding decides membership
-//! and the geometry decides truth. Rose/gram are still stored and scored, but
-//! only as a tiebreak and for diagnostics.
-//!
-//! ## v6: one entry per file, not per region
-//! The old DINOv2 scheme stored several vectors per file (whole frame plus
-//! sliced windows) because a single 224x224 embedding couldn't otherwise
-//! answer "does this design appear *inside* that one". SIFT/RANSAC
-//! (`core::sidecar::verify`) answers that question directly against the full
-//! image instead, so there's nothing left to slice for — one descriptor per
-//! file, looked up by id.
-//!
-//! ## Why not FAISS
-//! The FAISS C++ library needs a non-trivial build step and can't be
-//! sandboxed by the macOS App Store. Brute-force cosine over a rayon thread
-//! pool is fast enough for our workload (<=500k images).
-//!
-//! ## File format (`vectors.bin`, version 7)
-//! ```text
-//! [ magic:      8 bytes  "PICTOR\x00\x01" ]
-//! [ version:    4 bytes  u32 LE ]  == 7
-//! [ rose_dim:   4 bytes  u32 LE ]  == ROSE_DIM
-//! [ count:      8 bytes  u64 LE ]  live (non-tombstone) entries
-//! [ gram_dim:   4 bytes  u32 LE ]  == GRAM_ZOOM_LEVELS * GRAM_DIM_PER_ZOOM
-//! [ color_dim:  4 bytes  u32 LE ]  == COLOR_DIM
-//! [ embed_dim:  4 bytes  u32 LE ]  == EMBED_ZOOM_LEVELS * EMBED_DIM
-//! [ entries: ( id: i64, embed: f32 x embed_dim, rose: f32 x rose_dim,
-//!              gram: f32 x gram_dim, colour: f32 x color_dim )* ]
-//! ```
-//! `embed_dim` is appended after `color_dim` so the header grew rather than
-//! being reshuffled — the v6 fields keep their offsets, which makes the two
-//! layouts easy to compare when debugging a store by hand.
-//! Tombstoned entries have `id == i64::MIN`. A version mismatch makes `load`
-//! start fresh — the startup migration (`core::migrate`) turns that into a
-//! one-time re-index.
+// Custom flat vector store for the DINO embedding that drives retrieval,
+// the Gabor-rose + Gram-matrix descriptor kept alongside it, and a colour
+// histogram per file.
+//
+// ## v7: retrieval is a threshold over the DINO embedding
+// There is no top-N shortlist any more. `near_family` returns *every* entry
+// whose embedding cosine clears `NEAR_FAMILY_MIN_SIM`, and SIFT/RANSAC
+// verification runs over all of them — so the embedding decides membership
+// and the geometry decides truth. Rose/gram are still stored and scored, but
+// only as a tiebreak and for diagnostics.
+//
+// ## v6: one entry per file, not per region
+// The old DINOv2 scheme stored several vectors per file (whole frame plus
+// sliced windows) because a single 224x224 embedding couldn't otherwise
+// answer "does this design appear *inside* that one". SIFT/RANSAC
+// (`core::sidecar::verify`) answers that question directly against the full
+// image instead, so there's nothing left to slice for — one descriptor per
+// file, looked up by id.
+//
+// ## Why not FAISS
+// The FAISS C++ library needs a non-trivial build step and can't be
+// sandboxed by the macOS App Store. Brute-force cosine over a rayon thread
+// pool is fast enough for our workload (<=500k images).
+//
+// ## File format (`vectors.bin`, version 7)
+// ```text
+// [ magic:      8 bytes  "PICTOR\x00\x01" ]
+// [ version:    4 bytes  u32 LE ]  == 7
+// [ rose_dim:   4 bytes  u32 LE ]  == ROSE_DIM
+// [ count:      8 bytes  u64 LE ]  live (non-tombstone) entries
+// [ gram_dim:   4 bytes  u32 LE ]  == GRAM_ZOOM_LEVELS * GRAM_DIM_PER_ZOOM
+// [ color_dim:  4 bytes  u32 LE ]  == COLOR_DIM
+// [ embed_dim:  4 bytes  u32 LE ]  == EMBED_ZOOM_LEVELS * EMBED_DIM
+// [ entries: ( id: i64, embed: f32 x embed_dim, rose: f32 x rose_dim,
+//              gram: f32 x gram_dim, colour: f32 x color_dim )* ]
+// ```
+// `embed_dim` is appended after `color_dim` so the header grew rather than
+// being reshuffled — the v6 fields keep their offsets, which makes the two
+// layouts easy to compare when debugging a store by hand.
+// Tombstoned entries have `id == i64::MIN`. A version mismatch makes `load`
+// start fresh — the startup migration (`core::migrate`) turns that into a
+// one-time re-index.
 
 use crate::{
     config::{
@@ -59,10 +59,10 @@ use std::{
     sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
-/// Serialises concurrent load -> modify -> save cycles across sync workers.
+// Serialises concurrent load -> modify -> save cycles across sync workers.
 static SYNC_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
-/// Separates readers (search) from the brief file-write step (save).
+// Separates readers (search) from the brief file-write step (save).
 static STORE_RW_LOCK: Lazy<RwLock<()>> = Lazy::new(|| RwLock::new(()));
 
 pub fn store_io_guard() -> MutexGuard<'static, ()> {
@@ -80,18 +80,18 @@ const VERSION: u32 = 7;
 const HEADER_LEN: usize = 36;
 const TOMBSTONE: i64 = i64::MIN;
 const GRAM_DIM: usize = GRAM_ZOOM_LEVELS * GRAM_DIM_PER_ZOOM;
-/// Full stored embedding width: every zoom level, concatenated.
+// Full stored embedding width: every zoom level, concatenated.
 const EMBED_TOTAL: usize = EMBED_ZOOM_LEVELS * EMBED_DIM;
 
-/// One search hit.
+// One search hit.
 #[derive(Debug, Clone, Copy)]
 pub struct Match {
     pub id: i64,
-    /// Embedding cosine — what decided membership of the near family, and what
-    /// the UI shows as the pattern match.
+    // Embedding cosine — what decided membership of the near family, and what
+    // the UI shows as the pattern match.
     pub embed_sim: f32,
-    /// Weighted rose+gram similarity. Tiebreak between entries at the same
-    /// embedding cosine, and a diagnostic in the search log; never a filter.
+    // Weighted rose+gram similarity. Tiebreak between entries at the same
+    // embedding cosine, and a diagnostic in the search log; never a filter.
     pub design_sim: f32,
     pub rose_sim: f32,
     pub gram_sim: f32,
@@ -119,9 +119,9 @@ impl VectorStore {
 
     // ── Construction ──────────────────────────────────────────────────
 
-    /// Load from disk, or a fresh store if the file is missing, corrupt, or
-    /// an older format version — a version mismatch is what arms the
-    /// startup re-index in `core::migrate`.
+    // Load from disk, or a fresh store if the file is missing, corrupt, or
+    // an older format version — a version mismatch is what arms the
+    // startup re-index in `core::migrate`.
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::new());
@@ -211,7 +211,7 @@ impl VectorStore {
         Ok(Self { ids, embed, rose, gram, color })
     }
 
-    /// Persist to disk atomically (write to `.tmp`, then rename).
+    // Persist to disk atomically (write to `.tmp`, then rename).
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -257,8 +257,8 @@ impl VectorStore {
 
     // ── Mutation ──────────────────────────────────────────────────────
 
-    /// Insert or replace one file's descriptor (replaces any existing entry
-    /// for `id` in place, so a re-embed doesn't leave a stale duplicate).
+    // Insert or replace one file's descriptor (replaces any existing entry
+    // for `id` in place, so a re-embed doesn't leave a stale duplicate).
     pub fn upsert(
         &mut self,
         id: i64,
@@ -293,7 +293,7 @@ impl VectorStore {
         Ok(())
     }
 
-    /// Tombstone every id in `ids`. Compacts automatically past 20% dead.
+    // Tombstone every id in `ids`. Compacts automatically past 20% dead.
     pub fn remove(&mut self, ids: &[i64]) {
         if ids.is_empty() { return; }
         let id_set: HashSet<i64> = ids.iter().copied().collect();
@@ -305,19 +305,19 @@ impl VectorStore {
 
     // ── Query ─────────────────────────────────────────────────────────
 
-    /// Every live entry whose DINO embedding cosine reaches `min_sim`, sorted
-    /// best first. No `k` — the caller verifies all of them.
-    ///
-    /// This replaced the old fixed top-N shortlist. The difference matters: a
-    /// top-N cut silently dropped real matches once a library held more than N
-    /// similar tiles, whereas a threshold returns the whole family and lets
-    /// SIFT/RANSAC decide which members are genuine. The cost is that the
-    /// returned set is unbounded by construction — `services::search` logs its
-    /// size for exactly that reason.
-    ///
-    /// Rose/gram are still scored here, but only to fill `design_sim` (a
-    /// tiebreak between entries at the same embedding cosine, and a diagnostic
-    /// in the search timing log). They cannot add or remove a candidate.
+    // Every live entry whose DINO embedding cosine reaches `min_sim`, sorted
+    // best first. No `k` — the caller verifies all of them.
+    //
+    // This replaced the old fixed top-N shortlist. The difference matters: a
+    // top-N cut silently dropped real matches once a library held more than N
+    // similar tiles, whereas a threshold returns the whole family and lets
+    // SIFT/RANSAC decide which members are genuine. The cost is that the
+    // returned set is unbounded by construction — `services::search` logs its
+    // size for exactly that reason.
+    //
+    // Rose/gram are still scored here, but only to fill `design_sim` (a
+    // tiebreak between entries at the same embedding cosine, and a diagnostic
+    // in the search timing log). They cannot add or remove a candidate.
     pub fn near_family(
         &self,
         query_embed: &[f32],
@@ -411,13 +411,13 @@ fn cos_sim(a: &[f32], b: &[f32]) -> f32 {
     if na <= 0.0 || nb <= 0.0 { 0.0 } else { dot / (na * nb) }
 }
 
-/// Embedding and gram vectors both carry several concatenated zoom levels;
-/// score is the best over every (query zoom, candidate zoom) pair. That is
-/// what makes matching scale-robust — two related images at different pixel
-/// scales still match, because some pair of zoom levels lines them up.
-///
-/// `per_zoom` is the width of one level, so one function serves both
-/// (`EMBED_DIM` and `GRAM_DIM_PER_ZOOM`).
+// Embedding and gram vectors both carry several concatenated zoom levels;
+// score is the best over every (query zoom, candidate zoom) pair. That is
+// what makes matching scale-robust — two related images at different pixel
+// scales still match, because some pair of zoom levels lines them up.
+//
+// `per_zoom` is the width of one level, so one function serves both
+// (`EMBED_DIM` and `GRAM_DIM_PER_ZOOM`).
 fn best_zoom_sim(query: &[f32], candidate: &[f32], per_zoom: usize) -> f32 {
     let mut best = f32::NEG_INFINITY;
     for qz in query.chunks(per_zoom) {

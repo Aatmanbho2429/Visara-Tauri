@@ -1,8 +1,9 @@
 import { inject } from '@angular/core';
 import { CanActivateFn, Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { AuthService } from '../services/auth.service';
-import { UserStateService } from '../services/user-state.service';
+import { ApiError } from '../models/response/apiResponse';
+import { AuthService } from '../services/auth/auth.service';
+import { UserStateService } from '../services/user/user-state.service';
 
 export const authGuard: CanActivateFn = async () => {
   const auth      = inject(AuthService);
@@ -15,14 +16,14 @@ export const authGuard: CanActivateFn = async () => {
 
   // Cold start: app opened with an existing token file but no in-memory user.
   // Validate against Supabase once to re-hydrate user state and load the model.
-  const res = await firstValueFrom(auth.validateToken());
-
-  if (res.success && res.data?.user) {
-    userState.set(res.data.user);
+  try {
+    const data = await firstValueFrom(auth.validateToken());
+    userState.set(data.user);
     return true;
+  } catch (err) {
+    const message = (err as ApiError)?.message;
+    if (message) sessionStorage.setItem('auth_redirect_msg', message);
+    router.navigate(['/']);
+    return false;
   }
-
-  if (res.message) sessionStorage.setItem('auth_redirect_msg', res.message);
-  router.navigate(['/']);
-  return false;
 };

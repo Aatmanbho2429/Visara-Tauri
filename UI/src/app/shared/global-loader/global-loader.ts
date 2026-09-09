@@ -1,6 +1,6 @@
 import { Component, inject } from '@angular/core';
 import { AsyncPipe } from '@angular/common';
-import { LoaderService } from '../../services/loader.service';
+import { LoaderService } from '../../services/loader/loader.service';
 import { LoaderOrb } from '../loader-orb/loader-orb';
 
 @Component({
