@@ -1,7 +1,7 @@
 ---
 paths:
-  - "src/**/*.ts"
-  - "src/**/*.html"
+  - "UI/src/**/*.ts"
+  - "UI/src/**/*.html"
 ---
 
 # PrimeNG

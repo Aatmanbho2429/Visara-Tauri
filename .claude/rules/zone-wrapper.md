@@ -1,7 +1,7 @@
 ---
 paths:
-  - "src/app/services/**/*.ts"
-  - "src/app/core/zone-wrapper/**/*.ts"
+  - "UI/src/app/services/**/*.ts"
+  - "UI/src/app/core/zone-wrapper/**/*.ts"
 ---
 
 # NgZone wrapper

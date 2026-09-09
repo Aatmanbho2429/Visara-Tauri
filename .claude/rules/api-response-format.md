@@ -1,8 +1,8 @@
 ---
 paths:
-  - "src/app/models/response/**/*.ts"
-  - "src-tauri/src/models/response/**/*.rs"
-  - "src-tauri/src/commands/**/*.rs"
+  - "UI/src/app/models/response/**/*.ts"
+  - "UI/src-tauri/src/models/response/**/*.rs"
+  - "UI/src-tauri/src/commands/**/*.rs"
 ---
 
 # API response envelope

@@ -1,7 +1,7 @@
 ---
 paths:
-  - "src/app/services/**/*.ts"
-  - "src-tauri/src/services/**/*.rs"
+  - "UI/src/app/services/**/*.ts"
+  - "UI/src-tauri/src/services/**/*.rs"
 ---
 
 # Services

@@ -1,7 +1,7 @@
 ---
 paths:
-  - "src/app/models/**/*.ts"
-  - "src-tauri/src/models/**/*.rs"
+  - "UI/src/app/models/**/*.ts"
+  - "UI/src-tauri/src/models/**/*.rs"
 ---
 
 # Models

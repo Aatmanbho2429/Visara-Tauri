@@ -16,9 +16,9 @@ Create every piece needed for a new entity called `$ARGUMENTS`, following the co
 4. **Rust request/response models** — `src-tauri/src/models/request/request_<entity>.rs` and `.../response/response_<entity>.rs`, mirroring the TS models field-for-field, with `#[serde(rename_all = "camelCase")]`. See `models.md`.
 5. **Rust service** — `src-tauri/src/services/<entity>/<entity>_service.rs` holding the actual logic, returning `ApiResponse<T>`.
 6. **Rust command handlers** — `src-tauri/src/commands/<entity>_commands.rs`, thin `#[tauri::command]` functions that delegate to the service.
-7. **Register commands** — add each new command to the `invoke_handler![...]` list in `main.rs`.
-8. **Capabilities** — add each new command to the relevant `src-tauri/capabilities/*.json` allowlist.
-9. **Comments** — a single `//` line above every new function and non-obvious variable. See `code-comments.md`.
+7. **Register commands** — add each new command to the `invoke_handler![...]` list in `lib.rs` (not `main.rs`, which is just a 3-line entry point).
+8. **Capabilities** — only needed if the entity calls a Tauri *plugin* API (dialog, global-shortcut, autostart, …); add it to the relevant `src-tauri/capabilities/*.json` allowlist. Plain `#[tauri::command]`s need no capabilities entry.
+9. **Comments** — a single `//` line above every new function and non-obvious variable. See `code-format.md`.
 
 ## After scaffolding
 
