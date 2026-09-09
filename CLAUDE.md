@@ -1,4 +1,7 @@
 # CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## What this is
 
 Pictoria — a desktop app used to search similar tile designs inside a folder locally. Three components:
@@ -29,13 +32,19 @@ npx tauri dev
 # Frontend build
 npm run build                  # ng build -> dist/UI/browser
 
-# Frontend tests (Vitest)
+# Frontend tests — Angular's `@angular/build:unit-test` builder, Vitest runner,
+# Node + jsdom (no browser). Watch defaults to on in a TTY.
 npm test
+npm test -- --watch=false
+npm test -- --include src/app/views/login/login.spec.ts   # one spec file
+npm test -- --filter "^App"                               # one suite/test by regex
+npm test -- --list-tests                                  # discover without running
 
 # Rust — from UI/src-tauri/, or `cargo check --manifest-path UI/src-tauri/Cargo.toml`
 cargo check
 cargo build
-cargo test
+cargo test                     # unit tests live in core::database, core::vector_store, services::search
+cargo test vector_store        # one module
 
 # Full desktop build/package
 npx tauri build
@@ -102,6 +111,8 @@ error.rs   — PictoriaError + Result alias used throughout.
 utils/     — file_utils, image_loader.
 lib.rs     — Tauri::Builder wiring only: plugins, tray, global hot-key, invoke_handler list,
              app lifecycle (setup/window-close-to-tray/exit cleanup). No business logic.
+main.rs    — three lines; just calls `pictoria_lib::run()`. New commands are registered in
+             lib.rs, not here.
 ```
 
 Key invariant: **Rust owns every disk write** to `~/.pictoria/meta.db` (SQLite metadata +
@@ -147,14 +158,44 @@ cached "valid" subscription state survives with no network before forcing a re-v
 
 ### IPC pattern (Angular ↔ Rust)
 
-Commands are **not** simple request/response. `TauriService.invoke()` (`UI/src/app/services/
-tauri.service.ts`) calls `invoke(command, args)` but resolves via a Tauri *event* named
-`<command>_response`, not the invoke's own return value — commands emit that event from Rust
-(typically after spawning async work) rather than returning a value directly. Long-running
-operations (search, library sync) use their own dedicated event streams instead
-(`search_progress`/`search_complete`/`search_error`, `library_sync_started/progress/complete/
-error`) via `searchStream()` / `onLibrarySync()`. When adding a new Tauri command, follow this
-event-emission pattern rather than returning data straight from the `#[tauri::command]` fn.
+Commands are **not** simple request/response. `TauriService.invoke()`
+([tauri.service.ts](UI/src/app/services/tauri.service.ts)) calls `invoke(command, args)` but
+resolves via a Tauri *event* named `<command>_response`, not the invoke's own return value —
+commands emit that event from Rust (typically after spawning async work) rather than returning a
+value directly. When adding a new Tauri command, follow this event-emission pattern.
+
+`TauriService` is also the NgZone boundary: it listens outside Angular's zone and re-enters via
+`zone.run()`, so callers get change detection for free. It is the only file that should import
+`@tauri-apps/api` — Angular services (`auth.service.ts`, `library.service.ts`, …) inject
+`TauriService` and pass the command name as a string literal.
+
+Four call shapes:
+
+| Method | Use |
+|---|---|
+| `invoke<T>()` | normal command; shows the global loader |
+| `invokeSilent<T>()` | background/periodic work (e.g. licence re-validation); no loader |
+| `searchStream()` | `search_progress` / `search_complete` / `search_error` |
+| `onLibrarySync()` | `library_sync_started` / `_progress` / `_complete` / `_error` |
+
+Every event-based command carries the same envelope, `BaseResponse<T>`
+([base-response.model.ts](UI/src/app/models/base-response.model.ts)):
+
+```ts
+{ success: boolean; message: string; data: T | null }
+```
+
+Rust builds it inline with `serde_json::json!` in `services/*` — there is no shared
+`ApiResponse<T>` struct.
+
+Deliberate exceptions that don't emit a `_response` event: `get_thumbnail` resolves the invoke
+promise directly (the Browse grid fires dozens concurrently and a shared `_response` event would
+cross-wire them), as do `reset_notice_pending` and `dismiss_reset_notice` (no async work behind
+them); `open_file_path` is fire-and-forget. The first three carry a comment saying why.
+
+`UI/src-tauri/capabilities/default.json` lists **plugin** permissions (dialog, global-shortcut,
+autostart, window), not commands. A new `#[tauri::command]` needs registering in the
+`invoke_handler![]` list in `lib.rs` and nothing else; a new *plugin API* needs a capability entry.
 
 ### Angular structure (`UI/src/app/`)
 
@@ -164,17 +205,61 @@ wrap Tauri IPC + app state, `guards/` gate routes on auth (`authGuard`/`loginGua
 subscription status (`subscriptionGuard` — profile stays open even when expired, so users can
 renew). `master` is the shell layout hosting the gated feature views as router children.
 
+Services and models are flat files, not per-entity folders: `services/<name>.service.ts`,
+`models/<name>.model.ts` (interfaces for both directions live in the same file).
+
+## Cross-file invariants
+
+Things nothing enforces automatically — get one wrong and it fails at runtime or on a user's
+machine, not at build time.
+
+- **App version lives in three places** and they must match:
+  `UI/src-tauri/tauri.conf.json` (`version`), `UI/src-tauri/Cargo.toml` (`package.version`),
+  and `UI/src-tauri/src/config.rs` (`APP_VERSION`). Currently `1.1.38`.
+- **`config::EMBED_DIM` must match the sidecar model's real output width.**
+  `sidecar/pipeline.py::load_embed_model` measures it and reports it through `/health`, and
+  `core::sidecar` refuses a mismatch rather than let a wrong stride reach `vectors.bin`.
+  `EMBED_ZOOM_LEVELS` likewise mirrors `_GRAM_ZOOM_SCALES` in `pipeline.py` — the crops are
+  literally shared.
+- **Changing how any descriptor is produced invalidates every stored vector.** Bump
+  `core::migrate::EMBED_SCHEMA_VERSION` (currently `9`) in the same change. On startup it is
+  compared against SQLite `PRAGMA user_version`; a bump deletes `vectors.bin`, drops a
+  `.reembed_pending` marker (crash-safe resume), and rebuilds vectors in place against existing
+  `files(id)` rows — `files` is never wiped, because Browse's tags cascade off it. The comment
+  block above the constant is the changelog of why each version bumped; add to it.
+- **`NEAR_FAMILY_MIN_SIM` (0.70) is the only bound on how much work a search does** and is not
+  calibrated against the current model. The number to watch is `near_family_n` in the search
+  timing log — if it is a large fraction of the library on an ordinary query, the floor is too low.
+
 ## Conventions
-Detailed, path-scoped rules live in `.claude/rules/` and load automatically when Claude works with matching files — they don't need to be repeated here:
- 
-| Rule file | Covers |
-|---|---|
-| `ui-framework.md` | PrimeNG usage |
-| `models.md` | Request/Response model conventions |
-| `services.md` | Entity-based service structure |
-| `api-response-format.md` | The `{statusCode, message, data}` envelope |
-| `tauri-ipc.md` | `invoke` / `emit` naming and wiring |
-| `zone-wrapper.md` | Routing every Tauri call through `ZoneWrapperService` |
-| `code-comments.md` | One-line comment style |
- 
-There's also a `/scaffold-entity` skill (`.claude/skills/scaffold-entity/`) that walks through adding a new entity end-to-end following all of the above.
+
+`.claude/rules/` holds path-scoped rules that load automatically when Claude works with matching
+files. Only `code-format.md` (one-line `//` comments, no JSDoc, no `///` on the Rust side)
+describes the code as it exists today.
+
+| Rule file | Covers | Status |
+|---|---|---|
+| `code-format.md` | One-line comment style | matches the codebase |
+| `ui-framework.md` | PrimeNG + PrimeIcons usage | matches the codebase |
+| `models.md` | `models/request/` + `models/response/` split | **aspirational** |
+| `services.md` | Per-entity service folders, `ApiResponse<T>` | **aspirational** |
+| `api-response-format.md` | `{statusCode, message, data}` envelope | **aspirational** |
+| `tauri-ipc.md` | Command-name const registry, capabilities allowlist | **aspirational** |
+| `zone-wrapper.md` | `ZoneWrapperService` | **aspirational** |
+
+The rows marked aspirational describe a target structure the tree has not been migrated to.
+Where they conflict with what's actually in the repo, **the repo wins** — follow the surrounding
+code, and don't "fix" existing files to match a rule. Concretely, today:
+
+- The envelope is `BaseResponse { success, message, data }`, not `ApiResponse { statusCode, … }`.
+- There is no `ZoneWrapperService`; `services/tauri.service.ts` is the zone boundary.
+- There is no `src-tauri/src/models/` tree and no `core/tauri/tauri-commands.const.ts` registry —
+  command names are string literals at the call site.
+- Rust services and commands are flat files (`services/auth.rs`, `commands/auth.rs`), not
+  `services/auth/auth_service.rs` / `commands/auth_commands.rs`.
+- Commands are registered in `lib.rs`, not `main.rs`, and need no capabilities entry.
+- The rules' `paths:` globs are rooted at `src/` and `src-tauri/`, but the real tree is under
+  `UI/` — so they do not currently auto-load for any file.
+
+The `/scaffold-entity` skill (`.claude/skills/scaffold-entity/`) walks the same aspirational
+structure and carries the same caveat.
