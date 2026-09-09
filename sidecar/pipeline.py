@@ -31,6 +31,15 @@ from cryptography.fernet import Fernet, InvalidToken
 # interleave with everything else on one timeline.
 log = logging.getLogger("sidecar.pipeline")
 
+# `server._run` already puts each verify candidate on its own pool thread
+# (up to `_VERIFY_WORKERS`, typically 8) — without this, OpenCV additionally
+# spins up its own internal `parallel_for_` pool *per call*, so 8 workers each
+# drive a full pool against 4 physical cores. Confirmed by grep: nothing in
+# this codebase called `setNumThreads`/`OPENCV_NUM_THREADS` before this line.
+# One thread per call is correct here; the outer ThreadPoolExecutor is what
+# provides the actual parallelism. See SEARCH-LATENCY-PLAN.md Phase 2a.
+cv2.setNumThreads(1)
+
 _DEVICE = "cpu"
 _LAYER_IDX = 4  # mobilenet_v2 block deep enough for texture, shallow enough to stay local
 _GABOR_ORIENTS = 8
@@ -174,6 +183,13 @@ def load_embed_model(key_b64: str):
 
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        # The DINO forward pass always runs on the single `_worker` thread
+        # (server.py's one-job-at-a-time model), so ORT spinning up its own
+        # multi-thread intra-op pool only contends with Rust's rayon pool
+        # (`config::NUM_WORKERS = 8`) for no benefit — the same contention
+        # `core/search_gate.rs` already exists to mitigate on the Rust side.
+        # See SEARCH-LATENCY-PLAN.md Phase 2a.
+        opts.intra_op_num_threads = 1
         # CoreML where it exists (Neural Engine on Apple Silicon, Metal on
         # Intel), CPU everywhere else. Listing CPU explicitly as the tail
         # provider is what makes an unsupported/unavailable CoreML fall back
@@ -259,7 +275,14 @@ def load_model():
 
 
 def _new_sift():
-    return cv2.SIFT_create(nfeatures=4000, contrastThreshold=0.01, edgeThreshold=20)
+    # nfeatures lowered from 4000 (SEARCH-LATENCY-PLAN.md Phase 2c) —
+    # BFMatcher.knnMatch is brute force, O(|des1|*|des2|*128), so keypoint
+    # count enters the dominant per-candidate cost quadratically. This
+    # changes match sensitivity and MUST be validated against the known-good
+    # verification set (21 colourway pairs verify, `BRASIL GREY P4.jpg` stays
+    # rejected) before it ships — not yet done, see the plan's Phase 2
+    # acceptance criteria.
+    return cv2.SIFT_create(nfeatures=1500, contrastThreshold=0.01, edgeThreshold=20)
 
 
 def _get_sift():
@@ -758,7 +781,11 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
     if des1 is None or len(kp1) < 8:
         return {"matched": False, "reason": "decode-failed"}
 
-    c = load_image_rgb(candidate_path, max_dim=1600)
+    # Lowered from 1600 (SEARCH-LATENCY-PLAN.md Phase 2c) — SIFT cost scales
+    # with pixel count, and the query itself already decodes at 800
+    # (`prepare_query`). Also not free: validate against the known-good set
+    # before shipping, same caveat as `_new_sift`'s nfeatures change above.
+    c = load_image_rgb(candidate_path, max_dim=1024)
     t_decode = time.perf_counter()
     if c is None:
         return {"matched": False, "reason": "decode-failed"}

@@ -179,10 +179,29 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   }
 
   // Everything else: in the near family by texture similarity, but not
-  // geometrically confirmed. The *full* set — used for the section count and
-  // for deciding whether "Show more" still has anything left to give.
+  // geometrically confirmed — either SIFT ran and refused (`rejected`) or
+  // the verify budget hadn't reached it yet when the search finished
+  // (`unchecked`, see SEARCH-LATENCY-PLAN.md Phase 1b). Both render in the
+  // same "Similar" section; `verificationLabel()` is what tells them apart
+  // on the card. The *full* set — used for the section count and for
+  // deciding whether "Show more" still has anything left to give.
   get similarResults(): SearchResultVM[] {
     return this.state.results.filter(r => !r.verified);
+  }
+
+  // True while verification is still running behind an already-visible
+  // result grid — drives the compact progress strip in the results view
+  // (see search.html). Distinct from `isSearching`, which now only covers
+  // the brief window before the first partial ranking arrives.
+  get isVerifying(): boolean {
+    return this.state.searchState === 'results' && this.state.progress.active;
+  }
+
+  // "Not yet checked" vs "SIFT ran and said no" — same bucket
+  // (`similarResults`) either way, but the card badge shouldn't claim a
+  // rejection that never actually happened.
+  verificationLabel(item: SearchResultVM): string {
+    return item.verification === 'unchecked' ? 'Not yet checked' : 'Similar';
   }
 
   // The slice actually rendered — see `SIMILAR_PAGE`.
@@ -363,34 +382,76 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
       next: event => {
         if (event.type === 'progress') {
           if (event.data?.progress) this.state.progress = event.data.progress;
-        } else if (event.type === 'complete') {
-          this.state.results = (event.data?.results ?? []).map((r: any) => {
-            const safe = this.isBrowserSafe(r.path);
-            // Browser-safe formats load straight from disk; everything else
-            // (PSB, PSD, TIFF…) has no thumbnail yet — leave it in the loading
-            // state and generate one below, mirroring the Browse page.
-            return { ...r, thumbnailUrl: safe ? this.zoneWrapper.toAssetUrl(r.path) : '', imgError: false, matchBox: null };
-          });
-          // Kick off thumbnail generation for the non-browser-safe results so
-          // they render as real previews instead of a gradient fallback.
-          for (const item of this.state.results) {
-            if (!item.thumbnailUrl) this.loadThumb(item);
+        } else if (event.type === 'partial') {
+          const isFirst = this.state.searchState === 'searching';
+          this.mergeResults(event.data?.results ?? []);
+          this.resortResults();
+          if (isFirst) {
+            // The first partial carries the full "unchecked" ranking —
+            // moving into 'results' here (rather than waiting for
+            // search_complete) is what lets the grid paint before
+            // verification finishes. See SEARCH-LATENCY-PLAN.md Phase 4.
+            this.state.searchState = 'results';
+            this.similarExpanded = true;
+            this.similarShown    = this.SIMILAR_PAGE;
+            this.familyExpanded  = true;
           }
+        } else if (event.type === 'complete') {
+          // Authoritative final set — merged rather than replaced so it
+          // doesn't flicker or reorder against what partials already
+          // painted; this also catches the case where the family was empty
+          // and no partial ever fired.
+          this.mergeResults(event.data?.results ?? []);
+          this.resortResults();
           this.state.failedFiles = event.data?.failedFiles ?? [];
-          this.state.searchState = 'results';
-          // Both tiers open on every fresh result set — "Similar" used to
-          // auto-collapse whenever a verified tier existed, which hid 20 of
-          // 22 results behind a control that was easy to miss.
-          this.similarExpanded = true;
-          this.similarShown    = this.SIMILAR_PAGE;
-          this.familyExpanded  = true;
+          this.state.progress    = { ...this.state.progress, active: false };
+          if (this.state.searchState !== 'results') {
+            this.state.searchState = 'results';
+            this.similarExpanded = true;
+            this.similarShown    = this.SIMILAR_PAGE;
+            this.familyExpanded  = true;
+          }
         } else if (event.type === 'error') {
           this.state.searchError = event.data?.message ?? 'Search failed. Please try again.';
           this.state.searchState = 'idle';
+          this.state.progress    = { ...this.state.progress, active: false };
         }
         this.cdr.detectChanges();
       }
     });
+  }
+
+  // Merge `incoming` rows into `state.results` by `path`: an existing row
+  // keeps its view-model fields (thumbnailUrl, imgError, matchBox) and only
+  // has its backend fields overwritten; a new path is appended as a fresh
+  // card and, if it needs a generated thumbnail, queued for one. Used by
+  // both the `partial` and `complete` handlers so a result is only ever
+  // added to the grid once, however many times its verdict changes after.
+  private mergeResults(incoming: SearchResultVM[]): void {
+    const byPath = new Map(this.state.results.map(r => [r.path, r]));
+    for (const r of incoming) {
+      const existing = byPath.get(r.path);
+      if (existing) {
+        Object.assign(existing, r);
+      } else {
+        const safe = this.isBrowserSafe(r.path);
+        // Browser-safe formats load straight from disk; everything else
+        // (PSB, PSD, TIFF…) has no thumbnail yet — leave it in the loading
+        // state and generate one below, mirroring the Browse page.
+        const vm: SearchResultVM = { ...r, thumbnailUrl: safe ? this.zoneWrapper.toAssetUrl(r.path) : '', imgError: false, matchBox: null };
+        this.state.results.push(vm);
+        byPath.set(r.path, vm);
+        if (!vm.thumbnailUrl) this.loadThumb(vm);
+      }
+    }
+  }
+
+  // Same ordering the backend applies at the very end of a search (verified
+  // first, then similarity descending) — reapplied after every merge so the
+  // grid looks sensibly ordered while verification is still streaming in,
+  // not just once `search_complete` assigns the authoritative `rank`.
+  private resortResults(): void {
+    this.state.results.sort((a, b) => (Number(b.verified) - Number(a.verified)) || (b.similarity - a.similarity));
   }
 
   newSearch(): void {

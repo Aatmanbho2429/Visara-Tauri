@@ -396,6 +396,37 @@
   }
 }
 
+// Compact verify-in-progress strip shown above the grid once results are
+// already visible (see `isVerifying` in search.ts) — the same fill/track
+// language as `.scan-progress` above, just slimmer since it now shares the
+// screen with the grid instead of owning it. SEARCH-LATENCY-PLAN.md Phase 4.
+.verify-strip {
+  display: flex; align-items: center; gap: $space-3;
+  padding: $space-2 $space-8;
+  background: rgba(34, 24, 48, 0.7);
+  border-bottom: 1px solid rgba(217, 70, 239, 0.1);
+  flex-shrink: 0;
+
+  &__phase {
+    font-size: $font-size-xs; color: $surface-400;
+    font-family: $font-primary; white-space: nowrap;
+  }
+
+  &__track {
+    flex: 1; height: 3px;
+    background: rgba(217, 70, 239, 0.12);
+    border-radius: 2px; overflow: hidden;
+  }
+
+  &__fill {
+    height: 100%;
+    background: linear-gradient(90deg, $primary-500, $tertiary-400);
+    border-radius: 2px; transition: width 0.4s ease;
+  }
+
+  &__stats { font-size: $font-size-xs; color: $surface-500; white-space: nowrap; flex-shrink: 0; }
+}
+
 // ── Failed files notice ────────────────────────────────────────
 .failed-notice {
   display: flex; flex-direction: column; gap: $space-2;
@@ -696,6 +727,28 @@
     border-radius: $border-radius-sm;
     background: rgba(56, 189, 248, 0.92);
     color: #10202d;
+    font-family: $font-primary;
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    pointer-events: none;
+
+    i { font-size: $font-size-xs; }
+  }
+
+  // "Verification hasn't reached this yet" — bottom-left, its own hue
+  // (slate, not amber/cyan) so it never reads as either an actual match or
+  // a rejection while a chunk is still in flight for this candidate. See
+  // SEARCH-LATENCY-PLAN.md Phase 1b.
+  &__unchecked {
+    position: absolute;
+    bottom: $space-2;
+    left: $space-2;
+    z-index: 2;
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px $space-2;
+    border-radius: $border-radius-sm;
+    background: rgba(100, 116, 139, 0.85);
+    color: #f1f5f9;
     font-family: $font-primary;
     font-size: $font-size-xs;
     font-weight: $font-weight-semibold;

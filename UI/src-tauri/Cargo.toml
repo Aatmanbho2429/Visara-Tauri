@@ -1,6 +1,6 @@
 [package]
 name         = "pictoria"
-version      = "1.1.38"
+version      = "1.1.39"
 description  = "Pictoria — AI-powered Visual Image Search"
 authors      = ["Aatman Stridely"]
 license      = "UNLICENSED"
@@ -102,3 +102,12 @@ lto           = true
 opt-level     = "s"
 panic         = "abort"
 strip         = true
+
+# Measurement-only profile (SEARCH-LATENCY-PLAN.md Phase 0) — `release`
+# optimizes for size, which suppresses vectorization in the near_family
+# numeric loop, so its timings can't be trusted for the Rust hot-path
+# question Phase 0 exists to answer. Build with `--profile release-perf` to
+# compare against plain `release`; not the shipping profile.
+[profile.release-perf]
+inherits  = "release"
+opt-level = 3

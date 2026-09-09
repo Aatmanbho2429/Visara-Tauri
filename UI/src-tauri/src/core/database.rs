@@ -364,19 +364,46 @@ pub fn cleanup_missing_in_folder(con: &Connection, folder: &str) -> Result<Vec<i
     Ok(removed_ids)
 }
 
-// `(vector_id → path)` map for every file in a folder — used by search.
+// `(vector_id → path)` map for every file in a folder — used by search, once
+// per scope folder on every query. `path LIKE 'prefix%'` can't use `idx_path`
+// because SQLite's default `LIKE` is case-insensitive, so this was a full
+// table scan; a `>=`/`<` range is index-usable and equivalent for an
+// ASCII/case-consistent prefix, without touching the global
+// `PRAGMA case_sensitive_like` (which would change every other `LIKE` in the
+// app). See SEARCH-LATENCY-PLAN.md Phase 5c. Note this does make the match
+// case-sensitive where the old `LIKE` was not — acceptable because `files.path`
+// is always written by a canonical directory scan, never typed by a user.
 pub fn folder_id_map(con: &Connection, folder: &str) -> Result<std::collections::HashMap<i64, String>> {
     let prefix = normalise_folder_prefix(folder);
+    let upper = prefix_upper_bound(&prefix);
     let mut stmt = con.prepare_cached(
-        "SELECT faiss_id, path FROM files WHERE path LIKE ?1",
+        "SELECT faiss_id, path FROM files WHERE path >= ?1 AND path < ?2",
     )?;
     let map = stmt
-        .query_map(params![format!("{prefix}%")], |r| {
+        .query_map(params![prefix, upper], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })?
         .filter_map(|r| r.ok())
         .collect();
     Ok(map)
+}
+
+// Exclusive upper bound matching every string that starts with `prefix` —
+// the range-predicate equivalent of `LIKE 'prefix%'`. Increments the last
+// character by one Unicode code point rather than the last byte, so this
+// stays correct on a multi-byte UTF-8 boundary.
+fn prefix_upper_bound(prefix: &str) -> String {
+    let mut chars: Vec<char> = prefix.chars().collect();
+    while let Some(last) = chars.pop() {
+        if let Some(next) = char::from_u32(last as u32 + 1) {
+            chars.push(next);
+            return chars.into_iter().collect();
+        }
+        // `last` was already the maximum code point — drop it and try
+        // incrementing the character before it instead.
+    }
+    // `prefix` was empty, or every character was already maximal.
+    format!("{prefix}\u{10FFFF}")
 }
 
 // Set of all hashes for files within a folder — used by cleanup phase.
@@ -857,5 +884,40 @@ mod tests {
         // paused folders excluded from active watch paths
         assert!(watched_folder_paths(&con).unwrap().is_empty());
         assert_eq!(list_watched_folders(&con).unwrap().len(), 1);
+    }
+
+    // SEARCH-LATENCY-PLAN.md Phase 5c: `folder_id_map` moved from
+    // `LIKE 'prefix%'` to a `>=`/`<` range so `idx_path` can be used. The
+    // property that actually matters is that a sibling folder whose name
+    // merely starts with the same characters ("folder" vs "folder2") must
+    // NOT be swept in — `normalise_folder_prefix`'s trailing separator is
+    // what the range bound relies on for that, same as the old `LIKE` did.
+    #[test]
+    fn folder_id_map_matches_only_files_under_that_folder() {
+        let con = mem();
+        seed_files(&con, &[
+            "/lib/folder/a.jpg",
+            "/lib/folder/sub/b.jpg",
+            "/lib/folder2/c.jpg",
+            "/lib/other/d.jpg",
+        ]);
+        let map = folder_id_map(&con, "/lib/folder").unwrap();
+        let paths: HashSet<String> = map.values().cloned().collect();
+        assert_eq!(paths.len(), 2, "got {paths:?}");
+        assert!(paths.contains("/lib/folder/a.jpg"));
+        assert!(paths.contains("/lib/folder/sub/b.jpg"));
+        assert!(!paths.contains("/lib/folder2/c.jpg"));
+        assert!(!paths.contains("/lib/other/d.jpg"));
+    }
+
+    #[test]
+    fn prefix_upper_bound_increments_the_last_code_point() {
+        // '/' is 0x2F; its successor is '0' (0x30) — so the bound is exactly
+        // tight (no string sorts between the prefix and this bound), and
+        // "/lib/folder/anything" sorts below it while "/lib/folder0..." does
+        // not.
+        assert_eq!(prefix_upper_bound("/lib/folder/"), "/lib/folder0");
+        assert!("/lib/folder/a.jpg" < prefix_upper_bound("/lib/folder/").as_str());
+        assert!("/lib/folder2/c.jpg" >= prefix_upper_bound("/lib/folder/").as_str());
     }
 }

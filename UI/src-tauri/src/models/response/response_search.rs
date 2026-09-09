@@ -26,6 +26,13 @@ pub struct SearchResult {
     // True once SIFT/RANSAC has actually proven the query sits inside this
     // file — a direct geometric fact, not a similarity threshold.
     pub verified: bool,
+    // "verified" = geometric proof; "rejected" = SIFT ran and refused;
+    // "unchecked" = the verify budget (`config::VERIFY_TIME_BUDGET_MS` /
+    // `VERIFY_MAX_CANDIDATES`) ran out before this candidate was reached.
+    // Additive to `verified` above so nothing downstream that only reads the
+    // bool breaks; new UI reads this to avoid reading "unchecked" as "SIFT
+    // rejected it".
+    pub verification: String,
     // True when `verified` AND the matched region is a small piece of this
     // file rather than nearly the whole frame — i.e. genuinely "found
     // inside a bigger design", not just "this is basically the same image".
@@ -84,4 +91,19 @@ pub struct ResponseSearchComplete {
     pub done: bool,
     pub results: Vec<SearchResult>,
     pub failed_files: Vec<FailedFile>,
+}
+
+// Payload for the `search_partial` event (SEARCH-LATENCY-PLAN.md Phase 4) —
+// the stage-1 ranking first (all `verification: "unchecked"`), then one of
+// these per verify chunk as candidates are proven or rejected. Reuses
+// `SearchResult` rather than a parallel type; `results` is only the rows
+// that changed since the last partial, not the whole set, so the client
+// merges by `path` — see `search.ts`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponseSearchPartial {
+    pub results: Vec<SearchResult>,
+    pub done:    usize,
+    pub total:   usize,
+    pub phase:   String,
 }

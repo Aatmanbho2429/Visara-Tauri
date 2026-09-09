@@ -6,7 +6,7 @@ use once_cell::sync::Lazy;
 
 // ── App identity ───────────────────────────────────────────────────────────
 
-pub const APP_VERSION:   &str = "1.1.38";
+pub const APP_VERSION:   &str = "1.1.39";
 pub const SUPABASE_EDGE: &str =
     "https://qpxvwdxuhgbthzbcppye.supabase.co/functions/v1";
 
@@ -33,6 +33,25 @@ pub const EMBED_ZOOM_LEVELS: usize = 3;
 // number to watch is `near_family_n` in the search timing log — if it is a
 // large fraction of the library on an ordinary query, this is too low.
 pub const NEAR_FAMILY_MIN_SIM: f32 = 0.70;
+
+// Verification stops when either bound is hit; whatever is proven by then is
+// returned rather than the search hanging until every candidate is checked.
+// The count cap is the safety net for the uncalibrated floor above; the time
+// budget is what the user actually feels. Both are deliberately generous
+// because unverified results are still shown (labelled "unchecked", not
+// dropped) — see `services::search::verify_pass`.
+pub const VERIFY_TIME_BUDGET_MS: u64 = 2_500;
+pub const VERIFY_MAX_CANDIDATES: usize = 400;
+
+// Logs a cosine-distribution histogram on every search (see
+// `VectorStore::cosine_histogram` and the calibration procedure in
+// SEARCH-LATENCY-PLAN.md Phase 3). It's a second full-population scan of the
+// embedding — roughly the same cost as `near_family`'s own embedding pass —
+// purely for diagnostics, so it isn't free at 50k+ files. Meant to be run
+// for the 10-20 calibration searches the procedure describes, then flipped
+// back to `false` once `NEAR_FAMILY_MIN_SIM` is set from real data, not left
+// on permanently.
+pub const CALIBRATION_LOGGING_ENABLED: bool = true;
 
 // Gabor orientation-energy histogram: one bin per direction.
 pub const ROSE_DIM: usize = 8;

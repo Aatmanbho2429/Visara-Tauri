@@ -10,10 +10,13 @@
 // There is still no per-search key handoff: the key goes to the sidecar once,
 // when auth obtains it, not on the search path.
 //
-// Progress is streamed to Angular via three Tauri events, each carrying the
+// Progress is streamed to Angular via four Tauri events, each carrying the
 // ApiResponse envelope:
 //   search_progress  — snapshot while running
-//   search_complete  — final results
+//   search_partial   — ranked/verified/rejected rows as they become known
+//                       (SEARCH-LATENCY-PLAN.md Phase 4); the client merges
+//                       these by path rather than replacing its result set
+//   search_complete  — final, authoritative result set
 //   search_error     — fatal error that stopped the search
 // These are broadcast events tied to the single in-flight search rather than
 // one particular invoke() call, so unlike other commands they carry no
@@ -21,7 +24,7 @@
 
 use crate::{
     core::sidecar,
-    models::response::{ApiResponse, ResponseSearchComplete, ResponseSearchProgress, ResponseSidecarStatus, SearchProgressSnapshot},
+    models::response::{ApiResponse, ResponseSearchComplete, ResponseSearchPartial, ResponseSearchProgress, ResponseSidecarStatus, SearchProgressSnapshot},
     services::search,
 };
 use std::{path::PathBuf, sync::Mutex, time::Duration};
@@ -123,14 +126,25 @@ pub async fn search_start(
         // the first proved nothing (see `search::execute`). It gets its own
         // label because the bar restarting at zero would otherwise look like
         // the search had glitched and started over.
-        let on_verify_progress = |done: usize, total: usize, mirrored: bool| {
-            let percent = if total > 0 { (done as f32 / total as f32 * 100.0).min(100.0) } else { 0.0 };
+        //
+        // Also emits `search_partial` (SEARCH-LATENCY-PLAN.md Phase 4)
+        // whenever this tick carries updated rows — the very first call,
+        // with the full "unchecked" ranking, and then once per verify chunk
+        // as candidates are proven or rejected — so the grid can render
+        // before `search_complete` ever fires.
+        let on_verify_progress = |progress: search::VerifyProgress| {
+            let percent = if progress.total > 0 {
+                (progress.done as f32 / progress.total as f32 * 100.0).min(100.0)
+            } else {
+                0.0
+            };
+            let phase = if progress.mirrored { "Checking mirrored orientation" } else { "Verifying matches" }.to_string();
             let payload = ApiResponse::ok(ResponseSearchProgress {
                 progress: SearchProgressSnapshot {
                     active:  true,
-                    phase:   if mirrored { "Checking mirrored orientation" } else { "Verifying matches" }.to_string(),
-                    done,
-                    total,
+                    phase:   phase.clone(),
+                    done:    progress.done,
+                    total:   progress.total,
                     current: query_name_for_worker.clone(),
                     percent,
                     eta_sec: -1,
@@ -138,6 +152,16 @@ pub async fn search_start(
                 },
             });
             let _ = app_clone.emit("search_progress", payload);
+
+            if !progress.updated.is_empty() {
+                let partial = ApiResponse::ok(ResponseSearchPartial {
+                    results: progress.updated.to_vec(),
+                    done:    progress.done,
+                    total:   progress.total,
+                    phase,
+                });
+                let _ = app_clone.emit("search_partial", partial);
+            }
         };
 
         match search::execute(&image, &scope, top_k, on_verify_progress) {

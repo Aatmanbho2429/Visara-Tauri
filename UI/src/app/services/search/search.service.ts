@@ -3,11 +3,11 @@ import { Observable } from 'rxjs';
 import { TAURI_COMMANDS } from '../../core/tauri/tauri-commands.const';
 import { TAURI_EVENTS } from '../../core/tauri/tauri-events.const';
 import { ZoneWrapperService } from '../../core/zone-wrapper/zone-wrapper.service';
-import { responseSearchComplete, responseSearchProgress, responseSidecarStatus } from '../../models/response/responseSearch';
+import { responseSearchComplete, responseSearchPartial, responseSearchProgress, responseSidecarStatus } from '../../models/response/responseSearch';
 import { responseSidecarCrashed } from '../../models/response/responseMisc';
 
 export interface SearchEvent {
-  type: 'progress' | 'complete' | 'error';
+  type: 'progress' | 'partial' | 'complete' | 'error';
   data: any;
 }
 
@@ -32,6 +32,9 @@ export class SearchService {
       const subs = [
         this.zoneWrapper.listen<responseSearchProgress>(TAURI_EVENTS.SEARCH_PROGRESS).subscribe(res => {
           observer.next({ type: 'progress', data: res.data });
+        }),
+        this.zoneWrapper.listen<responseSearchPartial>(TAURI_EVENTS.SEARCH_PARTIAL).subscribe(res => {
+          observer.next({ type: 'partial', data: res.data });
         }),
         this.zoneWrapper.listen<responseSearchComplete>(TAURI_EVENTS.SEARCH_COMPLETE).subscribe(res => {
           observer.next({ type: 'complete', data: res.data });

@@ -56,7 +56,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
-    sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 // Serialises concurrent load -> modify -> save cycles across sync workers.
@@ -73,6 +73,52 @@ pub fn store_io_read_guard() -> RwLockReadGuard<'static, ()> {
 }
 pub fn store_io_write_guard() -> RwLockWriteGuard<'static, ()> {
     STORE_RW_LOCK.write().unwrap_or_else(|e| e.into_inner())
+}
+
+// ── Resident cache (SEARCH-LATENCY-PLAN.md Phase 5a) ───────────────────────
+//
+// There is no long-lived store otherwise: `VectorStore::load` re-reads and
+// re-parses all of `vectors.bin` through a per-`f32` `from_le_bytes` loop on
+// every single search. Entry stride is 25,448 bytes (4608 embed + 8 rose +
+// 1728 gram + 16 color floats, plus an i64 id) — ~1.19 GB at 50k files, so
+// this caches the parsed result instead of redoing that work per query.
+static RESIDENT: Lazy<RwLock<Option<Arc<VectorStore>>>> = Lazy::new(|| RwLock::new(None));
+
+// Returns the cached store, loading it from disk on a cache miss (under
+// `store_io_read_guard`, same as any other disk read of this file — a
+// concurrent `save()` must not tear it). Cloning the `Arc` and dropping the
+// lock immediately is what lets `services::search` avoid holding any guard
+// across the multi-second verify phase that follows (Phase 1d).
+pub fn resident(path: &Path) -> Result<Arc<VectorStore>> {
+    if let Some(store) = RESIDENT.read().unwrap_or_else(|e| e.into_inner()).clone() {
+        return Ok(store);
+    }
+    let mut slot = RESIDENT.write().unwrap_or_else(|e| e.into_inner());
+    // Re-check under the write lock — another thread may have populated it
+    // while this one was waiting.
+    if let Some(store) = slot.clone() {
+        return Ok(store);
+    }
+    let loaded = {
+        let _read_guard = store_io_read_guard();
+        VectorStore::load(path)?
+    };
+    log::info!(
+        "[vector_store] resident store loaded: {} live entries (~{:.1} MB)",
+        loaded.live_count(),
+        loaded.approx_bytes() as f64 / 1_048_576.0,
+    );
+    let loaded = Arc::new(loaded);
+    *slot = Some(loaded.clone());
+    Ok(loaded)
+}
+
+// Drops the cached copy so the next `resident()` call reloads from disk.
+// Call this right after a successful `store.save()` — see `core::watcher` —
+// inside the same `store_io_write_guard()` scope, so no search can observe a
+// stale resident copy alongside a freshly-written file.
+pub fn invalidate_resident() {
+    *RESIDENT.write().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 const MAGIC: &[u8; 8] = b"PICTOR\x00\x01";
@@ -208,6 +254,27 @@ impl VectorStore {
             ids = nids; embed = nembed; rose = nrose; gram = ngram; color = ncolor;
         }
 
+        // `best_zoom_dot` (Phase 5b) is only correct when every stored zoom
+        // level is already a unit vector, which `upsert` guarantees for
+        // anything written from here on. This just confirms it on the data
+        // actually on disk — debug-only since it's an O(entries) scan with
+        // no effect on behaviour, only a caught assumption.
+        #[cfg(debug_assertions)]
+        {
+            for i in 0..ids.len() {
+                if ids[i] == TOMBSTONE { continue; }
+                let e = &embed[i * embed_dim..(i + 1) * embed_dim];
+                for zoom in e.chunks(EMBED_DIM) {
+                    let norm: f32 = zoom.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    debug_assert!(
+                        (norm - 1.0).abs() < 0.05 || norm < 1e-6,
+                        "vector store: embed zoom level not unit-normalized (norm={norm}) — \
+                         best_zoom_dot will silently under/over-score this entry",
+                    );
+                }
+            }
+        }
+
         Ok(Self { ids, embed, rose, gram, color })
     }
 
@@ -278,6 +345,18 @@ impl VectorStore {
                 embed.len(), rose.len(), gram.len(), color.len()
             )));
         }
+        // Guarantee the precondition `best_zoom_dot` needs (SEARCH-LATENCY-PLAN.md
+        // Phase 5b) rather than trusting the producer: each zoom level must be
+        // its own unit vector for a dot product to equal that level's cosine.
+        // `pipeline.py::embed_descriptor` already normalises this way, but
+        // doing it again here is nearly free (once per file) and makes the
+        // store correct even against a future producer that doesn't. Rose,
+        // gram, and color are untouched — they keep full `cos_sim` (gram
+        // isn't normalised at all, and rose is L1- not L2-normalised).
+        let mut embed = embed.to_vec();
+        normalize_zoom_levels(&mut embed, EMBED_DIM);
+        let embed = embed.as_slice();
+
         if let Some(pos) = self.ids.iter().position(|&x| x == id) {
             self.embed[pos * EMBED_TOTAL..(pos + 1) * EMBED_TOTAL].copy_from_slice(embed);
             self.rose[pos * ROSE_DIM..(pos + 1) * ROSE_DIM].copy_from_slice(rose);
@@ -331,6 +410,17 @@ impl VectorStore {
         }
         let use_color = query_color.len() == COLOR_DIM;
 
+        // `best_zoom_dot`, not `best_zoom_sim`, for the embedding — the only
+        // descriptor evaluated against all N entries (rose/gram/color only
+        // run for entries that already passed the floor). `cos_sim` was
+        // recomputing both operands' norms on every one of those N calls;
+        // normalizing the query here, once, is what lets a plain dot product
+        // substitute for it (SEARCH-LATENCY-PLAN.md Phase 5b). Stored
+        // entries are already normalised this way by `upsert`.
+        let mut query_embed_n = query_embed.to_vec();
+        normalize_zoom_levels(&mut query_embed_n, EMBED_DIM);
+        let query_embed = query_embed_n.as_slice();
+
         let mut scored: Vec<Match> = self
             .ids
             .par_iter()
@@ -338,7 +428,7 @@ impl VectorStore {
             .filter_map(|(i, &id)| {
                 if id == TOMBSTONE { return None; }
                 let e = &self.embed[i * EMBED_TOTAL..(i + 1) * EMBED_TOTAL];
-                let embed_sim = best_zoom_sim(query_embed, e, EMBED_DIM);
+                let embed_sim = best_zoom_dot(query_embed, e, EMBED_DIM);
                 if embed_sim < min_sim {
                     return None;
                 }
@@ -369,6 +459,57 @@ impl VectorStore {
 
     pub fn live_count(&self) -> usize {
         self.ids.iter().filter(|&&id| id != TOMBSTONE).count()
+    }
+
+    // Approximate resident-memory footprint, for the one-time log line at
+    // `resident()` load — makes RSS visible in the field without needing a
+    // profiler (SEARCH-LATENCY-PLAN.md Phase 5a).
+    pub fn approx_bytes(&self) -> usize {
+        self.ids.len() * 8
+            + self.embed.len() * 4
+            + self.rose.len() * 4
+            + self.gram.len() * 4
+            + self.color.len() * 4
+    }
+
+    // Diagnostic only — counts of live entries whose embedding cosine
+    // reaches each of `thresholds`, over the *whole* population. Unlike
+    // `near_family`, which only ever reports entries already at or above its
+    // own floor, this is what the `NEAR_FAMILY_MIN_SIM` calibration
+    // procedure needs: what a lower (or higher) floor would have admitted.
+    // See SEARCH-LATENCY-PLAN.md Phase 3.
+    pub fn cosine_histogram(&self, query_embed: &[f32], thresholds: &[f32]) -> Vec<usize> {
+        if self.ids.is_empty() {
+            return vec![0; thresholds.len()];
+        }
+        let mut query_embed_n = query_embed.to_vec();
+        normalize_zoom_levels(&mut query_embed_n, EMBED_DIM);
+        let query_embed = query_embed_n.as_slice();
+
+        self.ids
+            .par_iter()
+            .enumerate()
+            .filter(|&(_, &id)| id != TOMBSTONE)
+            .map(|(i, _)| {
+                let e = &self.embed[i * EMBED_TOTAL..(i + 1) * EMBED_TOTAL];
+                best_zoom_dot(query_embed, e, EMBED_DIM)
+            })
+            .fold(
+                || vec![0usize; thresholds.len()],
+                |mut acc, sim| {
+                    for (j, &t) in thresholds.iter().enumerate() {
+                        if sim >= t { acc[j] += 1; }
+                    }
+                    acc
+                },
+            )
+            .reduce(
+                || vec![0usize; thresholds.len()],
+                |mut a, b| {
+                    for j in 0..a.len() { a[j] += b[j]; }
+                    a
+                },
+            )
     }
 
     // ── Compaction ────────────────────────────────────────────────────
@@ -427,6 +568,42 @@ fn best_zoom_sim(query: &[f32], candidate: &[f32], per_zoom: usize) -> f32 {
         }
     }
     if best.is_finite() { best } else { 0.0 }
+}
+
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+// Same cross-zoom search as `best_zoom_sim`, but a plain dot product instead
+// of a full cosine — correct only when both `query` and `candidate` are
+// already unit vectors per zoom level (see `normalize_zoom_levels`). Used
+// only for the embedding (SEARCH-LATENCY-PLAN.md Phase 5b); rose, gram, and
+// color keep `best_zoom_sim`/`cos_sim` because they are not both normalised
+// the same way (gram not at all, rose L1 not L2).
+fn best_zoom_dot(query: &[f32], candidate: &[f32], per_zoom: usize) -> f32 {
+    let mut best = f32::NEG_INFINITY;
+    for qz in query.chunks(per_zoom) {
+        for cz in candidate.chunks(per_zoom) {
+            let s = dot(qz, cz);
+            if s > best { best = s; }
+        }
+    }
+    if best.is_finite() { best } else { 0.0 }
+}
+
+// L2-normalizes each contiguous `per_zoom` chunk of `v` independently, in
+// place — each zoom level becomes its own unit vector rather than the whole
+// concatenation being normalised together. That mirrors how
+// `pipeline.py::embed_descriptor` already produces the embedding (each zoom
+// level is meant to stand alone), and is the precondition `best_zoom_dot`
+// needs to equal `best_zoom_sim`.
+fn normalize_zoom_levels(v: &mut [f32], per_zoom: usize) {
+    for chunk in v.chunks_mut(per_zoom) {
+        let norm: f32 = chunk.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-12 {
+            for x in chunk.iter_mut() { *x /= norm; }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -555,6 +732,19 @@ mod tests {
 
         let sim = best_zoom_sim(&query_gram, &candidate_gram, GRAM_DIM_PER_ZOOM);
         assert!(sim > 0.99, "expected near-1.0 cross-zoom match, got {sim}");
+    }
+
+    #[test]
+    fn best_zoom_dot_matches_best_zoom_sim_on_unit_inputs() {
+        // `unit_embed` already L2-normalizes each zoom level independently
+        // (see its own `flat_map` over `normalize`), so this is exactly the
+        // precondition `best_zoom_dot` requires — the two must then agree
+        // to floating-point precision, per SEARCH-LATENCY-PLAN.md Phase 5b.
+        let q = unit_embed(0.3);
+        let c = unit_embed(0.9);
+        let via_cos = best_zoom_sim(&q, &c, EMBED_DIM);
+        let via_dot = best_zoom_dot(&q, &c, EMBED_DIM);
+        assert!((via_cos - via_dot).abs() < 1e-5, "cos={via_cos} dot={via_dot}");
     }
 
     #[test]

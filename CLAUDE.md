@@ -43,7 +43,9 @@ npm test -- --list-tests                                  # discover without run
 # Rust — from UI/src-tauri/, or `cargo check --manifest-path UI/src-tauri/Cargo.toml`
 cargo check
 cargo build
-cargo test                     # unit tests live in core::database, core::vector_store, services::search::search_service
+cargo test                     # tests live in core::database, core::vector_store,
+                               # services::search::search_service, and the serde round-trips
+                               # in models::response::{response_auth, response_subscription}
 cargo test vector_store        # one module
 
 # Full desktop build/package
@@ -104,6 +106,11 @@ services/  — business logic, one folder per entity: services/<entity>/<entity>
              re-exported through services/<entity>/mod.rs so `services::auth::login(...)` etc.
              still resolves without callers caring about the extra directory level. Orchestrates
              core/* primitives and returns ApiResponse<T>; this is where most real work goes.
+             Two folders here are not UI entities: `sync` is the folder-indexing pipeline
+             (scan -> hash/dedupe against SQLite -> sidecar `/describe` in 64-file chunks ->
+             vector store, `INDEX_FILE_CHUNK`), and `license` is device fingerprinting — a
+             SHA-256 over hardware ids, with the shell commands that read them wrapped in
+             `obfstr!()` so they don't show up in a `strings` scan.
 models/    — the IPC-boundary types: models/request/ and models/response/, one module per
              entity, mirroring UI/src/app/models/ field-for-field (`#[serde(rename_all =
              "camelCase")]` on every struct). ApiResponse<T> lives in
@@ -250,6 +257,32 @@ machine, not at build time.
 - **`NEAR_FAMILY_MIN_SIM` (0.70) is the only bound on how much work a search does** and is not
   calibrated against the current model. The number to watch is `near_family_n` in the search
   timing log — if it is a large fraction of the library on an ordinary query, the floor is too low.
+
+## Diagnosing behaviour at runtime
+
+`tauri_plugin_log` is configured in `lib.rs` at Info (Debug in debug builds) to Stdout + LogDir,
+with `max_file_size` raised to 5 MB and `KeepOne` rotation — the plugin's 40 KB default would
+rotate away the instrumentation in seconds:
+
+- macOS: `~/Library/Logs/com.pictoria.app/Pictoria.log`
+- Windows: `%APPDATA%\com.pictoria.app\logs\Pictoria.log` (the filename is `productName`)
+
+Every expensive path emits a single-line `[timing]` record, on in release too. `[timing] search
+TOTAL` carries the per-stage breakdown (`near_family_n`, `verified_n`, `describe_ms`,
+`near_family_ms`, `verify_ms`, `total_ms`, …) and is the only way to tell whether a slow search is
+the sidecar, the near-family scan, or SIFT; `sync_folder TOTAL` / `chunk` / `scan_images` do the
+same for indexing. Quote a real log line rather than an estimate when reporting a timing claim.
+
+## Plan documents
+
+`SEARCH-LATENCY-PLAN.md` (root) is the active phased plan behind the `New_Search_Plan` branch —
+getting search from ~79 s over 393 images to ~3 s over 50k. It sets its own working rules
+(phases in order, one phase per commit, measure before/after from the `[timing]` log, no
+hard-coded similarity threshold); follow them when working that plan. `MIGRATION-PLAN.md` is a
+completed, historical record — it walked the codebase from its pre-conventions state (flat
+`services/*.rs`, ad-hoc `serde_json::json!` responses, a `main.rs`-based command registry,
+snake_case wire fields, `///`/JSDoc comments) to the structure `.claude/rules/` and this file now
+describe. Every phase in it has already landed; nothing there is pending work.
 
 ## Conventions
 

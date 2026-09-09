@@ -189,6 +189,22 @@
         </button>
       </div>
 
+      <!-- Verification streams in behind the grid below (badges upgrade in
+           place as SIFT/RANSAC proves or rejects each candidate) — this is
+           what's still running once the ranked grid itself is already
+           visible. See SEARCH-LATENCY-PLAN.md Phase 4. -->
+      @if (isVerifying) {
+        <div class="verify-strip">
+          <span class="verify-strip__phase">{{ state.progress.phase }}</span>
+          <div class="verify-strip__track">
+            <div class="verify-strip__fill" [style.width.%]="state.progress.percent"></div>
+          </div>
+          @if (state.progress.total > 0) {
+            <span class="verify-strip__stats">{{ state.progress.done }}/{{ state.progress.total }}</span>
+          }
+        </div>
+      }
+
       @if (state.failedFiles.length > 0) {
         <div class="failed-notice">
           <span><i class="pi pi-exclamation-circle"></i> {{ state.failedFiles.length }} {{ 'search.failedFiles' | translate }}</span>
@@ -320,6 +336,16 @@
               <span class="pin-card__mirrored" title="Matched as a mirror image of your reference">
                 <i class="pi pi-arrows-h"></i>
                 Mirrored
+              </span>
+            }
+            @if (item.verification === 'unchecked') {
+              <!-- Distinguishes "hasn't been checked yet" from "checked and
+                   rejected" — both land in the Similar section (see
+                   `similarResults`), and without this a candidate the verify
+                   budget hasn't reached yet reads as a false negative. -->
+              <span class="pin-card__unchecked" title="Verification hasn't reached this candidate yet">
+                <i class="pi pi-clock"></i>
+                Not yet checked
               </span>
             }
             <div class="pin-card__overlay">

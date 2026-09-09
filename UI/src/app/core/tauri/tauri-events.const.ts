@@ -4,6 +4,10 @@
 // so there's nothing else that needs to know it.
 export const TAURI_EVENTS = {
   SEARCH_PROGRESS: 'search_progress',
+  // Ranked/verified/rejected rows as they become known — see
+  // SEARCH-LATENCY-PLAN.md Phase 4. Fired once with the full "unchecked"
+  // ranking, then once per verify chunk after; the client merges by path.
+  SEARCH_PARTIAL: 'search_partial',
   SEARCH_COMPLETE: 'search_complete',
   SEARCH_ERROR: 'search_error',
   LIBRARY_SYNC_STARTED: 'library_sync_started',

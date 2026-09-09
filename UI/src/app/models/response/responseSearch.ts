@@ -20,6 +20,11 @@ export interface SearchResult {
   // True once SIFT/RANSAC has geometrically proven the query sits inside
   // this file — a direct fact, not a similarity threshold.
   verified: boolean;
+  // 'verified' = geometric proof; 'rejected' = SIFT ran and refused;
+  // 'unchecked' = the verify budget ran out before this candidate was
+  // reached. Additive to `verified` — read this, not `verified`, to tell
+  // "not yet checked" apart from "checked and rejected".
+  verification: 'verified' | 'rejected' | 'unchecked';
   // True when `verified` AND the matched region is a small piece of this
   // file rather than nearly the whole frame — genuinely "found inside a
   // bigger design", not just "this is basically the same image".
@@ -63,4 +68,14 @@ export interface responseSearchComplete {
   done: boolean;
   results: SearchResult[];
   failedFiles: FailedFile[];
+}
+
+// Payload for the `search_partial` event. `results` here is only the rows
+// that changed since the last partial (or the full "unchecked" ranking on
+// the very first one) — merge by `path`, don't replace the existing set.
+export interface responseSearchPartial {
+  results: SearchResult[];
+  done: number;
+  total: number;
+  phase: string;
 }
