@@ -1,7 +1,7 @@
-//! SQLite wrapper — image-path ↔ vector-ID metadata store.
-//!
-//! Schema is intentionally kept identical to the legacy Python schema so that
-//! existing databases are automatically reused after migration.
+// SQLite wrapper — image-path ↔ vector-ID metadata store.
+//
+// Schema is intentionally kept identical to the legacy Python schema so that
+// existing databases are automatically reused after migration.
 
 use crate::{config, error::Result};
 use rusqlite::{Connection, params};
@@ -9,8 +9,8 @@ use std::{collections::{HashMap, HashSet}, fs, path::Path};
 
 // ── Connection ────────────────────────────────────────────────────────────
 
-/// Open (and migrate) the SQLite database.  Call once per worker thread;
-/// SQLite connections are not Send so never share one across threads.
+// Open (and migrate) the SQLite database.  Call once per worker thread;
+// SQLite connections are not Send so never share one across threads.
 pub fn open() -> Result<Connection> {
     if let Some(parent) = config::DB_PATH.parent() {
         fs::create_dir_all(parent)?;
@@ -61,12 +61,6 @@ pub fn open() -> Result<Connection> {
         -- (category, value) is safe — those columns exist in both schemas.
         CREATE INDEX IF NOT EXISTS idx_file_tags_cat_val ON file_tags(category, value);
 
-        CREATE TABLE IF NOT EXISTS catalog_themes (
-            id         TEXT PRIMARY KEY,
-            name       TEXT NOT NULL,
-            json       TEXT NOT NULL,   -- serialized document model (pages + elements)
-            updated_at REAL NOT NULL DEFAULT 0
-        );
     ")?;
 
     // Idempotent column additions for databases created before these columns existed.
@@ -78,9 +72,9 @@ pub fn open() -> Result<Connection> {
 
 // ── Schema / embedding version helpers ─────────────────────────────────────
 
-/// SQLite `PRAGMA user_version` — repurposed as the *embedding schema* version so
-/// a change to how vectors are produced (model / preprocessing / colour) can be
-/// detected on startup and turned into a one-time re-index.
+// SQLite `PRAGMA user_version` — repurposed as the *embedding schema* version so
+// a change to how vectors are produced (model / preprocessing / colour) can be
+// detected on startup and turned into a one-time re-index.
 pub fn user_version(con: &Connection) -> Result<i64> {
     Ok(con.query_row("PRAGMA user_version", [], |r| r.get(0))?)
 }
@@ -91,12 +85,12 @@ pub fn set_user_version(con: &Connection, v: i64) -> Result<()> {
     Ok(())
 }
 
-/// One-time schema upgrade: convert the legacy path-keyed `file_tags` table to
-/// reference `files(id)` with `ON DELETE CASCADE`.  Idempotent — it detects the
-/// old `path` column and rebuilds, copying tags across by joining on the file
-/// path.  Orphan tags (whose path is no longer in `files`) are dropped by the
-/// join, which is exactly the cleanup the old `sweep_orphan_tags` hack did.
-/// Call once at startup, before any tag read/write.
+// One-time schema upgrade: convert the legacy path-keyed `file_tags` table to
+// reference `files(id)` with `ON DELETE CASCADE`.  Idempotent — it detects the
+// old `path` column and rebuilds, copying tags across by joining on the file
+// path.  Orphan tags (whose path is no longer in `files`) are dropped by the
+// join, which is exactly the cleanup the old `sweep_orphan_tags` hack did.
+// Call once at startup, before any tag read/write.
 pub fn migrate_file_tags_to_file_id(con: &Connection) -> Result<()> {
     let has_path = {
         let mut stmt = con.prepare("PRAGMA table_info(file_tags)")?;
@@ -143,10 +137,10 @@ pub fn migrate_file_tags_to_file_id(con: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Cleanup of `file_tags` rows whose file no longer exists in `files`.  With the
-/// `ON DELETE CASCADE` foreign key these should never accumulate, but this stays
-/// as a cheap belt-and-suspenders sweep for rows left by pre-migration builds.
-/// Returns the number of orphaned tag rows removed.
+// Cleanup of `file_tags` rows whose file no longer exists in `files`.  With the
+// `ON DELETE CASCADE` foreign key these should never accumulate, but this stays
+// as a cheap belt-and-suspenders sweep for rows left by pre-migration builds.
+// Returns the number of orphaned tag rows removed.
 pub fn sweep_orphan_tags(con: &Connection) -> Result<usize> {
     let removed = con.execute(
         "DELETE FROM file_tags WHERE file_id NOT IN (SELECT id FROM files)",
@@ -157,7 +151,10 @@ pub fn sweep_orphan_tags(con: &Connection) -> Result<usize> {
 
 // ── Watched folders queries ───────────────────────────────────────────────
 
+// camelCase so this struct — returned as-is inside ResponseListFolders — matches
+// the wire format every other IPC payload uses; see models.md.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WatchedFolder {
     pub id:            i64,
     pub path:          String,
@@ -241,8 +238,8 @@ pub fn set_network_url(con: &Connection, path: &str, url: &str) -> Result<()> {
     Ok(())
 }
 
-/// Folders currently marked missing that have a stored network URL — used by
-/// the NAS recovery loop to attempt programmatic remounting.
+// Folders currently marked missing that have a stored network URL — used by
+// the NAS recovery loop to attempt programmatic remounting.
 pub fn missing_folders_with_network_url(con: &Connection) -> Result<Vec<(String, String)>> {
     let mut stmt = con.prepare_cached(
         "SELECT path, network_url FROM watched_folders \
@@ -255,8 +252,8 @@ pub fn missing_folders_with_network_url(con: &Connection) -> Result<Vec<(String,
     Ok(rows)
 }
 
-/// Folders that have no network_url stored yet — used at startup to backfill
-/// URLs for folders added before this feature existed.
+// Folders that have no network_url stored yet — used at startup to backfill
+// URLs for folders added before this feature existed.
 pub fn watched_folders_without_network_url(con: &Connection) -> Result<Vec<String>> {
     let mut stmt = con.prepare_cached(
         "SELECT path FROM watched_folders WHERE network_url IS NULL",
@@ -268,8 +265,8 @@ pub fn watched_folders_without_network_url(con: &Connection) -> Result<Vec<Strin
     Ok(v)
 }
 
-/// Total rows in `files` — used to detect legacy users with an existing index
-/// but no watched folders registered yet.
+// Total rows in `files` — used to detect legacy users with an existing index
+// but no watched folders registered yet.
 pub fn total_indexed_files(con: &Connection) -> Result<usize> {
     let count: i64 = con.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
     Ok(count as usize)
@@ -277,7 +274,7 @@ pub fn total_indexed_files(con: &Connection) -> Result<usize> {
 
 // ── Queries ───────────────────────────────────────────────────────────────
 
-/// Return `(path, vector_id)` for any row whose hash matches, or `(None, None)`.
+// Return `(path, vector_id)` for any row whose hash matches, or `(None, None)`.
 pub fn find_by_hash(con: &Connection, hash: &str) -> Result<(Option<String>, Option<i64>)> {
     let mut stmt = con.prepare_cached(
         "SELECT path, faiss_id FROM files WHERE hash = ? LIMIT 1",
@@ -290,7 +287,7 @@ pub fn find_by_hash(con: &Connection, hash: &str) -> Result<(Option<String>, Opt
     }
 }
 
-/// Return `(vector_id, hash, mtime)` for a path, or `None`.
+// Return `(vector_id, hash, mtime)` for a path, or `None`.
 pub fn find_by_path(con: &Connection, path: &str) -> Result<Option<(i64, String, f64)>> {
     let mut stmt = con.prepare_cached(
         "SELECT faiss_id, hash, mtime FROM files WHERE path = ? LIMIT 1",
@@ -305,7 +302,7 @@ pub fn find_by_path(con: &Connection, path: &str) -> Result<Option<(i64, String,
     }
 }
 
-/// Next available vector ID (max + 1, or 0 if table is empty).
+// Next available vector ID (max + 1, or 0 if table is empty).
 pub fn next_vector_id(con: &Connection) -> Result<i64> {
     let max: Option<i64> =
         con.query_row("SELECT MAX(faiss_id) FROM files", [], |r| r.get(0))?;
@@ -342,8 +339,8 @@ pub fn delete_file(con: &Connection, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove DB rows for files no longer on disk within a folder.
-/// Returns the vector IDs of removed rows so the caller can purge the store.
+// Remove DB rows for files no longer on disk within a folder.
+// Returns the vector IDs of removed rows so the caller can purge the store.
 pub fn cleanup_missing_in_folder(con: &Connection, folder: &str) -> Result<Vec<i64>> {
     let prefix = normalise_folder_prefix(folder);
     let mut stmt = con.prepare_cached(
@@ -367,14 +364,23 @@ pub fn cleanup_missing_in_folder(con: &Connection, folder: &str) -> Result<Vec<i
     Ok(removed_ids)
 }
 
-/// `(vector_id → path)` map for every file in a folder — used by search.
+// `(vector_id → path)` map for every file in a folder — used by search, once
+// per scope folder on every query. `path LIKE 'prefix%'` can't use `idx_path`
+// because SQLite's default `LIKE` is case-insensitive, so this was a full
+// table scan; a `>=`/`<` range is index-usable and equivalent for an
+// ASCII/case-consistent prefix, without touching the global
+// `PRAGMA case_sensitive_like` (which would change every other `LIKE` in the
+// app). See SEARCH-LATENCY-PLAN.md Phase 5c. Note this does make the match
+// case-sensitive where the old `LIKE` was not — acceptable because `files.path`
+// is always written by a canonical directory scan, never typed by a user.
 pub fn folder_id_map(con: &Connection, folder: &str) -> Result<std::collections::HashMap<i64, String>> {
     let prefix = normalise_folder_prefix(folder);
+    let upper = prefix_upper_bound(&prefix);
     let mut stmt = con.prepare_cached(
-        "SELECT faiss_id, path FROM files WHERE path LIKE ?1",
+        "SELECT faiss_id, path FROM files WHERE path >= ?1 AND path < ?2",
     )?;
     let map = stmt
-        .query_map(params![format!("{prefix}%")], |r| {
+        .query_map(params![prefix, upper], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })?
         .filter_map(|r| r.ok())
@@ -382,7 +388,25 @@ pub fn folder_id_map(con: &Connection, folder: &str) -> Result<std::collections:
     Ok(map)
 }
 
-/// Set of all hashes for files within a folder — used by cleanup phase.
+// Exclusive upper bound matching every string that starts with `prefix` —
+// the range-predicate equivalent of `LIKE 'prefix%'`. Increments the last
+// character by one Unicode code point rather than the last byte, so this
+// stays correct on a multi-byte UTF-8 boundary.
+fn prefix_upper_bound(prefix: &str) -> String {
+    let mut chars: Vec<char> = prefix.chars().collect();
+    while let Some(last) = chars.pop() {
+        if let Some(next) = char::from_u32(last as u32 + 1) {
+            chars.push(next);
+            return chars.into_iter().collect();
+        }
+        // `last` was already the maximum code point — drop it and try
+        // incrementing the character before it instead.
+    }
+    // `prefix` was empty, or every character was already maximal.
+    format!("{prefix}\u{10FFFF}")
+}
+
+// Set of all hashes for files within a folder — used by cleanup phase.
 pub fn folder_hashes(con: &Connection, folder: &str) -> Result<HashSet<String>> {
     let prefix = normalise_folder_prefix(folder);
     let mut stmt = con.prepare_cached(
@@ -395,7 +419,7 @@ pub fn folder_hashes(con: &Connection, folder: &str) -> Result<HashSet<String>> 
     Ok(set)
 }
 
-/// `(path, vector_id)` pairs for a set of hashes.
+// `(path, vector_id)` pairs for a set of hashes.
 pub fn files_by_hashes(con: &Connection, hashes: &HashSet<String>) -> Result<Vec<(String, i64)>> {
     if hashes.is_empty() {
         return Ok(Vec::new());
@@ -414,7 +438,7 @@ pub fn files_by_hashes(con: &Connection, hashes: &HashSet<String>) -> Result<Vec
     Ok(pairs)
 }
 
-/// Row count for a folder — used to decide whether a sync is needed.
+// Row count for a folder — used to decide whether a sync is needed.
 pub fn folder_file_count(con: &Connection, folder: &str) -> Result<usize> {
     let prefix = normalise_folder_prefix(folder);
     let count: i64 = con.query_row(
@@ -427,9 +451,11 @@ pub fn folder_file_count(con: &Connection, folder: &str) -> Result<usize> {
 
 // ── Subfolder tree ─────────────────────────────────────────────────────────
 
-/// One node in a watched folder's subfolder tree.  `direct` = images stored
-/// directly in this folder; `total` = images in this folder and all descendants.
+// One node in a watched folder's subfolder tree.  `direct` = images stored
+// directly in this folder; `total` = images in this folder and all descendants.
+// camelCase for the same reason as WatchedFolder above.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FolderTreeNode {
     pub name:     String,
     pub rel:      String,
@@ -438,8 +464,8 @@ pub struct FolderTreeNode {
     pub children: Vec<FolderTreeNode>,
 }
 
-/// Build the nested subfolder tree (with per-folder image counts) for a watched
-/// root, derived entirely from the indexed file paths already in `files`.
+// Build the nested subfolder tree (with per-folder image counts) for a watched
+// root, derived entirely from the indexed file paths already in `files`.
 pub fn folder_tree(con: &Connection, root: &str) -> Result<FolderTreeNode> {
     let prefix = normalise_folder_prefix(root);
 
@@ -533,6 +559,7 @@ fn build_tree_node(
 // ── Tags ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileTag {
     pub path:     String,
     pub category: String,
@@ -541,6 +568,7 @@ pub struct FileTag {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TagFacet {
     pub category: String,
     pub value:    String,
@@ -554,8 +582,8 @@ fn now_secs() -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Add a tag (no-op if the exact (file, category, value) already exists, or if
-/// the path is not an indexed file).
+// Add a tag (no-op if the exact (file, category, value) already exists, or if
+// the path is not an indexed file).
 pub fn add_tag(con: &Connection, path: &str, category: &str, value: &str, source: &str) -> Result<()> {
     con.execute(
         "INSERT OR IGNORE INTO file_tags (file_id, category, value, source, created_at) \
@@ -565,8 +593,8 @@ pub fn add_tag(con: &Connection, path: &str, category: &str, value: &str, source
     Ok(())
 }
 
-/// Replace every value in a single-valued category for a path (color, size,
-/// material, finish, design).
+// Replace every value in a single-valued category for a path (color, size,
+// material, finish, design).
 pub fn set_single_tag(con: &Connection, path: &str, category: &str, value: &str, source: &str) -> Result<()> {
     con.execute(
         "DELETE FROM file_tags WHERE category = ?2 \
@@ -595,7 +623,7 @@ pub fn path_has_category(con: &Connection, path: &str, category: &str) -> Result
     Ok(n > 0)
 }
 
-/// All tags for a set of paths.
+// All tags for a set of paths.
 pub fn tags_for_paths(con: &Connection, paths: &[String]) -> Result<Vec<FileTag>> {
     if paths.is_empty() { return Ok(Vec::new()); }
     let placeholders = (0..paths.len()).map(|_| "?").collect::<Vec<_>>().join(",");
@@ -619,8 +647,8 @@ pub fn tags_for_paths(con: &Connection, paths: &[String]) -> Result<Vec<FileTag>
     Ok(rows)
 }
 
-/// Distinct (category, value) with a count of how many files carry each — drives
-/// the filter chips.
+// Distinct (category, value) with a count of how many files carry each — drives
+// the filter chips.
 pub fn tag_facets(con: &Connection) -> Result<Vec<TagFacet>> {
     let mut stmt = con.prepare(
         "SELECT category, value, COUNT(DISTINCT file_id) FROM file_tags \
@@ -639,12 +667,11 @@ pub fn tag_facets(con: &Connection) -> Result<Vec<TagFacet>> {
     Ok(rows)
 }
 
-/// Paths matching the given (category, value) filters. Filters in the *same*
-/// category are OR'd together (e.g. color = "Light Grey" OR "Beige" OR "Green"
-/// shows tiles in any of those colors), while different categories are AND'd
-/// (e.g. color must match AND finish must match). With no filters, returns
-/// every indexed image (capped) — used by the catalog editor's image-library
-/// panel to show the whole library.
+// Paths matching the given (category, value) filters. Filters in the *same*
+// category are OR'd together (e.g. color = "Light Grey" OR "Beige" OR "Green"
+// shows tiles in any of those colors), while different categories are AND'd
+// (e.g. color must match AND finish must match). With no filters, returns
+// every indexed image (capped).
 pub fn query_paths_by_tags(con: &Connection, filters: &[(String, String)]) -> Result<Vec<String>> {
     if filters.is_empty() {
         let mut stmt = con.prepare("SELECT path FROM files ORDER BY path LIMIT 5000")?;
@@ -686,8 +713,8 @@ pub fn query_paths_by_tags(con: &Connection, filters: &[(String, String)]) -> Re
     Ok(rows)
 }
 
-/// Files under a folder that have no tag in `category` yet (used by the color
-/// backfill so we never re-decode an already-coloured image).
+// Files under a folder that have no tag in `category` yet (used by the color
+// backfill so we never re-decode an already-coloured image).
 pub fn paths_missing_category_in_folder(con: &Connection, folder: &str, category: &str) -> Result<Vec<String>> {
     let prefix = normalise_folder_prefix(folder);
     let mut stmt = con.prepare(
@@ -700,63 +727,6 @@ pub fn paths_missing_category_in_folder(con: &Connection, folder: &str, category
         .filter_map(|r| r.ok())
         .collect();
     Ok(rows)
-}
-
-// ── Catalog themes ──────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ThemeSummary {
-    pub id:         String,
-    pub name:       String,
-    pub updated_at: f64,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct Theme {
-    pub id:         String,
-    pub name:       String,
-    pub json:       String,
-    pub updated_at: f64,
-}
-
-pub fn save_theme(con: &Connection, id: &str, name: &str, json: &str) -> Result<()> {
-    con.execute(
-        "INSERT OR REPLACE INTO catalog_themes (id, name, json, updated_at) VALUES (?1,?2,?3,?4)",
-        params![id, name, json, now_secs()],
-    )?;
-    Ok(())
-}
-
-pub fn list_themes(con: &Connection) -> Result<Vec<ThemeSummary>> {
-    let mut stmt = con.prepare(
-        "SELECT id, name, updated_at FROM catalog_themes ORDER BY updated_at DESC",
-    )?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(ThemeSummary { id: r.get(0)?, name: r.get(1)?, updated_at: r.get(2)? })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(rows)
-}
-
-pub fn get_theme(con: &Connection, id: &str) -> Result<Option<Theme>> {
-    let mut stmt = con.prepare(
-        "SELECT id, name, json, updated_at FROM catalog_themes WHERE id = ?1",
-    )?;
-    let row = stmt.query_row(params![id], |r| {
-        Ok(Theme { id: r.get(0)?, name: r.get(1)?, json: r.get(2)?, updated_at: r.get(3)? })
-    });
-    match row {
-        Ok(t) => Ok(Some(t)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-pub fn delete_theme(con: &Connection, id: &str) -> Result<()> {
-    con.execute("DELETE FROM catalog_themes WHERE id = ?1", params![id])?;
-    Ok(())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -783,8 +753,7 @@ mod tests {
         con.execute_batch(
             "CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, faiss_id INTEGER UNIQUE NOT NULL, mtime REAL NOT NULL DEFAULT 0);
              CREATE TABLE watched_folders (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, status TEXT NOT NULL DEFAULT 'watching', added_at REAL NOT NULL, last_event_at REAL NOT NULL DEFAULT 0);
-             CREATE TABLE file_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, category TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', created_at REAL NOT NULL DEFAULT 0, UNIQUE(file_id,category,value));
-             CREATE TABLE catalog_themes (id TEXT PRIMARY KEY, name TEXT NOT NULL, json TEXT NOT NULL, updated_at REAL NOT NULL DEFAULT 0);",
+             CREATE TABLE file_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, category TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', created_at REAL NOT NULL DEFAULT 0, UNIQUE(file_id,category,value));",
         ).unwrap();
         con
     }
@@ -844,8 +813,8 @@ mod tests {
         assert!(!tags_for_paths(&con, &["/lib/a.jpg".into()]).unwrap().iter().any(|t| t.value == "bestseller"));
     }
 
-    /// Simulates a legacy customer DB (path-keyed file_tags, no file_id column)
-    /// upgrading in place — the exact path an existing `.pictoria` takes.
+    // Simulates a legacy customer DB (path-keyed file_tags, no file_id column)
+    // upgrading in place — the exact path an existing `.pictoria` takes.
     #[test]
     fn migrates_legacy_path_keyed_file_tags() {
         let con = Connection::open_in_memory().unwrap();
@@ -890,22 +859,6 @@ mod tests {
         assert_eq!(missing.len(), 4);
     }
 
-    #[test]
-    fn catalog_theme_crud() {
-        let con = mem();
-        save_theme(&con, "t1", "My Catalog", "{\"pages\":[1]}").unwrap();
-        save_theme(&con, "t2", "Second", "{}").unwrap();
-        assert_eq!(list_themes(&con).unwrap().len(), 2);
-        let g = get_theme(&con, "t1").unwrap().unwrap();
-        assert_eq!(g.name, "My Catalog");
-        assert_eq!(g.json, "{\"pages\":[1]}");
-        save_theme(&con, "t1", "Renamed", "{\"x\":1}").unwrap(); // replace
-        assert_eq!(get_theme(&con, "t1").unwrap().unwrap().name, "Renamed");
-        assert_eq!(list_themes(&con).unwrap().len(), 2);
-        delete_theme(&con, "t1").unwrap();
-        assert!(get_theme(&con, "t1").unwrap().is_none());
-        assert_eq!(list_themes(&con).unwrap().len(), 1);
-    }
 
     #[test]
     fn file_find_move_delete() {
@@ -931,5 +884,40 @@ mod tests {
         // paused folders excluded from active watch paths
         assert!(watched_folder_paths(&con).unwrap().is_empty());
         assert_eq!(list_watched_folders(&con).unwrap().len(), 1);
+    }
+
+    // SEARCH-LATENCY-PLAN.md Phase 5c: `folder_id_map` moved from
+    // `LIKE 'prefix%'` to a `>=`/`<` range so `idx_path` can be used. The
+    // property that actually matters is that a sibling folder whose name
+    // merely starts with the same characters ("folder" vs "folder2") must
+    // NOT be swept in — `normalise_folder_prefix`'s trailing separator is
+    // what the range bound relies on for that, same as the old `LIKE` did.
+    #[test]
+    fn folder_id_map_matches_only_files_under_that_folder() {
+        let con = mem();
+        seed_files(&con, &[
+            "/lib/folder/a.jpg",
+            "/lib/folder/sub/b.jpg",
+            "/lib/folder2/c.jpg",
+            "/lib/other/d.jpg",
+        ]);
+        let map = folder_id_map(&con, "/lib/folder").unwrap();
+        let paths: HashSet<String> = map.values().cloned().collect();
+        assert_eq!(paths.len(), 2, "got {paths:?}");
+        assert!(paths.contains("/lib/folder/a.jpg"));
+        assert!(paths.contains("/lib/folder/sub/b.jpg"));
+        assert!(!paths.contains("/lib/folder2/c.jpg"));
+        assert!(!paths.contains("/lib/other/d.jpg"));
+    }
+
+    #[test]
+    fn prefix_upper_bound_increments_the_last_code_point() {
+        // '/' is 0x2F; its successor is '0' (0x30) — so the bound is exactly
+        // tight (no string sorts between the prefix and this bound), and
+        // "/lib/folder/anything" sorts below it while "/lib/folder0..." does
+        // not.
+        assert_eq!(prefix_upper_bound("/lib/folder/"), "/lib/folder0");
+        assert!("/lib/folder/a.jpg" < prefix_upper_bound("/lib/folder/").as_str());
+        assert!("/lib/folder2/c.jpg" >= prefix_upper_bound("/lib/folder/").as_str());
     }
 }

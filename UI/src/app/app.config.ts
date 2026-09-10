@@ -7,7 +7,7 @@ import { provideTranslateHttpLoader } from '@ngx-translate/http-loader';
 import { providePrimeNG } from 'primeng/config';
 import { definePreset } from '@primeuix/themes';
 import Aura from '@primeuix/themes/aura';
-import { ConfigService } from './services/config.service';
+import { ConfigService } from './services/config/config.service';
 
 import { routes } from './app.routes';
 

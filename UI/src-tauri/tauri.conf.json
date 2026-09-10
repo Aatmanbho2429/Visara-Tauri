@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Pictoria",
-  "version": "1.1.30",
+  "version": "1.1.39",
   "identifier": "com.pictoria.app",
   "build": {
     "frontendDist": "../dist/UI/browser",
@@ -40,8 +40,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": {
-      "resources/models/clip_vitb32.onnx.enc": "models/clip_vitb32.onnx.enc"
+    "externalBin": [
+      "binaries/pictoria-sidecar"
+    ],
+    "macOS": {
+      "entitlements": "entitlements.plist"
     },
     "android": {
       "debugApplicationIdSuffix": ".debug"

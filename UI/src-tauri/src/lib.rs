@@ -1,19 +1,24 @@
-//! Pictoria — Tauri application root.
-//!
-//! All business logic lives in the modules below.  This file only wires
-//! command handlers into the Tauri builder and registers platform plugins.
-//! The old HTTP-proxy pattern (Rust → Python FastAPI) is gone; every command
-//! now calls Rust service functions directly.
+// Pictoria — Tauri application root.
+//
+// All business logic lives in the modules below.  This file only wires
+// command handlers into the Tauri builder and registers platform plugins.
+// The old HTTP-proxy pattern (Rust → Python FastAPI) is gone; every command
+// now calls Rust service functions directly.
 
 mod commands;
 mod config;
 mod core;
 mod error;
+mod models;
 mod services;
 mod utils;
 
 use clipboard_rs::{Clipboard, ClipboardContext, common::RustImage};
-use commands::{auth, browse, catalog, hotkey, library, search, subscription, tags, update};
+use commands::{
+    auth_commands, browse_commands, file_commands, library_commands, notice_commands,
+    search_commands, subscription_commands, tags_commands, update_commands,
+};
+use models::response::{ApiResponse, ResponseHotkeyPressed};
 use std::path::PathBuf;
 use tauri::{
     AppHandle, Emitter, Manager, WindowEvent,
@@ -24,37 +29,13 @@ use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
-/// CLI flag passed by the OS when the app is launched at user login.
-/// Detected in `setup()` to keep the main window hidden (tray-only boot).
+// CLI flag passed by the OS when the app is launched at user login.
+// Detected in `setup()` to keep the main window hidden (tray-only boot).
 const AUTOSTART_FLAG: &str = "--autostart";
-
-// ── Platform file opener ───────────────────────────────────────────────────
-
-#[tauri::command]
-fn open_file_path(path: String) {
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("explorer")
-        .args(["/select,", &path])
-        .spawn();
-
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open")
-        .args(["-R", &path])
-        .spawn();
-
-    #[cfg(target_os = "linux")]
-    {
-        let folder = std::path::Path::new(&path)
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(path);
-        let _ = std::process::Command::new("xdg-open").arg(&folder).spawn();
-    }
-}
 
 // ── Global hot-key handler ────────────────────────────────────────────────
 
-/// Ctrl+Shift+V on Windows/Linux, ⌘+Shift+V on macOS.
+// Ctrl+Shift+V on Windows/Linux, ⌘+Shift+V on macOS.
 fn hotkey_shortcut() -> Shortcut {
     #[cfg(target_os = "macos")]
     let mods = Modifiers::SUPER | Modifiers::SHIFT;
@@ -64,31 +45,28 @@ fn hotkey_shortcut() -> Shortcut {
     Shortcut::new(Some(mods), Code::KeyV)
 }
 
-/// Recognized image file extensions for file-list clipboard contents.
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "tif", "tiff", "psd", "psb", "bmp", "gif", "webp"];
-
 fn is_image_file(p: &PathBuf) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
-        .map(|e| IMAGE_EXTS.contains(&e.to_lowercase().as_str()))
+        .map(|e| config::IMAGE_EXTENSIONS.contains(&e.to_lowercase().as_str()))
         .unwrap_or(false)
 }
 
-/// Read the clipboard and resolve it to an image file path.
-///
-/// 1. File list (macOS Finder "Copy", Windows Explorer "Copy")
-///    → first image file in the list is returned directly, no temp copy
-/// 2. Bitmap (screenshots, "Copy Image" from browser, Photoshop, etc.)
-///    → written to `<temp>/pictoria_clipboard.png` (overwritten each call)
-///
-/// The file list is checked FIRST and on purpose.  When the user copies an
-/// actual image file we always want the real, full-resolution file on disk.
-/// On macOS a Finder file-copy ALSO exposes an `NSImage` representation that is
-/// merely the file's icon/thumbnail, so reading the bitmap first (as we used to)
-/// embedded a tiny generic preview and returned unrelated matches.  Windows
-/// Explorer copies expose no bitmap at all — which is why this only misbehaved
-/// on macOS.  The bitmap branch now only runs for genuine bitmap clipboards
-/// (screenshots, browser "Copy Image"), which carry no file path.
+// Read the clipboard and resolve it to an image file path.
+//
+// 1. File list (macOS Finder "Copy", Windows Explorer "Copy")
+//    → first image file in the list is returned directly, no temp copy
+// 2. Bitmap (screenshots, "Copy Image" from browser, Photoshop, etc.)
+//    → written to `<temp>/pictoria_clipboard.png` (overwritten each call)
+//
+// The file list is checked FIRST and on purpose.  When the user copies an
+// actual image file we always want the real, full-resolution file on disk.
+// On macOS a Finder file-copy ALSO exposes an `NSImage` representation that is
+// merely the file's icon/thumbnail, so reading the bitmap first (as we used to)
+// embedded a tiny generic preview and returned unrelated matches.  Windows
+// Explorer copies expose no bitmap at all — which is why this only misbehaved
+// on macOS.  The bitmap branch now only runs for genuine bitmap clipboards
+// (screenshots, browser "Copy Image"), which carry no file path.
 fn resolve_clipboard_image() -> Option<PathBuf> {
     let ctx = match ClipboardContext::new() {
         Ok(c) => c,
@@ -117,7 +95,7 @@ fn resolve_clipboard_image() -> Option<PathBuf> {
     match ctx.get_image() {
         Ok(img) => {
             let (w, h) = img.get_size();
-            let dest   = hotkey::temp_path();
+            let dest   = crate::utils::hotkey::temp_path();
             match img.save_to_path(dest.to_string_lossy().as_ref()) {
                 Ok(_) => {
                     log::info!("[hotkey] saved {w}x{h} clipboard bitmap → {:?}", dest);
@@ -132,7 +110,7 @@ fn resolve_clipboard_image() -> Option<PathBuf> {
     None
 }
 
-/// Fired when the user presses the global hot-key from anywhere on the system.
+// Fired when the user presses the global hot-key from anywhere on the system.
 fn on_global_hotkey(app: &AppHandle) {
     let image_path = resolve_clipboard_image()
         .map(|p| p.to_string_lossy().into_owned())
@@ -141,16 +119,17 @@ fn on_global_hotkey(app: &AppHandle) {
     // Bring the main window forward regardless — user pressed the hot-key for a reason.
     show_main_window(app);
 
-    let _ = app.emit("hotkey_pressed", serde_json::json!({
-        "has_image":  !image_path.is_empty(),
-        "image_path": image_path,
-    }));
+    let payload = ApiResponse::ok(ResponseHotkeyPressed {
+        has_image: !image_path.is_empty(),
+        image_path,
+    });
+    let _ = app.emit("hotkey_pressed", payload);
 }
 
 // ── System tray ────────────────────────────────────────────────────────────
 
-/// Reveal + focus the main window. Safe to call whether the window is hidden,
-/// minimized, or already visible behind other apps.
+// Reveal + focus the main window. Safe to call whether the window is hidden,
+// minimized, or already visible behind other apps.
 fn show_main_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
@@ -159,8 +138,8 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-/// Build the persistent tray icon with menu: Open, Check Updates, Quit.
-/// Silent failure (logged warning) — tray is a UX enhancement, not critical.
+// Build the persistent tray icon with menu: Open, Check Updates, Quit.
+// Silent failure (logged warning) — tray is a UX enhancement, not critical.
 fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let show_item   = MenuItem::with_id(app, "tray_show",   "Open Pictoria",         true, None::<&str>)?;
     let update_item = MenuItem::with_id(app, "tray_update", "Check for Updates",   true, None::<&str>)?;
@@ -188,10 +167,13 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             "tray_update" => {
                 let app_clone = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    update::check_for_update(app_clone).await;
+                    update_commands::update_check(app_clone).await;
                 });
             }
-            "tray_quit" => app.exit(0),
+            "tray_quit" => {
+                crate::core::sidecar::shutdown();
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -209,9 +191,9 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Intercept the X button on the main window: hide to tray instead of quitting.
-/// First close per session triggers a native OS notification so the user
-/// understands the app is still running.  Other windows close normally.
+// Intercept the X button on the main window: hide to tray instead of quitting.
+// First close per session triggers a native OS notification so the user
+// understands the app is still running.  Other windows close normally.
 fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static NOTIFIED_THIS_SESSION: AtomicBool = AtomicBool::new(false);
@@ -258,13 +240,21 @@ pub fn run() {
                 ),
             }
 
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Debug)
-                        .build(),
-                )?;
-            }
+            // Always on, not just in dev builds: the `[timing]` instrumentation
+            // throughout `services::search` / `services::sync` (folder loads,
+            // searches) is only useful if it actually lands somewhere durable.
+            // Default targets are Stdout + LogDir — on Windows that's
+            // `%APPDATA%\com.pictoria.app\logs\pictoria.log`. The plugin's own
+            // default max size (40 KB) would rotate that away in seconds under
+            // this much logging, so it's raised here; `KeepOne` (the plugin
+            // default) still caps total disk use to ~2x that.
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(if cfg!(debug_assertions) { log::LevelFilter::Debug } else { log::LevelFilter::Info })
+                    .max_file_size(5_000_000)
+                    .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                    .build(),
+            )?;
 
             // Register the global hot-key.  Silent failure is acceptable —
             // the user just won't see the hot-key behave (another app may
@@ -281,10 +271,22 @@ pub fn run() {
                 log::warn!("[tray] failed to build tray: {e}");
             }
 
+            // One-time full library wipe, if this release ships one. Runs
+            // first: it deletes `meta.db`, the vector store and the thumbnail
+            // cache, so nothing may have opened them yet. Everything below
+            // either reads the DB or spawns something that eventually will.
+            crate::core::migrate::run_library_reset();
+
+            // Spawn the sidecar (Gabor/Gram descriptors + SIFT verification)
+            // hidden, in the background. `core::sidecar::is_ready()` gates
+            // search/indexing until its health check passes AND the user is
+            // logged in with a current subscription.
+            crate::core::sidecar::spawn(app.handle().clone());
+
             // Start the background folder watcher.  Its OS subscriptions and
-            // initial reconciliation kick in later (after token validation
-            // loads the CLIP model) via `crate::core::watcher::refresh_active_watches`
-            // and `reconcile_all`.
+            // initial reconciliation kick in later (once the sidecar is ready
+            // and the user is logged in) via `crate::core::sidecar::maybe_notify_ready`
+            // -> `crate::core::watcher::notify_model_ready`.
             crate::core::watcher::init(app.handle().clone());
 
             // Spawn the NAS auto-recovery loop (macOS only — no-op elsewhere).
@@ -346,55 +348,59 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             // ── Authentication ───────────────────────────────────────
-            auth::auth_login,
-            auth::auth_validate_token,
-            auth::auth_periodic_revalidate,
-            auth::auth_check_session,
-            auth::auth_logout,
-            auth::auth_send_otp,
-            auth::auth_forgot_password_send_otp,
-            auth::auth_forgot_password_verify_otp,
-            auth::auth_change_password,
-            auth::auth_request_access,
+            auth_commands::auth_login,
+            auth_commands::auth_validate_token,
+            auth_commands::auth_periodic_revalidate,
+            auth_commands::auth_check_session,
+            auth_commands::auth_logout,
+            auth_commands::auth_send_otp,
+            auth_commands::auth_forgot_password_send_otp,
+            auth_commands::auth_forgot_password_verify_otp,
+            auth_commands::auth_change_password,
+            auth_commands::auth_request_access,
             // ── Image search ─────────────────────────────────────────
-            search::start_search,
+            search_commands::search_start,
+            search_commands::sidecar_status,
             // ── Subscription / payments ──────────────────────────────
-            subscription::get_plans,
-            subscription::get_user_subscriptions,
-            subscription::create_order,
-            subscription::verify_payment,
+            subscription_commands::subscription_get_plans,
+            subscription_commands::subscription_get_user_subscriptions,
+            subscription_commands::subscription_create_order,
+            subscription_commands::subscription_verify_payment,
             // ── Updates ──────────────────────────────────────────────
-            update::check_for_update,
-            update::install_update,
+            notice_commands::notice_reset_pending,
+            notice_commands::notice_dismiss_reset,
+            update_commands::update_check,
+            update_commands::update_install,
             // ── Library / watched folders ────────────────────────────
-            library::library_list_folders,
-            library::library_add_folder,
-            library::library_remove_folder,
-            library::library_set_paused,
-            library::library_rescan_folder,
-            library::library_stats,
-            library::library_folder_tree,
+            library_commands::library_list_folders,
+            library_commands::library_add_folder,
+            library_commands::library_remove_folder,
+            library_commands::library_set_paused,
+            library_commands::library_rescan_folder,
+            library_commands::library_stats,
+            library_commands::library_folder_tree,
             // ── Tags ─────────────────────────────────────────────────
-            tags::tags_set,
-            tags::tags_remove,
-            tags::tags_get,
-            tags::tags_facets,
-            tags::tags_query,
-            tags::tags_suggest,
-            tags::tags_backfill_colors,
+            tags_commands::tags_set,
+            tags_commands::tags_remove,
+            tags_commands::tags_get,
+            tags_commands::tags_facets,
+            tags_commands::tags_query,
+            tags_commands::tags_suggest,
+            tags_commands::tags_backfill_colors,
             // ── Browse ───────────────────────────────────────────────
-            browse::browse_directory,
-            browse::get_thumbnail,
-            browse::get_catalog_image,
-            // ── Catalog themes ───────────────────────────────────────
-            catalog::catalog_save_theme,
-            catalog::catalog_list_themes,
-            catalog::catalog_get_theme,
-            catalog::catalog_delete_theme,
-            catalog::catalog_save_pdf,
+            browse_commands::browse_directory,
+            browse_commands::browse_get_thumbnail,
             // ── Utilities ────────────────────────────────────────────
-            open_file_path,
+            file_commands::file_open_path,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Pictoria");
+        .build(tauri::generate_context!())
+        .expect("error while building Pictoria")
+        .run(|_app_handle, event| {
+            // Catch-all so the sidecar process is never left orphaned,
+            // regardless of which path the app exits through (tray Quit
+            // already calls this too — shutdown() is a no-op the second time).
+            if let tauri::RunEvent::Exit = event {
+                crate::core::sidecar::shutdown();
+            }
+        });
 }

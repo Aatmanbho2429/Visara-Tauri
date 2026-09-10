@@ -1,23 +1,26 @@
-//! Cross-platform background file-system watcher.
-//!
-//! Subscribes to OS-level change notifications (`ReadDirectoryChangesW` on
-//! Windows, `FSEvents` on macOS, `inotify` on Linux) for every registered
-//! watched folder.  When events arrive, they are coalesced into per-folder
-//! resync requests with a debounce window so 50 quick paste-creates trigger
-//! a single sync, not 50.
-//!
-//! The actual embedding work delegates to `services::sync::sync_folder`,
-//! which already handles hash dedupe, mtime caching, tombstoning, and CLIP
-//! batching.  This file is only event plumbing.
+// Cross-platform background file-system watcher.
+//
+// Subscribes to OS-level change notifications (`ReadDirectoryChangesW` on
+// Windows, `FSEvents` on macOS, `inotify` on Linux) for every registered
+// watched folder.  When events arrive, they are coalesced into per-folder
+// resync requests with a debounce window so 50 quick paste-creates trigger
+// a single sync, not 50.
+//
+// The actual embedding work delegates to `services::sync::sync_folder`,
+// which already handles hash dedupe, mtime caching, tombstoning, and CLIP
+// batching.  This file is only event plumbing.
 
 use crate::{
     config::{VECTOR_STORE_PATH, PROGRESS_EMIT_INTERVAL_MS},
-    core::{database, embedder, progress, vector_store::VectorStore},
+    core::{database, progress, sidecar, vector_store::VectorStore},
+    models::response::{
+        ApiResponse, ResponseLibrarySyncComplete, ResponseLibrarySyncError,
+        ResponseLibrarySyncProgress, ResponseLibrarySyncStarted, ResponseTagsUpdated,
+    },
     services::sync,
 };
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use once_cell::sync::{Lazy, OnceCell};
-use serde_json::json;
 use std::{
     collections::HashSet,
     path::PathBuf,
@@ -40,19 +43,19 @@ use tauri::{AppHandle, Emitter};
 
 static APP: OnceCell<AppHandle> = OnceCell::new();
 
-fn emit(event: &str, payload: serde_json::Value) {
+fn emit<T: serde::Serialize + Clone>(event: &str, payload: T) {
     if let Some(app) = APP.get() {
         let _ = app.emit(event, payload);
     }
 }
 
-/// Folders whose sync was requested before the CLIP model finished loading.
-/// Drained by `notify_model_ready()` once the model is in memory.
+// Folders whose sync was requested before the CLIP model finished loading.
+// Drained by `notify_model_ready()` once the model is in memory.
 static PENDING: Lazy<Mutex<HashSet<PathBuf>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 
-/// Called by the auth layer the instant the CLIP model becomes available.
-/// Re-runs every watched folder (which also covers anything deferred while the
-/// model was still decrypting/compiling) so nothing stays stuck on "Indexing".
+// Called by the auth layer the instant the CLIP model becomes available.
+// Re-runs every watched folder (which also covers anything deferred while the
+// model was still decrypting/compiling) so nothing stays stuck on "Indexing".
 pub fn notify_model_ready() {
     PENDING.lock().unwrap().clear();
     refresh_active_watches();
@@ -61,30 +64,30 @@ pub fn notify_model_ready() {
 
 // ── Debounce tuning ────────────────────────────────────────────────────────
 
-/// Quiet period after the last event before we trigger a resync.
+// Quiet period after the last event before we trigger a resync.
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(1500);
 
-/// Sleep granularity inside the worker loop.
+// Sleep granularity inside the worker loop.
 const WORKER_TICK: Duration = Duration::from_millis(300);
 
 // ── Internal channel message ───────────────────────────────────────────────
 
 #[derive(Debug)]
 enum WatcherMsg {
-    /// A file-system event arrived for the given path inside a watched root.
+    // A file-system event arrived for the given path inside a watched root.
     Event(PathBuf),
 }
 
 // ── Global state ───────────────────────────────────────────────────────────
 
 struct WatcherState {
-    /// `RecommendedWatcher` keeps OS callbacks alive while it lives.  Dropping
-    /// it unregisters every path.  We rebuild it whenever the watched set
-    /// changes — cheaper than tracking which path to add/remove individually.
+    // `RecommendedWatcher` keeps OS callbacks alive while it lives.  Dropping
+    // it unregisters every path.  We rebuild it whenever the watched set
+    // changes — cheaper than tracking which path to add/remove individually.
     inner:      Option<RecommendedWatcher>,
-    /// Active watch roots — only ones currently subscribed to OS events.
+    // Active watch roots — only ones currently subscribed to OS events.
     active:     HashSet<PathBuf>,
-    /// Sender into the worker thread.
+    // Sender into the worker thread.
     msg_tx:     Option<Sender<WatcherMsg>>,
 }
 
@@ -98,8 +101,8 @@ static STATE: Lazy<Mutex<WatcherState>> = Lazy::new(|| {
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-/// Spawn the background worker thread.  Idempotent.  Call once at startup.
-/// `app` is stored so sync lifecycle events can be pushed to the UI.
+// Spawn the background worker thread.  Idempotent.  Call once at startup.
+// `app` is stored so sync lifecycle events can be pushed to the UI.
 pub fn init(app: AppHandle) {
     let _ = APP.set(app);
 
@@ -116,9 +119,9 @@ pub fn init(app: AppHandle) {
     log::info!("[watcher] background worker started");
 }
 
-/// Subscribe to OS events for every watched folder recorded in the DB.
-/// Safe to call multiple times — the watcher is rebuilt each time.
-/// Pre-condition: the embedder model must be loaded, otherwise sync will fail.
+// Subscribe to OS events for every watched folder recorded in the DB.
+// Safe to call multiple times — the watcher is rebuilt each time.
+// Pre-condition: the sidecar must be ready (`core::sidecar::is_ready()`), otherwise sync will fail.
 pub fn refresh_active_watches() {
     let paths = match read_paths_from_db() {
         Ok(p)  => p,
@@ -183,9 +186,9 @@ pub fn refresh_active_watches() {
     state.inner = Some(new_watcher);
 }
 
-/// Trigger one full reconciliation pass on every watched folder.
-/// Call after login (model loaded) to catch any changes made while the app
-/// was closed.  Runs the existing `sync::sync_folder` per folder.
+// Trigger one full reconciliation pass on every watched folder.
+// Call after login (model loaded) to catch any changes made while the app
+// was closed.  Runs the existing `sync::sync_folder` per folder.
 pub fn reconcile_all() {
     let paths = match read_paths_from_db() {
         Ok(p)  => p,
@@ -201,9 +204,9 @@ pub fn reconcile_all() {
     crate::core::migrate::clear_reembed_pending();
 }
 
-/// Reconcile a single folder.  Used by the Library service when a folder is
-/// freshly added or the user clicks "Re-scan".  Re-subscribes the OS watcher
-/// afterward so a previously-missing (NAS) path is picked up again.
+// Reconcile a single folder.  Used by the Library service when a folder is
+// freshly added or the user clicks "Re-scan".  Re-subscribes the OS watcher
+// afterward so a previously-missing (NAS) path is picked up again.
 pub fn reconcile_all_path(path: &str) {
     sync_one(&PathBuf::from(path));
     refresh_active_watches();
@@ -211,9 +214,9 @@ pub fn reconcile_all_path(path: &str) {
 
 // ── NAS auto-recovery ──────────────────────────────────────────────────────
 
-/// Parse `mount` output to find the network URL backing the given path.
-/// Handles nested mounts by keeping the longest matching mount point.
-/// Only compiled on macOS where `/Volumes/` NAS mounts are the concern.
+// Parse `mount` output to find the network URL backing the given path.
+// Handles nested mounts by keeping the longest matching mount point.
+// Only compiled on macOS where `/Volumes/` NAS mounts are the concern.
 #[cfg(target_os = "macos")]
 fn find_network_url_for_path(path: &str) -> Option<String> {
     let output = std::process::Command::new("mount").output().ok()?;
@@ -271,8 +274,8 @@ fn find_network_url_for_path(path: &str) -> Option<String> {
     best.map(|(_, url)| url)
 }
 
-/// Attempt to mount a network URL via AppleScript.  macOS uses Keychain
-/// credentials automatically — no dialog unless credentials have expired.
+// Attempt to mount a network URL via AppleScript.  macOS uses Keychain
+// credentials automatically — no dialog unless credentials have expired.
 #[cfg(target_os = "macos")]
 fn try_mount_network_url(url: &str) -> bool {
     let escaped = url.replace('"', "\\\"");
@@ -300,9 +303,9 @@ fn try_mount_network_url(url: &str) -> bool {
     }
 }
 
-/// Return the network URL (e.g. `smb://host/share`) that backs `path`, or
-/// `None` if the path is local or the URL cannot be determined.
-/// No-op (returns `None`) on non-macOS platforms.
+// Return the network URL (e.g. `smb://host/share`) that backs `path`, or
+// `None` if the path is local or the URL cannot be determined.
+// No-op (returns `None`) on non-macOS platforms.
 pub fn capture_network_url(_path: &str) -> Option<String> {
     #[cfg(target_os = "macos")]
     { find_network_url_for_path(_path) }
@@ -310,10 +313,10 @@ pub fn capture_network_url(_path: &str) -> Option<String> {
     { None }
 }
 
-/// Background loop that periodically checks every "missing" folder that has a
-/// stored network URL and attempts to remount it.  On success the folder
-/// transitions back to "watching" without any user action.
-/// No-op on non-macOS platforms.
+// Background loop that periodically checks every "missing" folder that has a
+// stored network URL and attempts to remount it.  On success the folder
+// transitions back to "watching" without any user action.
+// No-op on non-macOS platforms.
 pub fn start_nas_recovery_loop() {
     #[cfg(target_os = "macos")]
     {
@@ -351,9 +354,9 @@ pub fn start_nas_recovery_loop() {
     }
 }
 
-/// On startup, populate `network_url` for any watched folder that was added
-/// before this feature existed (NULL url) and is currently mounted.
-/// No-op on non-macOS platforms.
+// On startup, populate `network_url` for any watched folder that was added
+// before this feature existed (NULL url) and is currently mounted.
+// No-op on non-macOS platforms.
 pub fn backfill_network_urls() {
     #[cfg(target_os = "macos")]
     {
@@ -386,11 +389,11 @@ fn read_paths_from_db() -> crate::error::Result<Vec<String>> {
     database::watched_folder_paths(&con)
 }
 
-/// Filter to events that may actually change the file set: create, content
-/// modify, remove, rename.  Metadata-only changes (access time, permissions)
-/// are ignored on purpose: indexing *reads* every file, which bumps its atime,
-/// and macOS FSEvents reports that straight back to us — without this filter the
-/// watcher re-triggers itself in an endless re-scan loop.
+// Filter to events that may actually change the file set: create, content
+// modify, remove, rename.  Metadata-only changes (access time, permissions)
+// are ignored on purpose: indexing *reads* every file, which bumps its atime,
+// and macOS FSEvents reports that straight back to us — without this filter the
+// watcher re-triggers itself in an endless re-scan loop.
 fn should_handle(kind: &EventKind) -> bool {
     use notify::event::ModifyKind;
     match kind {
@@ -401,7 +404,7 @@ fn should_handle(kind: &EventKind) -> bool {
     }
 }
 
-/// Map an event path back to one of our watch roots.
+// Map an event path back to one of our watch roots.
 fn owning_root(event_path: &PathBuf, roots: &HashSet<PathBuf>) -> Option<PathBuf> {
     for root in roots {
         if event_path.starts_with(root) {
@@ -411,18 +414,18 @@ fn owning_root(event_path: &PathBuf, roots: &HashSet<PathBuf>) -> Option<PathBuf
     None
 }
 
-/// Single-folder reconcile.  Loads the vector store, calls `sync_folder`,
-/// saves the store back.  Updates the watched-folder status accordingly and
-/// emits live lifecycle events to the UI:
-///   library_sync_started  { path }
-///   library_sync_progress { path, progress: ProgressSnapshot }
-///   library_sync_complete  { path, errors, image_count }
-///   library_sync_error     { path, message }
+// Single-folder reconcile.  Loads the vector store, calls `sync_folder`,
+// saves the store back.  Updates the watched-folder status accordingly and
+// emits live lifecycle events to the UI:
+//   library_sync_started  { path }
+//   library_sync_progress { path, progress: ProgressSnapshot }
+//   library_sync_complete  { path, errors, image_count }
+//   library_sync_error     { path, message }
 fn sync_one(folder: &PathBuf) {
     let folder_str = folder.to_string_lossy().to_string();
 
-    if !embedder::is_ready() {
-        log::info!("[watcher] model not ready; deferring sync of {folder:?}");
+    if !sidecar::is_ready() {
+        log::info!("[watcher] sidecar not ready; deferring sync of {folder:?}");
         PENDING.lock().unwrap().insert(folder.clone());
         if let Ok(con) = database::open() {
             let _ = database::set_watched_folder_status(&con, &folder_str, "indexing");
@@ -430,17 +433,20 @@ fn sync_one(folder: &PathBuf) {
         // Surface a "preparing" state so the card doesn't sit on a silent,
         // fake "Indexing".  notify_model_ready() will re-drive this folder
         // with real progress once the CLIP model has loaded.
-        emit("library_sync_progress", json!({
-            "path": folder_str,
-            "progress": {
-                "phase":   "Preparing AI model…",
-                "done":    0,
-                "total":   0,
-                "percent": 0,
-                "current": "",
-                "errors":  0,
-                "eta_sec": -1,
-            }
+        emit("library_sync_progress", ApiResponse::ok(ResponseLibrarySyncProgress {
+            path: folder_str,
+            progress: crate::core::progress::ProgressSnapshot {
+                active:     true,
+                phase:      "Preparing AI model…".to_string(),
+                done:       0,
+                total:      0,
+                current:    String::new(),
+                percent:    0.0,
+                eta_sec:    -1,
+                errors:     0,
+                elapsed:    0.0,
+                file_types: Default::default(),
+            },
         }));
         return;
     }
@@ -449,29 +455,38 @@ fn sync_one(folder: &PathBuf) {
         if let Ok(con) = database::open() {
             let _ = database::set_watched_folder_status(&con, &folder_str, "missing");
         }
-        emit("library_sync_error", json!({
-            "path": folder_str,
-            "message": "Folder no longer exists on disk.",
+        emit("library_sync_error", ApiResponse::ok(ResponseLibrarySyncError {
+            path: folder_str,
+            message: "Folder no longer exists on disk.".to_string(),
         }));
         return;
     }
 
     log::info!("[watcher] reconciling {folder:?}");
+    let t_sync_one = Instant::now();
 
     // Serialize against the search pipeline — both load → modify → save the
     // vector store, and concurrent runs would lose updates.
     let _store_guard = crate::core::vector_store::store_io_guard();
 
+    let t_load = Instant::now();
     let mut store = match VectorStore::load(VECTOR_STORE_PATH.as_path()) {
-        Ok(s)  => s,
+        Ok(s)  => {
+            log::info!(
+                "[timing] vector_store_load path={:?} load_ms={:.2}",
+                VECTOR_STORE_PATH.as_path(),
+                t_load.elapsed().as_secs_f64() * 1000.0,
+            );
+            s
+        }
         Err(e) => {
             log::warn!("[watcher] vector store load failed: {e}");
             if let Ok(con) = database::open() {
                 let _ = database::set_watched_folder_status(&con, &folder_str, "error");
             }
-            emit("library_sync_error", json!({
-                "path": folder_str,
-                "message": format!("Could not open the index: {e}"),
+            emit("library_sync_error", ApiResponse::ok(ResponseLibrarySyncError {
+                path: folder_str,
+                message: format!("Could not open the index: {e}"),
             }));
             return;
         }
@@ -483,7 +498,7 @@ fn sync_one(folder: &PathBuf) {
 
     // Clear any stale snapshot so the ticker only streams this folder's run.
     progress::reset();
-    emit("library_sync_started", json!({ "path": folder_str }));
+    emit("library_sync_started", ApiResponse::ok(ResponseLibrarySyncStarted { path: folder_str.clone() }));
 
     // Spawn a ticker that streams progress snapshots to the UI while the
     // (blocking) sync runs on this thread.  Stopped via the atomic flag.
@@ -495,9 +510,9 @@ fn sync_one(folder: &PathBuf) {
             while !stop.load(Ordering::Relaxed) {
                 let snap = progress::get_progress();
                 if snap.active {
-                    emit("library_sync_progress", json!({
-                        "path":     path_str,
-                        "progress": snap,
+                    emit("library_sync_progress", ApiResponse::ok(ResponseLibrarySyncProgress {
+                        path: path_str.clone(),
+                        progress: snap,
                     }));
                 }
                 thread::sleep(Duration::from_millis(PROGRESS_EMIT_INTERVAL_MS));
@@ -525,18 +540,33 @@ fn sync_one(folder: &PathBuf) {
         Ok(errors) => {
             // Hold the write lock only for the actual file write (~2 seconds).
             // Search holds a read lock and is only blocked during this window.
+            let t_save = Instant::now();
             let save_result = {
                 let _write_guard = crate::core::vector_store::store_io_write_guard();
-                store.save(VECTOR_STORE_PATH.as_path())
+                let result = store.save(VECTOR_STORE_PATH.as_path());
+                // Drop the resident cache (Phase 5a) inside the same write-guard
+                // scope as the save that just changed the file — otherwise a
+                // search could observe the old resident copy and a freshly
+                // written `vectors.bin` at the same time and wrongly assume
+                // they agree.
+                if result.is_ok() {
+                    crate::core::vector_store::invalidate_resident();
+                }
+                result
             };
+            log::info!(
+                "[timing] vector_store_save path={:?} save_ms={:.2}",
+                VECTOR_STORE_PATH.as_path(),
+                t_save.elapsed().as_secs_f64() * 1000.0,
+            );
             if let Err(e) = save_result {
                 log::warn!("[watcher] vector store save failed: {e}");
                 if let Ok(con) = database::open() {
                     let _ = database::set_watched_folder_status(&con, &folder_str, "error");
                 }
-                emit("library_sync_error", json!({
-                    "path": folder_str,
-                    "message": format!("Could not save the index: {e}"),
+                emit("library_sync_error", ApiResponse::ok(ResponseLibrarySyncError {
+                    path: folder_str,
+                    message: format!("Could not save the index: {e}"),
                 }));
                 return;
             }
@@ -556,23 +586,23 @@ fn sync_one(folder: &PathBuf) {
                     log::warn!("[watcher]   • {} — {}", e.file, e.reason);
                 }
             }
+            log::info!(
+                "[timing] sync_one TOTAL folder={folder:?} wall_ms={:.2}",
+                t_sync_one.elapsed().as_secs_f64() * 1000.0,
+            );
             log::info!("[watcher] done reconciling {folder:?}");
 
             // Ship a bounded sample of the failures so the Library card can show
             // *why* files were skipped, without pushing a huge payload over IPC
             // for a pathological folder.
             const MAX_REPORTED_FAILURES: usize = 100;
-            let failed: Vec<serde_json::Value> = errors
-                .iter()
-                .take(MAX_REPORTED_FAILURES)
-                .map(|e| json!({ "file": e.file, "reason": e.reason }))
-                .collect();
+            let failed = errors.iter().take(MAX_REPORTED_FAILURES).cloned().collect();
 
-            emit("library_sync_complete", json!({
-                "path":        folder_str,
-                "errors":      errors.len(),
-                "failed":      failed,
-                "image_count": image_count,
+            emit("library_sync_complete", ApiResponse::ok(ResponseLibrarySyncComplete {
+                path: folder_str.clone(),
+                errors: errors.len(),
+                failed,
+                image_count,
             }));
 
             // Auto-compute colour tags for any images that don't have one yet
@@ -582,7 +612,7 @@ fn sync_one(folder: &PathBuf) {
             std::thread::spawn(move || {
                 let n = crate::services::tags::backfill_colors(&folder_for_color);
                 if n > 0 {
-                    emit("tags_updated", json!({ "colored": n }));
+                    emit("tags_updated", ApiResponse::ok(ResponseTagsUpdated { colored: n }));
                 }
             });
         }
@@ -591,17 +621,17 @@ fn sync_one(folder: &PathBuf) {
             if let Ok(con) = database::open() {
                 let _ = database::set_watched_folder_status(&con, &folder_str, "error");
             }
-            emit("library_sync_error", json!({
-                "path": folder_str,
-                "message": e.to_string(),
+            emit("library_sync_error", ApiResponse::ok(ResponseLibrarySyncError {
+                path: folder_str,
+                message: e.to_string(),
             }));
         }
     }
 }
 
-/// Long-lived worker that owns the event channel.  Coalesces events into
-/// per-folder resync requests once activity has been quiet for
-/// `DEBOUNCE_WINDOW`.
+// Long-lived worker that owns the event channel.  Coalesces events into
+// per-folder resync requests once activity has been quiet for
+// `DEBOUNCE_WINDOW`.
 fn worker_loop(rx: std::sync::mpsc::Receiver<WatcherMsg>) {
     let mut pending: HashSet<PathBuf> = HashSet::new();
     let mut last_event_at: Option<Instant> = None;

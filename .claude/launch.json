@@ -1,0 +1,28 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Pictoria MVP preview",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "5500",
+        "--directory",
+        "D:/Projects/Pictoria MVP/static"
+      ],
+      "port": 5500
+    },
+    {
+      "name": "Visara UI",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "UI",
+        "run",
+        "start"
+      ],
+      "port": 4200
+    }
+  ]
+}

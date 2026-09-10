@@ -1,6 +1,6 @@
 [package]
 name         = "pictoria"
-version      = "1.1.30"
+version      = "1.1.39"
 description  = "Pictoria — AI-powered Visual Image Search"
 authors      = ["Aatman Stridely"]
 license      = "UNLICENSED"
@@ -38,15 +38,14 @@ clipboard-rs = "0.2"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# HTTP client — Supabase Edge Functions
-reqwest = { version = "0.12", features = ["json"] }
+# HTTP client — Supabase Edge Functions + the local sidecar (core::sidecar
+# uses the blocking client since it's called from spawn_blocking closures
+# alongside other synchronous CPU work, not from async command handlers)
+reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 # Serialization
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# ONNX Runtime — CLIP ViT-B/32 inference
-ort = { version = "=2.0.0-rc.10", features = ["download-binaries", "coreml"] }
 
 # SQLite — image metadata store
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -58,12 +57,6 @@ image = { version = "0.25", default-features = false, features = [
 
 # Direct TIFF IFD navigation (IFD1 thumbnail extraction)
 tiff = "0.9"
-
-# Fernet — pure-Rust AES-128-CBC + HMAC-SHA256 (no OpenSSL dependency)
-aes     = "0.8"
-cbc     = { version = "0.1", features = ["alloc"] }
-hmac    = "0.12"
-base64  = "0.22"
 
 # Fast file fingerprinting
 sha2 = "0.10"
@@ -109,3 +102,12 @@ lto           = true
 opt-level     = "s"
 panic         = "abort"
 strip         = true
+
+# Measurement-only profile (SEARCH-LATENCY-PLAN.md Phase 0) — `release`
+# optimizes for size, which suppresses vectorization in the near_family
+# numeric loop, so its timings can't be trusted for the Rust hot-path
+# question Phase 0 exists to answer. Build with `--profile release-perf` to
+# compare against plain `release`; not the shipping profile.
+[profile.release-perf]
+inherits  = "release"
+opt-level = 3

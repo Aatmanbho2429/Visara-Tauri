@@ -59,47 +59,6 @@
 }
 
 // ── Top-K selector ─────────────────────────────────────────────
-.topk-row {
-  display: flex;
-  align-items: center;
-  gap: $space-4;
-
-  &__label {
-    font-size: $font-size-sm;
-    color: $surface-400;
-    font-family: $font-primary;
-  }
-
-  &__options {
-    display: flex;
-    gap: $space-2;
-  }
-}
-
-.topk-btn {
-  padding: $space-2 $space-4;
-  border-radius: $border-radius-sm;
-  border: 1px solid rgba(217, 70, 239, 0.2);
-  background: transparent;
-  color: $surface-400;
-  font-size: $font-size-sm;
-  font-family: $font-primary;
-  font-weight: $font-weight-medium;
-  cursor: pointer;
-  transition: all 0.2s ease;
-
-  &:hover {
-    border-color: rgba(217, 70, 239, 0.4);
-    color: $surface-100;
-  }
-
-  &--active {
-    background: rgba(217, 70, 239, 0.15);
-    border-color: rgba(217, 70, 239, 0.5);
-    color: $primary-300;
-  }
-}
-
 // ── Pick Cards ─────────────────────────────────────────────────
 .pick-card {
   flex: 1;
@@ -437,6 +396,37 @@
   }
 }
 
+// Compact verify-in-progress strip shown above the grid once results are
+// already visible (see `isVerifying` in search.ts) — the same fill/track
+// language as `.scan-progress` above, just slimmer since it now shares the
+// screen with the grid instead of owning it. SEARCH-LATENCY-PLAN.md Phase 4.
+.verify-strip {
+  display: flex; align-items: center; gap: $space-3;
+  padding: $space-2 $space-8;
+  background: rgba(34, 24, 48, 0.7);
+  border-bottom: 1px solid rgba(217, 70, 239, 0.1);
+  flex-shrink: 0;
+
+  &__phase {
+    font-size: $font-size-xs; color: $surface-400;
+    font-family: $font-primary; white-space: nowrap;
+  }
+
+  &__track {
+    flex: 1; height: 3px;
+    background: rgba(217, 70, 239, 0.12);
+    border-radius: 2px; overflow: hidden;
+  }
+
+  &__fill {
+    height: 100%;
+    background: linear-gradient(90deg, $primary-500, $tertiary-400);
+    border-radius: 2px; transition: width 0.4s ease;
+  }
+
+  &__stats { font-size: $font-size-xs; color: $surface-500; white-space: nowrap; flex-shrink: 0; }
+}
+
 // ── Failed files notice ────────────────────────────────────────
 .failed-notice {
   display: flex; flex-direction: column; gap: $space-2;
@@ -507,18 +497,132 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
-// ══ PINTEREST MASONRY GRID ════════════════════════════════════
-.masonry-grid {
+// ══ RESULT SECTIONS (verified family / similar) ═══════════════
+// The single scroll container for both tiers — was `.masonry-grid` itself
+// before the two-tier split; the ref (`#masonryGrid` in search.ts) now
+// lives here, so scroll position and the resize-driven match-box requery
+// still work unchanged.
+.results-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: $space-5 $space-8 $space-8;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(217, 70, 239, 0.25) transparent;
+}
+
+.result-section {
+  &:last-child { padding-bottom: $space-8; }
+}
+
+.result-section__header {
+  display: flex;
+  align-items: center;
+  gap: $space-2;
+  padding: $space-5 $space-8 $space-2;
+  font-size: $font-size-base;
+  font-weight: $font-weight-semibold;
+  color: $surface-100;
+  font-family: $font-primary;
+
+  > i:first-child { color: $tertiary-300; }
+}
+
+.show-more-row {
+  display: flex;
+  justify-content: center;
+  padding: $space-5 $space-8 $space-2;
+}
+
+.show-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: $space-2;
+  padding: $space-3 $space-6;
+  border-radius: 999px;
+  border: 1px solid rgba(217, 70, 239, 0.25);
+  background: rgba(217, 70, 239, 0.08);
+  color: $surface-200;
+  font-size: $font-size-sm;
+  font-family: $font-primary;
+  font-weight: $font-weight-medium;
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover {
+    border-color: rgba(217, 70, 239, 0.5);
+    background: rgba(217, 70, 239, 0.16);
+    color: $surface-50;
+  }
+
+  &__count {
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    color: $surface-300;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    padding: 1px 8px;
+  }
+}
+
+.result-section__count {
+  font-size: $font-size-xs;
+  font-weight: $font-weight-semibold;
+  color: $surface-300;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.result-section__header--toggle {
+  width: 100%;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.15s ease;
+
+  &:hover {
+    color: #fff;
+
+    .result-section__chev {
+      background: rgba(217, 70, 239, 0.2);
+      border-color: rgba(217, 70, 239, 0.55);
+      color: $primary-300;
+    }
+  }
+}
+
+// The collapse control.  It was previously a bare chevron pinned to the far
+// right edge of the row, which read as decoration and was easy to miss at a
+// glance — a bordered, tinted chip sitting right after the count makes it
+// look like the button it actually is.
+.result-section__chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2.2rem;
+  height: 2.2rem;
+  margin-left: $space-1;
+  border-radius: 999px;
+  border: 1px solid rgba(217, 70, 239, 0.3);
+  background: rgba(217, 70, 239, 0.12);
+  color: $primary-400;
+  font-size: 1rem;
+  transition: transform 0.2s ease, background 0.15s ease,
+              border-color 0.15s ease, color 0.15s ease;
+
+  // Icon points down when collapsed, flips up when the tier is open.
+  &--open { transform: rotate(180deg); }
+}
+
+// ══ PINTEREST MASONRY GRID ════════════════════════════════════
+.masonry-grid {
+  padding: $space-3 $space-8 $space-5;
   display: flex;
   gap: $space-4;
   align-items: flex-start;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(217, 70, 239, 0.25) transparent;
 }
 
 .masonry-col {
@@ -602,6 +706,49 @@
     border-radius: $border-radius-sm;
     background: rgba(251, 191, 36, 0.92);
     color: #2d1f3d;
+    font-family: $font-primary;
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    pointer-events: none;
+
+    i { font-size: $font-size-xs; }
+  }
+
+  // Mirrored match — proven only against a horizontally-flipped reference.
+  // Deliberately a different hue from `__found-inside` (which is amber) and
+  // anchored to the opposite corner, because one card can carry both chips.
+  &__mirrored {
+    position: absolute;
+    top: $space-2;
+    right: $space-2;
+    z-index: 2;
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px $space-2;
+    border-radius: $border-radius-sm;
+    background: rgba(56, 189, 248, 0.92);
+    color: #10202d;
+    font-family: $font-primary;
+    font-size: $font-size-xs;
+    font-weight: $font-weight-semibold;
+    pointer-events: none;
+
+    i { font-size: $font-size-xs; }
+  }
+
+  // "Verification hasn't reached this yet" — bottom-left, its own hue
+  // (slate, not amber/cyan) so it never reads as either an actual match or
+  // a rejection while a chunk is still in flight for this candidate. See
+  // SEARCH-LATENCY-PLAN.md Phase 1b.
+  &__unchecked {
+    position: absolute;
+    bottom: $space-2;
+    left: $space-2;
+    z-index: 2;
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px $space-2;
+    border-radius: $border-radius-sm;
+    background: rgba(100, 116, 139, 0.85);
+    color: #f1f5f9;
     font-family: $font-primary;
     font-size: $font-size-xs;
     font-weight: $font-weight-semibold;
@@ -762,6 +909,10 @@
   }
 }
 
+// Custom multi-select — a native <select>'s popup can't be styled in
+// WebView2 (no rounded corners, no hover state, mismatched colors), so
+// this is a plain positioned panel instead, closed by `closeScopeDropdown`
+// (bound to `document:click`) whenever a click lands outside `.scope-picker`.
 .scope-picker {
   position: relative;
 }
@@ -780,16 +931,24 @@
   font-size: $font-size-sm;
   color: $surface-100;
   transition: background 0.15s ease, border-color 0.15s ease;
+  max-width: 40rem;
 
   &:hover {
     background: rgba(217, 70, 239, 0.16);
     border-color: rgba(217, 70, 239, 0.4);
   }
 
-  i { color: $primary-400; font-size: 1.2rem; }
+  i { color: $primary-400; font-size: 1.2rem; flex-shrink: 0; }
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   &__chev {
     margin-left: 0.4rem;
+    flex-shrink: 0;
     transition: transform 0.18s ease;
     &--open { transform: rotate(180deg); }
   }
@@ -801,10 +960,10 @@
   left: 50%;
   transform: translateX(-50%);
   min-width: 28rem;
-  max-width: 38rem;
+  max-width: 46rem;
   max-height: 38rem;
   overflow-y: auto;
-  background: rgba(26, 18, 38, 0.96);
+  background: $surface-900;
   border: 1px solid rgba(217, 70, 239, 0.22);
   border-radius: $border-radius-md;
   padding: $space-2;
@@ -828,9 +987,7 @@
     align-items: center;
     gap: 0.8rem;
 
-    &:hover {
-      background: rgba(217, 70, 239, 0.16);
-    }
+    &:hover { background: rgba(217, 70, 239, 0.16); }
 
     i { color: $primary-400; }
   }
@@ -850,7 +1007,7 @@
     cursor: pointer;
     transition: background 0.12s ease;
 
-    &:hover { background: rgba(255, 255, 255, 0.04); }
+    &:hover { background: rgba(255, 255, 255, 0.06); }
 
     input[type="checkbox"] {
       flex-shrink: 0;

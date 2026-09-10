@@ -48,9 +48,9 @@
             <div class="folder-card__path-wrap">
               <span class="folder-card__path" [title]="f.path">{{ f.path }}</span>
               <span class="folder-card__meta">
-                {{ f.image_count }} {{ (f.image_count === 1 ? 'library.image' : 'library.images') | translate }}
-                @if (f.last_event_at > 0) {
-                  · {{ 'library.lastUpdate' | translate }} {{ agoLabel(f.last_event_at) }}
+                {{ f.imageCount }} {{ (f.imageCount === 1 ? 'library.image' : 'library.images') | translate }}
+                @if (f.lastEventAt > 0) {
+                  · {{ 'library.lastUpdate' | translate }} {{ agoLabel(f.lastEventAt) }}
                 }
               </span>
             </div>

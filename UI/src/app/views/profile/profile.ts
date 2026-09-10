@@ -11,16 +11,17 @@ import {
 import { Router } from '@angular/router';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { MessageService } from 'primeng/api';
-import { PrimengComponentsModule } from '../../shared/primeng-components-module';
+import { ButtonModule } from 'primeng/button';
+import { PasswordModule } from 'primeng/password';
 import { BaseComponent } from '../../core/base.component';
-import { AuthService } from '../../services/auth.service';
-import { TauriService } from '../../services/tauri.service';
-import { UserStateService } from '../../services/user-state.service';
-import { SearchStateService } from '../../services/search-state.service';
+import { AuthService } from '../../services/auth/auth.service';
+import { AutostartService } from '../../services/autostart/autostart.service';
+import { UserStateService } from '../../services/user/user-state.service';
+import { SearchStateService } from '../../services/search/search-state.service';
 import { PlansDialog } from '../../shared/plans-dialog/plans-dialog';
-import { Subscription } from '../../models/auth.model';
+import { Subscription } from '../../models/response/responseSubscription';
 
-/** confirm_password must match new_password. */
+// confirm_password must match new_password.
 function passwordMatchValidator(group: AbstractControl): ValidationErrors | null {
   const pw      = group.get('new_password')?.value;
   const confirm = group.get('confirm_password')?.value;
@@ -40,14 +41,14 @@ function passwordMatchValidator(group: AbstractControl): ValidationErrors | null
 
 @Component({
   selector: 'app-profile',
-  imports: [CommonModule, ReactiveFormsModule, TranslateModule, PrimengComponentsModule, PlansDialog],
+  imports: [CommonModule, ReactiveFormsModule, TranslateModule, ButtonModule, PasswordModule, PlansDialog],
   templateUrl: './profile.html',
   styleUrl: './profile.scss',
 })
 export class Profile extends BaseComponent implements OnInit {
   userState = inject(UserStateService);
   private auth        = inject(AuthService);
-  private tauri       = inject(TauriService);
+  private autostart   = inject(AutostartService);
   private messages    = inject(MessageService);
   private router      = inject(Router);
   private searchState = inject(SearchStateService);
@@ -59,7 +60,7 @@ export class Profile extends BaseComponent implements OnInit {
   subscriptions: Subscription[] = [];
   historyLoading       = true;
 
-  /** Reflects the real OS-level autostart state. */
+  // Reflects the real OS-level autostart state.
   autostartEnabled  = false;
   autostartBusy     = false;
 
@@ -84,23 +85,21 @@ export class Profile extends BaseComponent implements OnInit {
       this.messages.add({ key: 'app', severity: 'warn', summary: 'Subscription', detail: redirectMsg, life: 6000 });
     }
 
-    this.handle(this.auth.validateToken(), res => {
+    this.handle(this.auth.validateToken(), data => {
       this.loading = false;
-      if (res.success && res.data?.user) this.userState.set(res.data.user);
-    });
+      if (data?.user) this.userState.set(data.user);
+    }, () => { this.loading = false; });
 
-    this.handle(this.auth.getUserSubscriptions(), res => {
+    this.handle(this.auth.getUserSubscriptions(), data => {
       this.historyLoading = false;
-      if (res.success && res.data?.subscriptions) {
-        this.subscriptions = res.data.subscriptions;
-      }
-    });
+      if (data?.subscriptions) this.subscriptions = data.subscriptions;
+    }, () => { this.historyLoading = false; });
 
     this.refreshAutostartState();
   }
 
   private refreshAutostartState(): void {
-    this.tauri.autostartIsEnabled()
+    this.autostart.isEnabled()
       .then(on => this.autostartEnabled = on)
       .catch(err => console.warn('[autostart] isEnabled failed:', err));
   }
@@ -109,7 +108,7 @@ export class Profile extends BaseComponent implements OnInit {
     if (this.autostartBusy) return;
     this.autostartBusy = true;
 
-    const action = this.autostartEnabled ? this.tauri.autostartDisable() : this.tauri.autostartEnable();
+    const action = this.autostartEnabled ? this.autostart.disable() : this.autostart.enable();
     const willBe = !this.autostartEnabled;
 
     action
@@ -158,9 +157,10 @@ export class Profile extends BaseComponent implements OnInit {
     this.changePasswordError   = '';
     const { old_password, new_password } = this.changePasswordForm.value;
 
-    this.handle(this.auth.changePassword(old_password!, new_password!), res => {
-      this.changePasswordLoading = false;
-      if (res.success) {
+    this.handle(
+      this.auth.changePassword(old_password!, new_password!),
+      () => {
+        this.changePasswordLoading = false;
         this.messages.add({
           key: 'app',
           severity: 'success',
@@ -170,13 +170,15 @@ export class Profile extends BaseComponent implements OnInit {
         });
         // Force re-authentication with the new credentials.
         setTimeout(() => this.logout(), 1500);
-      } else {
-        this.changePasswordError = res.message;
-      }
-    });
+      },
+      err => {
+        this.changePasswordLoading = false;
+        this.changePasswordError   = err.message;
+      },
+    );
   }
 
-  /** Tear down the session and return to the login screen. */
+  // Tear down the session and return to the login screen.
   private logout(): void {
     this.auth.logout().subscribe();
     this.userState.clear();
@@ -201,7 +203,7 @@ export class Profile extends BaseComponent implements OnInit {
   }
 
   get subscriptionEndFormatted(): string {
-    const end = this.userState.user?.subscription_end;
+    const end = this.userState.user?.subscriptionEnd;
     if (!end) return '';
     return new Date(end).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
   }

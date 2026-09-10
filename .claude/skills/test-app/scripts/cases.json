@@ -1,0 +1,78 @@
+{
+  "_comment": "Expected-value fixtures for the Pictoria test harness. Paths are relative to the watched folder the harness reads out of meta.db (override with --library). ASSERTION MODEL: `matched` and `min_ratio` are the hard pass/fail contract. Absolute inlier counts are NOT — recolouring destroys most SIFT correspondences (measured: 496 inliers greyscale-identical, ~12 for the same pair once recoloured), so an absolute floor systematically penalises exactly the colourway matches the app exists to find. inlier_ratio is the scale-free signal; the absolute count is only a floor against degenerate fits, so it is reported as a MARGIN WARNING against `warn_below_inliers` rather than a failure.",
+
+  "verify_cases": [
+    {
+      "name": "yellow-tile canonical",
+      "note": "Established 2026-08-15. The query must be trimmed the way search_service.rs::trim_uniform_border trims it before verifying — the raw file scores differently and hides the regression this case exists to catch.",
+      "query": "Screenshot 2026-08-06 at 2.12.12 PM.png",
+      "expect_match": [
+        {
+          "candidate": "image_part.png",
+          "min_ratio": 0.60,
+          "warn_below_inliers": 40,
+          "baseline": "2026-08-15: 111 inliers @ 0.95. 2026-09-09 after Phase 2c (SIFT nfeatures 4000->1500, candidate decode 1600->1024): 83 @ 0.81.",
+          "note": "same design, recoloured."
+        },
+        {
+          "candidate": "Screenshot 2026-08-06 at 2.09.52 PM.png",
+          "min_ratio": 0.55,
+          "warn_below_inliers": 20,
+          "baseline": "2026-08-15: 45 inliers @ 0.88. 2026-09-09 after Phase 2c: 11 @ 0.73 — a 4x margin loss that leaves it 1 above pipeline.verify_one's min_inliers=10 hard floor. The ratio held; the count did not.",
+          "note": "same design, recoloured. THE pair to watch — any further SIFT reduction likely drops it out entirely."
+        },
+        {
+          "candidate": "big image.png",
+          "min_ratio": 0.40,
+          "warn_below_inliers": 12,
+          "baseline": "2026-08-15: 11 inliers @ 0.69. 2026-09-09 after Phase 2c: 20 @ 0.67 — went UP, because dropping the candidate decode 1600->1024 moved it closer to the query's own 800px scale.",
+          "note": "pattern found inside a larger slab. Historically the tight one: a min_inliers=12 floor dropped it once, and an 8-DOF homography fit bent it into a false implausible-warp rejection another time."
+        }
+      ],
+      "expect_reject": []
+    },
+    {
+      "name": "BRASIL GREY false positive stays rejected",
+      "note": "A genuinely different stone that merely looks similar. If this starts matching, verification has gone too loose.",
+      "query": "Screenshot 2026-08-06 at 2.09.52 PM.png",
+      "expect_match": [],
+      "expect_reject": [
+        {
+          "candidate": "JPG FILE/GLOSSY/BRASIL GREY P4.jpg",
+          "baseline": "rejected as match-outside-frame; 13 inliers found but placed outside the frame (2026-09-09)."
+        }
+      ]
+    }
+  ],
+
+  "colourway_group": {
+    "name": "NATURAL EMPIRE colourways",
+    "note": "Every pair here is the same design in a different colourway, so every unordered pair must verify. This is the suite that catches a change that quietly starts gating matches on colour. Was 21 pairs (7 files) on 2026-08-15; the library now holds 6 files = 15 pairs, so the count is derived, not hard-coded.",
+    "glob": "JPG FILE/BOOKMATCH/NATURAL EMPIRE*",
+    "min_pairs": 10
+  },
+
+  "near_family": {
+    "note": "Stage-1 retrieval must surface the canonical matches above the cosine floor, otherwise search never gets far enough to verify them — a silent recall failure the UI cannot show. Floor mirrors config::NEAR_FAMILY_MIN_SIM.",
+    "query": "Screenshot 2026-08-06 at 2.12.12 PM.png",
+    "must_contain": [
+      "image_part.png",
+      "Screenshot 2026-08-06 at 2.09.52 PM.png",
+      "big image.png"
+    ]
+  },
+
+  "config": {
+    "_comment": "Mirrors UI/src-tauri/src/config.rs and core/vector_store.rs. The harness asserts the live sidecar and store agree with these.",
+    "embed_dim": 1536,
+    "embed_zoom_levels": 3,
+    "rose_dim": 8,
+    "gram_zoom_levels": 3,
+    "gram_dim_per_zoom": 576,
+    "color_dim": 16,
+    "store_version": 7,
+    "near_family_min_sim": 0.70,
+    "verify_max_candidates": 400,
+    "verify_time_budget_ms": 2500
+  }
+}

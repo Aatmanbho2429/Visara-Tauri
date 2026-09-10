@@ -1,587 +1,766 @@
-//! Custom flat vector store — a pure-Rust replacement for the Python FAISS
-//! `IndexIDMap(IndexFlatIP(768))`.
-//!
-//! ## Several vectors per image (v5)
-//! Each file contributes one entry per **region**: the whole frame, plus the
-//! overlapping windows planned by [`crate::core::regions`].  A file is scored by
-//! its single best-matching region rather than by its whole-frame vector, which
-//! is what lets a small motif find the large composite design it appears inside.
-//! See `core::regions` for why one vector per image cannot answer that question.
-//!
-//! Every entry also carries a colour histogram (`COLOR_DIM` dims) for its own
-//! region.  Colour is stored for display and Browse filtering only — ranking is
-//! pure design similarity (`COLOR_WEIGHT` is 0).
-//!
-//! ## Why not FAISS?
-//! The FAISS C++ library requires a non-trivial build step and cannot be
-//! sandboxed by macOS App Store.  For our workload (<=500 k images) a
-//! brute-force dot-product over a rayon thread pool is fast enough.
-//!
-//! ## File format  (`vectors.bin`, version 5)
-//! ```text
-//! [ magic:      8 bytes  "PICTOR\x00\x01" ]
-//! [ version:    4 bytes  u32 little-endian ]  == 5
-//! [ design_dim: 4 bytes  u32 little-endian ]  always 1536  (DINOv2 CLS+patch)
-//! [ count:      8 bytes  u64 little-endian ]  live (non-tombstone) entries
-//! [ color_dim:  4 bytes  u32 little-endian ]  always COLOR_DIM
-//! [ padding:    4 bytes                    ]  reserved, must be 0
-//! [ entries: (
-//!       id:     i64,
-//!       region: f32 x 4   (x, y, w, h — normalised 0..1; whole frame = 0,0,1,1),
-//!       design: f32 x design_dim,
-//!       colour: f32 x color_dim
-//!   )* ]
-//! ```
-//! Several entries share one `id` — they are regions of the same file.
-//! Tombstoned entries have `id == i64::MIN`.
-//! A version mismatch makes `load` start fresh, which the startup migration
-//! turns into a one-time re-index (see `core::migrate`).
+// Custom flat vector store for the DINO embedding that drives retrieval,
+// the Gabor-rose + Gram-matrix descriptor kept alongside it, and a colour
+// histogram per file.
+//
+// ## v7: retrieval is a threshold over the DINO embedding
+// There is no top-N shortlist any more. `near_family` returns *every* entry
+// whose embedding cosine clears `NEAR_FAMILY_MIN_SIM`, and SIFT/RANSAC
+// verification runs over all of them — so the embedding decides membership
+// and the geometry decides truth. Rose/gram are still stored and scored, but
+// only as a tiebreak and for diagnostics.
+//
+// ## v6: one entry per file, not per region
+// The old DINOv2 scheme stored several vectors per file (whole frame plus
+// sliced windows) because a single 224x224 embedding couldn't otherwise
+// answer "does this design appear *inside* that one". SIFT/RANSAC
+// (`core::sidecar::verify`) answers that question directly against the full
+// image instead, so there's nothing left to slice for — one descriptor per
+// file, looked up by id.
+//
+// ## Why not FAISS
+// The FAISS C++ library needs a non-trivial build step and can't be
+// sandboxed by the macOS App Store. Brute-force cosine over a rayon thread
+// pool is fast enough for our workload (<=500k images).
+//
+// ## File format (`vectors.bin`, version 7)
+// ```text
+// [ magic:      8 bytes  "PICTOR\x00\x01" ]
+// [ version:    4 bytes  u32 LE ]  == 7
+// [ rose_dim:   4 bytes  u32 LE ]  == ROSE_DIM
+// [ count:      8 bytes  u64 LE ]  live (non-tombstone) entries
+// [ gram_dim:   4 bytes  u32 LE ]  == GRAM_ZOOM_LEVELS * GRAM_DIM_PER_ZOOM
+// [ color_dim:  4 bytes  u32 LE ]  == COLOR_DIM
+// [ embed_dim:  4 bytes  u32 LE ]  == EMBED_ZOOM_LEVELS * EMBED_DIM
+// [ entries: ( id: i64, embed: f32 x embed_dim, rose: f32 x rose_dim,
+//              gram: f32 x gram_dim, colour: f32 x color_dim )* ]
+// ```
+// `embed_dim` is appended after `color_dim` so the header grew rather than
+// being reshuffled — the v6 fields keep their offsets, which makes the two
+// layouts easy to compare when debugging a store by hand.
+// Tombstoned entries have `id == i64::MIN`. A version mismatch makes `load`
+// start fresh — the startup migration (`core::migrate`) turns that into a
+// one-time re-index.
 
 use crate::{
-    config::EMB_DIM,
-    core::{color::COLOR_DIM, regions::Region},
-    error::{Result, PictoriaError},
+    config::{
+        EMBED_DIM, EMBED_ZOOM_LEVELS, GRAM_DIM_PER_ZOOM, GRAM_WEIGHT, GRAM_ZOOM_LEVELS, ROSE_DIM,
+        ROSE_WEIGHT,
+    },
+    core::color::COLOR_DIM,
+    error::{PictoriaError, Result},
 };
 use once_cell::sync::Lazy;
 use rayon::prelude::*;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs::{self, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
-    sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
-/// Serialises concurrent load → modify → save cycles so two sync workers
-/// starting simultaneously cannot race to write stale data (lost-update).
-/// Held by `sync_one` for its full duration.
+// Serialises concurrent load -> modify -> save cycles across sync workers.
 static SYNC_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
-/// Separates readers (search) from the brief file-write step (save).
-/// Many read guards can be held at once; a write guard is exclusive and is
-/// only held for the 1–2 seconds of `store.save()`.
+// Separates readers (search) from the brief file-write step (save).
 static STORE_RW_LOCK: Lazy<RwLock<()>> = Lazy::new(|| RwLock::new(()));
 
-/// Serialise concurrent `sync_one` runs.  Hold for the entire load → embed
-/// → save sequence so two watcher threads never produce a lost update.
 pub fn store_io_guard() -> MutexGuard<'static, ()> {
     SYNC_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
-
-/// Shared read lock for search.  Multiple searches can hold this at the same
-/// time.  Only blocked for the ~2 seconds while a save is in progress.
 pub fn store_io_read_guard() -> RwLockReadGuard<'static, ()> {
     STORE_RW_LOCK.read().unwrap_or_else(|e| e.into_inner())
 }
-
-/// Exclusive write lock held only during `store.save()`.  Prevents a search
-/// from reading a half-written file while a save is in progress.
 pub fn store_io_write_guard() -> RwLockWriteGuard<'static, ()> {
     STORE_RW_LOCK.write().unwrap_or_else(|e| e.into_inner())
 }
 
-const MAGIC:      &[u8; 8] = b"PICTOR\x00\x01";
-const VERSION:    u32      = 5;
-const HEADER_LEN: usize    = 32;
-const TOMBSTONE:  i64      = i64::MIN;
-/// id + region(x, y, w, h)
-const REGION_F32: usize    = 4;
+// ── Resident cache (SEARCH-LATENCY-PLAN.md Phase 5a) ───────────────────────
+//
+// There is no long-lived store otherwise: `VectorStore::load` re-reads and
+// re-parses all of `vectors.bin` through a per-`f32` `from_le_bytes` loop on
+// every single search. Entry stride is 25,448 bytes (4608 embed + 8 rose +
+// 1728 gram + 16 color floats, plus an i64 id) — ~1.19 GB at 50k files, so
+// this caches the parsed result instead of redoing that work per query.
+static RESIDENT: Lazy<RwLock<Option<Arc<VectorStore>>>> = Lazy::new(|| RwLock::new(None));
 
-/// Search ranks purely on design pattern similarity (DINOv2 embedding).
-/// Color is computed and stored for display purposes (color_match % in UI and
-/// Browse page filtering) but does not affect result ordering.
-pub const DESIGN_WEIGHT: f32 = 1.0;
-pub const COLOR_WEIGHT:  f32 = 0.0;
-
-/// One search hit: a file, and the region of it that matched best.
-#[derive(Debug, Clone, Copy)]
-pub struct Match {
-    pub id:         i64,
-    pub design_sim: f32,
-    pub color_sim:  f32,
-    /// Which part of the file matched.  `Region::WHOLE` means the full frame.
-    pub region:     Region,
-    /// Best score over this file's **whole-frame** entry alone.
-    ///
-    /// Reported separately because `design_sim` is a maximum over every region,
-    /// and a maximum over many samples drifts upward on its own: measured on a
-    /// real library, most files had some region edging past their whole frame by
-    /// a few tenths of a point purely by chance.  Genuine containment looks
-    /// different — the whole frame scores *poorly* while one region scores well.
-    /// Callers need both numbers to tell those apart.
-    pub whole_sim:  f32,
+// Returns the cached store, loading it from disk on a cache miss (under
+// `store_io_read_guard`, same as any other disk read of this file — a
+// concurrent `save()` must not tear it). Cloning the `Arc` and dropping the
+// lock immediately is what lets `services::search` avoid holding any guard
+// across the multi-second verify phase that follows (Phase 1d).
+pub fn resident(path: &Path) -> Result<Arc<VectorStore>> {
+    if let Some(store) = RESIDENT.read().unwrap_or_else(|e| e.into_inner()).clone() {
+        return Ok(store);
+    }
+    let mut slot = RESIDENT.write().unwrap_or_else(|e| e.into_inner());
+    // Re-check under the write lock — another thread may have populated it
+    // while this one was waiting.
+    if let Some(store) = slot.clone() {
+        return Ok(store);
+    }
+    let loaded = {
+        let _read_guard = store_io_read_guard();
+        VectorStore::load(path)?
+    };
+    log::info!(
+        "[vector_store] resident store loaded: {} live entries (~{:.1} MB)",
+        loaded.live_count(),
+        loaded.approx_bytes() as f64 / 1_048_576.0,
+    );
+    let loaded = Arc::new(loaded);
+    *slot = Some(loaded.clone());
+    Ok(loaded)
 }
 
-/// In-memory representation of the vector store.
+// Drops the cached copy so the next `resident()` call reloads from disk.
+// Call this right after a successful `store.save()` — see `core::watcher` —
+// inside the same `store_io_write_guard()` scope, so no search can observe a
+// stale resident copy alongside a freshly-written file.
+pub fn invalidate_resident() {
+    *RESIDENT.write().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+const MAGIC: &[u8; 8] = b"PICTOR\x00\x01";
+const VERSION: u32 = 7;
+const HEADER_LEN: usize = 36;
+const TOMBSTONE: i64 = i64::MIN;
+const GRAM_DIM: usize = GRAM_ZOOM_LEVELS * GRAM_DIM_PER_ZOOM;
+// Full stored embedding width: every zoom level, concatenated.
+const EMBED_TOTAL: usize = EMBED_ZOOM_LEVELS * EMBED_DIM;
+
+// One search hit.
+#[derive(Debug, Clone, Copy)]
+pub struct Match {
+    pub id: i64,
+    // Embedding cosine — what decided membership of the near family, and what
+    // the UI shows as the pattern match.
+    pub embed_sim: f32,
+    // Weighted rose+gram similarity. Tiebreak between entries at the same
+    // embedding cosine, and a diagnostic in the search log; never a filter.
+    pub design_sim: f32,
+    pub rose_sim: f32,
+    pub gram_sim: f32,
+    pub color_sim: f32,
+}
+
 pub struct VectorStore {
-    ids:        Vec<i64>,
-    /// Parallel to `ids`: which part of the file each entry describes.
-    regions:    Vec<Region>,
-    design:     Vec<f32>,
-    color:      Vec<f32>,
-    design_dim: usize,
-    color_dim:  usize,
+    ids: Vec<i64>,
+    embed: Vec<f32>,
+    rose: Vec<f32>,
+    gram: Vec<f32>,
+    color: Vec<f32>,
 }
 
 impl VectorStore {
-    // ── Construction ──────────────────────────────────────────────────
-
     pub fn new() -> Self {
         Self {
-            ids:        Vec::new(),
-            regions:    Vec::new(),
-            design:     Vec::new(),
-            color:      Vec::new(),
-            design_dim: EMB_DIM,
-            color_dim:  COLOR_DIM,
+            ids: Vec::new(),
+            embed: Vec::new(),
+            rose: Vec::new(),
+            gram: Vec::new(),
+            color: Vec::new(),
         }
     }
 
-    /// Load from disk, or create a fresh store if the file does not exist, is
-    /// corrupt, or was written by an older format version.  Returning a fresh
-    /// store on a version mismatch is intentional: the startup migration then
-    /// re-indexes every folder against the current format.
+    // ── Construction ──────────────────────────────────────────────────
+
+    // Load from disk, or a fresh store if the file is missing, corrupt, or
+    // an older format version — a version mismatch is what arms the
+    // startup re-index in `core::migrate`.
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::new());
         }
-
         let bytes = fs::read(path)?;
-        if bytes.len() < HEADER_LEN {
-            log::warn!("vector store file too short — starting fresh");
+        if bytes.len() < HEADER_LEN || &bytes[..8] != MAGIC {
+            log::warn!("vector store missing/corrupt header — starting fresh");
             return Ok(Self::new());
         }
-
-        if &bytes[..8] != MAGIC {
-            log::warn!("vector store magic mismatch — starting fresh");
-            return Ok(Self::new());
-        }
-
         let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
         if version != VERSION {
             log::warn!("vector store version {version} != {VERSION} — starting fresh (re-index)");
             return Ok(Self::new());
         }
+        // Header layout (see module doc): magic(8) version(4) rose_dim(4)
+        // count(8) gram_dim(4) color_dim(4) — count sits between rose_dim and
+        // gram_dim, so gram_dim/color_dim start at 24/28, not 20/24.
+        let rose_dim = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let gram_dim = u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize;
+        let color_dim = u32::from_le_bytes(bytes[28..32].try_into().unwrap()) as usize;
+        let embed_dim = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
+        if rose_dim != ROSE_DIM
+            || gram_dim != GRAM_DIM
+            || color_dim != COLOR_DIM
+            || embed_dim != EMBED_TOTAL
+        {
+            log::warn!("vector store dims changed — starting fresh (re-index)");
+            return Ok(Self::new());
+        }
 
-        let design_dim = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
-        let color_dim  = u32::from_le_bytes(bytes[24..28].try_into().unwrap()) as usize;
         let body = &bytes[HEADER_LEN..];
-        let entry_bytes = 8 + REGION_F32 * 4 + design_dim * 4 + color_dim * 4;
-
-        if design_dim == 0 || body.len() % entry_bytes != 0 {
+        let entry_bytes = 8 + (embed_dim + rose_dim + gram_dim + color_dim) * 4;
+        if entry_bytes == 0 || body.len() % entry_bytes != 0 {
             log::warn!("vector store body not aligned — starting fresh");
             return Ok(Self::new());
         }
 
         let n = body.len() / entry_bytes;
-        let mut ids     = Vec::with_capacity(n);
-        let mut regions = Vec::with_capacity(n);
-        let mut design  = Vec::with_capacity(n * design_dim);
-        let mut color   = Vec::with_capacity(n * color_dim);
+        let mut ids = Vec::with_capacity(n);
+        let mut embed = Vec::with_capacity(n * embed_dim);
+        let mut rose = Vec::with_capacity(n * rose_dim);
+        let mut gram = Vec::with_capacity(n * gram_dim);
+        let mut color = Vec::with_capacity(n * color_dim);
 
-        let read_f32 = |b: &[u8], at: usize| -> f32 {
-            f32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-        };
+        let read_f32 = |b: &[u8], at: usize| f32::from_le_bytes(b[at..at + 4].try_into().unwrap());
 
         for i in 0..n {
             let mut off = i * entry_bytes;
-            let id = i64::from_le_bytes(body[off..off + 8].try_into().unwrap());
-            ids.push(id);
+            ids.push(i64::from_le_bytes(body[off..off + 8].try_into().unwrap()));
             off += 8;
-
-            regions.push(Region {
-                x: read_f32(body, off),
-                y: read_f32(body, off + 4),
-                w: read_f32(body, off + 8),
-                h: read_f32(body, off + 12),
-            });
-            off += REGION_F32 * 4;
-
-            for j in 0..design_dim {
-                design.push(read_f32(body, off + j * 4));
-            }
-            off += design_dim * 4;
-            for j in 0..color_dim {
-                color.push(read_f32(body, off + j * 4));
-            }
+            for j in 0..embed_dim { embed.push(read_f32(body, off + j * 4)); }
+            off += embed_dim * 4;
+            for j in 0..rose_dim { rose.push(read_f32(body, off + j * 4)); }
+            off += rose_dim * 4;
+            for j in 0..gram_dim { gram.push(read_f32(body, off + j * 4)); }
+            off += gram_dim * 4;
+            for j in 0..color_dim { color.push(read_f32(body, off + j * 4)); }
         }
 
-        // Defensive de-duplication.  A corrupt or interrupted write can leave the
-        // same entry stored more than once (which surfaces as duplicate search
-        // results).  The key is (id, region) — NOT id alone, since one file
-        // legitimately owns many entries now, one per region.  Keep only the last
-        // occurrence of each and drop tombstones so the store self-heals on load
-        // and is persisted clean on the next save.
-        let live   = ids.iter().filter(|&&id| id != TOMBSTONE).count();
-        let unique = ids
-            .iter()
-            .zip(regions.iter())
-            .filter(|(&id, _)| id != TOMBSTONE)
-            .map(|(&id, r)| entry_key(id, r))
-            .collect::<HashSet<_>>()
-            .len();
-
-        if unique != live || live != ids.len() {
-            let mut last: HashMap<(i64, [u32; 4]), usize> = HashMap::with_capacity(unique);
-            for (i, (&id, r)) in ids.iter().zip(regions.iter()).enumerate() {
-                if id != TOMBSTONE {
-                    last.insert(entry_key(id, r), i);
-                }
+        // Defensive de-dup: a corrupt/interrupted write can leave one id stored
+        // twice. Keep the last occurrence of each and drop tombstones.
+        let live = ids.iter().filter(|&&id| id != TOMBSTONE).count();
+        let unique: HashSet<i64> = ids.iter().copied().filter(|&id| id != TOMBSTONE).collect();
+        if unique.len() != live || live != ids.len() {
+            let mut last: std::collections::HashMap<i64, usize> = std::collections::HashMap::with_capacity(unique.len());
+            for (i, &id) in ids.iter().enumerate() {
+                if id != TOMBSTONE { last.insert(id, i); }
             }
             let mut keep: Vec<usize> = last.into_values().collect();
             keep.sort_unstable();
-
-            let mut nids     = Vec::with_capacity(keep.len());
-            let mut nregions = Vec::with_capacity(keep.len());
-            let mut ndesign  = Vec::with_capacity(keep.len() * design_dim);
-            let mut ncolor   = Vec::with_capacity(keep.len() * color_dim);
+            let mut nids = Vec::with_capacity(keep.len());
+            let mut nembed = Vec::with_capacity(keep.len() * embed_dim);
+            let mut nrose = Vec::with_capacity(keep.len() * rose_dim);
+            let mut ngram = Vec::with_capacity(keep.len() * gram_dim);
+            let mut ncolor = Vec::with_capacity(keep.len() * color_dim);
             for &i in &keep {
                 nids.push(ids[i]);
-                nregions.push(regions[i]);
-                ndesign.extend_from_slice(&design[i * design_dim..(i + 1) * design_dim]);
+                nembed.extend_from_slice(&embed[i * embed_dim..(i + 1) * embed_dim]);
+                nrose.extend_from_slice(&rose[i * rose_dim..(i + 1) * rose_dim]);
+                ngram.extend_from_slice(&gram[i * gram_dim..(i + 1) * gram_dim]);
                 ncolor.extend_from_slice(&color[i * color_dim..(i + 1) * color_dim]);
             }
-            log::warn!(
-                "vector store: {} raw entries deduped to {} unique on load",
-                ids.len(), nids.len()
-            );
-            ids = nids; regions = nregions; design = ndesign; color = ncolor;
+            log::warn!("vector store: {} raw entries deduped to {} unique on load", ids.len(), nids.len());
+            ids = nids; embed = nembed; rose = nrose; gram = ngram; color = ncolor;
         }
 
-        Ok(Self { ids, regions, design, color, design_dim, color_dim })
+        // `best_zoom_dot` (Phase 5b) is only correct when every stored zoom
+        // level is already a unit vector, which `upsert` guarantees for
+        // anything written from here on. This just confirms it on the data
+        // actually on disk — debug-only since it's an O(entries) scan with
+        // no effect on behaviour, only a caught assumption.
+        #[cfg(debug_assertions)]
+        {
+            for i in 0..ids.len() {
+                if ids[i] == TOMBSTONE { continue; }
+                let e = &embed[i * embed_dim..(i + 1) * embed_dim];
+                for zoom in e.chunks(EMBED_DIM) {
+                    let norm: f32 = zoom.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    debug_assert!(
+                        (norm - 1.0).abs() < 0.05 || norm < 1e-6,
+                        "vector store: embed zoom level not unit-normalized (norm={norm}) — \
+                         best_zoom_dot will silently under/over-score this entry",
+                    );
+                }
+            }
+        }
+
+        Ok(Self { ids, embed, rose, gram, color })
     }
 
-    /// Persist to disk atomically (write to `.tmp`, then rename).
+    // Persist to disk atomically (write to `.tmp`, then rename).
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-
         let tmp = path.with_extension("bin.tmp");
         {
-            let file = OpenOptions::new()
-                .write(true).create(true).truncate(true)
-                .open(&tmp)?;
+            let file = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
             let mut w = BufWriter::new(file);
-
-            let live_count =
-                self.ids.iter().filter(|&&id| id != TOMBSTONE).count() as u64;
+            let live_count = self.ids.iter().filter(|&&id| id != TOMBSTONE).count() as u64;
 
             w.write_all(MAGIC)?;
             w.write_all(&VERSION.to_le_bytes())?;
-            w.write_all(&(self.design_dim as u32).to_le_bytes())?;
+            w.write_all(&(ROSE_DIM as u32).to_le_bytes())?;
             w.write_all(&live_count.to_le_bytes())?;
-            w.write_all(&(self.color_dim as u32).to_le_bytes())?;
-            w.write_all(&[0u8; 4])?;
+            w.write_all(&(GRAM_DIM as u32).to_le_bytes())?;
+            w.write_all(&(COLOR_DIM as u32).to_le_bytes())?;
+            w.write_all(&(EMBED_TOTAL as u32).to_le_bytes())?;
 
-            let entry_bytes = 8 + REGION_F32 * 4 + self.design_dim * 4 + self.color_dim * 4;
+            let entry_bytes = 8 + (EMBED_TOTAL + ROSE_DIM + GRAM_DIM + COLOR_DIM) * 4;
             let mut buf = vec![0u8; entry_bytes];
-
             for (idx, &id) in self.ids.iter().enumerate() {
                 buf[..8].copy_from_slice(&id.to_le_bytes());
                 let mut o = 8;
-
-                let r = self.regions[idx];
-                for v in [r.x, r.y, r.w, r.h] {
-                    buf[o..o + 4].copy_from_slice(&v.to_le_bytes());
-                    o += 4;
+                for &v in &self.embed[idx * EMBED_TOTAL..(idx + 1) * EMBED_TOTAL] {
+                    buf[o..o + 4].copy_from_slice(&v.to_le_bytes()); o += 4;
                 }
-
-                let d = &self.design[idx * self.design_dim..(idx + 1) * self.design_dim];
-                for &v in d {
-                    buf[o..o + 4].copy_from_slice(&v.to_le_bytes());
-                    o += 4;
+                for &v in &self.rose[idx * ROSE_DIM..(idx + 1) * ROSE_DIM] {
+                    buf[o..o + 4].copy_from_slice(&v.to_le_bytes()); o += 4;
                 }
-                let c = &self.color[idx * self.color_dim..(idx + 1) * self.color_dim];
-                for &v in c {
-                    buf[o..o + 4].copy_from_slice(&v.to_le_bytes());
-                    o += 4;
+                for &v in &self.gram[idx * GRAM_DIM..(idx + 1) * GRAM_DIM] {
+                    buf[o..o + 4].copy_from_slice(&v.to_le_bytes()); o += 4;
+                }
+                for &v in &self.color[idx * COLOR_DIM..(idx + 1) * COLOR_DIM] {
+                    buf[o..o + 4].copy_from_slice(&v.to_le_bytes()); o += 4;
                 }
                 w.write_all(&buf)?;
             }
             w.flush()?;
         }
-
         fs::rename(&tmp, path)?;
         Ok(())
     }
 
     // ── Mutation ──────────────────────────────────────────────────────
 
-    /// Append one region of one file.  `design` must be `EMB_DIM` long and
-    /// `color` `COLOR_DIM` long; both should already be L2-normalised.
-    ///
-    /// Called once per region, so the same `id` is added several times — that is
-    /// expected, not a duplicate.
-    pub fn add(&mut self, id: i64, region: Region, design: &[f32], color: &[f32]) -> Result<()> {
-        if design.len() != self.design_dim {
+    // Insert or replace one file's descriptor (replaces any existing entry
+    // for `id` in place, so a re-embed doesn't leave a stale duplicate).
+    pub fn upsert(
+        &mut self,
+        id: i64,
+        embed: &[f32],
+        rose: &[f32],
+        gram: &[f32],
+        color: &[f32],
+    ) -> Result<()> {
+        if embed.len() != EMBED_TOTAL
+            || rose.len() != ROSE_DIM
+            || gram.len() != GRAM_DIM
+            || color.len() != COLOR_DIM
+        {
             return Err(PictoriaError::Fatal(format!(
-                "design dim mismatch: expected {}, got {}",
-                self.design_dim, design.len()
+                "descriptor dim mismatch: embed {}/{EMBED_TOTAL} rose {}/{ROSE_DIM} \
+                 gram {}/{GRAM_DIM} color {}/{COLOR_DIM}",
+                embed.len(), rose.len(), gram.len(), color.len()
             )));
         }
-        if color.len() != self.color_dim {
-            return Err(PictoriaError::Fatal(format!(
-                "colour dim mismatch: expected {}, got {}",
-                self.color_dim, color.len()
-            )));
+        // Guarantee the precondition `best_zoom_dot` needs (SEARCH-LATENCY-PLAN.md
+        // Phase 5b) rather than trusting the producer: each zoom level must be
+        // its own unit vector for a dot product to equal that level's cosine.
+        // `pipeline.py::embed_descriptor` already normalises this way, but
+        // doing it again here is nearly free (once per file) and makes the
+        // store correct even against a future producer that doesn't. Rose,
+        // gram, and color are untouched — they keep full `cos_sim` (gram
+        // isn't normalised at all, and rose is L1- not L2-normalised).
+        let mut embed = embed.to_vec();
+        normalize_zoom_levels(&mut embed, EMBED_DIM);
+        let embed = embed.as_slice();
+
+        if let Some(pos) = self.ids.iter().position(|&x| x == id) {
+            self.embed[pos * EMBED_TOTAL..(pos + 1) * EMBED_TOTAL].copy_from_slice(embed);
+            self.rose[pos * ROSE_DIM..(pos + 1) * ROSE_DIM].copy_from_slice(rose);
+            self.gram[pos * GRAM_DIM..(pos + 1) * GRAM_DIM].copy_from_slice(gram);
+            self.color[pos * COLOR_DIM..(pos + 1) * COLOR_DIM].copy_from_slice(color);
+        } else {
+            self.ids.push(id);
+            self.embed.extend_from_slice(embed);
+            self.rose.extend_from_slice(rose);
+            self.gram.extend_from_slice(gram);
+            self.color.extend_from_slice(color);
         }
-        self.ids.push(id);
-        self.regions.push(region);
-        self.design.extend_from_slice(design);
-        self.color.extend_from_slice(color);
         Ok(())
     }
 
-    /// Tombstone **every** entry belonging to the given file IDs — a file owns
-    /// one entry per region, so removing by id has to sweep all of them or the
-    /// orphaned regions keep turning up in search results.
-    /// Compacts automatically when tombstones > 20 %.
+    // Tombstone every id in `ids`. Compacts automatically past 20% dead.
     pub fn remove(&mut self, ids: &[i64]) {
         if ids.is_empty() { return; }
         let id_set: HashSet<i64> = ids.iter().copied().collect();
         for slot in self.ids.iter_mut() {
-            if id_set.contains(slot) {
-                *slot = TOMBSTONE;
-            }
+            if id_set.contains(slot) { *slot = TOMBSTONE; }
         }
         self.maybe_compact();
     }
 
     // ── Query ─────────────────────────────────────────────────────────
 
-    /// Return the top-`k` **files** by best-matching region.
-    ///
-    /// Every region of every file is scored, then collapsed to one hit per file
-    /// keeping its highest-scoring region (max-pooling).  Collapsing before
-    /// truncation is essential: a large composite owns many regions, and taking
-    /// the top-`k` *entries* first would let a single file fill the whole result
-    /// set while other files fell off the end.
-    ///
-    /// `query_designs` holds one or more query vectors — the reference image as a
-    /// whole plus, for an elongated reference, windows along its long axis (see
-    /// [`crate::core::regions::plan_query`]).  An entry scores as its best match
-    /// against any of them.
-    ///
-    /// All vectors must be L2-normalised.  Callers receive the individual
-    /// sub-scores so the UI can display pattern match % and color match %
-    /// separately; blending for ranking is done internally.
-    pub fn search(&self, query_designs: &[Vec<f32>], query_color: &[f32], k: usize) -> Vec<Match> {
-        if self.ids.is_empty() || k == 0 || query_designs.is_empty() {
+    // Every live entry whose DINO embedding cosine reaches `min_sim`, sorted
+    // best first. No `k` — the caller verifies all of them.
+    //
+    // This replaced the old fixed top-N shortlist. The difference matters: a
+    // top-N cut silently dropped real matches once a library held more than N
+    // similar tiles, whereas a threshold returns the whole family and lets
+    // SIFT/RANSAC decide which members are genuine. The cost is that the
+    // returned set is unbounded by construction — `services::search` logs its
+    // size for exactly that reason.
+    //
+    // Rose/gram are still scored here, but only to fill `design_sim` (a
+    // tiebreak between entries at the same embedding cosine, and a diagnostic
+    // in the search timing log). They cannot add or remove a candidate.
+    pub fn near_family(
+        &self,
+        query_embed: &[f32],
+        query_rose: &[f32],
+        query_gram: &[f32],
+        query_color: &[f32],
+        min_sim: f32,
+    ) -> Vec<Match> {
+        if self.ids.is_empty() {
             return Vec::new();
         }
+        let use_color = query_color.len() == COLOR_DIM;
 
-        let use_color = query_color.len() == self.color_dim;
+        // `best_zoom_dot`, not `best_zoom_sim`, for the embedding — the only
+        // descriptor evaluated against all N entries (rose/gram/color only
+        // run for entries that already passed the floor). `cos_sim` was
+        // recomputing both operands' norms on every one of those N calls;
+        // normalizing the query here, once, is what lets a plain dot product
+        // substitute for it (SEARCH-LATENCY-PLAN.md Phase 5b). Stored
+        // entries are already normalised this way by `upsert`.
+        let mut query_embed_n = query_embed.to_vec();
+        normalize_zoom_levels(&mut query_embed_n, EMBED_DIM);
+        let query_embed = query_embed_n.as_slice();
 
-        // Score every live region.  This is the expensive part, so it stays a
-        // flat parallel scan; the grouping below is cheap by comparison.
-        let scored: Vec<(i64, f32, f32, f32, Region)> = self
+        let mut scored: Vec<Match> = self
             .ids
             .par_iter()
             .enumerate()
             .filter_map(|(i, &id)| {
                 if id == TOMBSTONE { return None; }
-
-                let d = &self.design[i * self.design_dim..(i + 1) * self.design_dim];
-                let design_sim: f32 = query_designs
-                    .iter()
-                    .map(|q| q.iter().zip(d).map(|(a, b)| a * b).sum::<f32>())
-                    .fold(f32::NEG_INFINITY, f32::max);
-
-                let color_sim: f32 = if use_color {
-                    let c = &self.color[i * self.color_dim..(i + 1) * self.color_dim];
-                    query_color.iter().zip(c).map(|(a, b)| a * b).sum()
+                let e = &self.embed[i * EMBED_TOTAL..(i + 1) * EMBED_TOTAL];
+                let embed_sim = best_zoom_dot(query_embed, e, EMBED_DIM);
+                if embed_sim < min_sim {
+                    return None;
+                }
+                let r = &self.rose[i * ROSE_DIM..(i + 1) * ROSE_DIM];
+                let g = &self.gram[i * GRAM_DIM..(i + 1) * GRAM_DIM];
+                let rose_sim = cos_sim(query_rose, r);
+                let gram_sim = best_zoom_sim(query_gram, g, GRAM_DIM_PER_ZOOM);
+                let color_sim = if use_color {
+                    cos_sim(query_color, &self.color[i * COLOR_DIM..(i + 1) * COLOR_DIM])
                 } else {
                     0.0
                 };
-
-                let blended = DESIGN_WEIGHT * design_sim + COLOR_WEIGHT * color_sim;
-                Some((id, blended, design_sim, color_sim, self.regions[i]))
+                let design_sim = ROSE_WEIGHT * rose_sim + GRAM_WEIGHT * gram_sim;
+                Some(Match { id, embed_sim, design_sim, rose_sim, gram_sim, color_sim })
             })
             .collect();
 
-        // Collapse to the best region per file, tracking the whole-frame score
-        // alongside it so callers can judge whether a region genuinely won.
-        let mut best: HashMap<i64, (f32, Match)> = HashMap::new();
-        for (id, blended, design_sim, color_sim, region) in scored {
-            let m = Match { id, design_sim, color_sim, region, whole_sim: f32::NEG_INFINITY };
-            let entry = best.entry(id).or_insert((f32::NEG_INFINITY, m));
-            if blended > entry.0 {
-                let carried = entry.1.whole_sim;
-                *entry = (blended, Match { whole_sim: carried, ..m });
-            }
-            if region.is_whole() && design_sim > entry.1.whole_sim {
-                entry.1.whole_sim = design_sim;
-            }
-        }
-
-        let mut hits: Vec<(f32, Match)> = best.into_values().collect();
-        hits.sort_unstable_by(|a, b| {
-            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+        scored.sort_unstable_by(|a, b| {
+            b.embed_sim
+                .partial_cmp(&a.embed_sim)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    b.design_sim.partial_cmp(&a.design_sim).unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
-        hits.truncate(k);
-        hits.into_iter().map(|(_, m)| m).collect()
+        scored
     }
 
-    /// Number of live entries (regions), not files.
     pub fn live_count(&self) -> usize {
         self.ids.iter().filter(|&&id| id != TOMBSTONE).count()
+    }
+
+    // Approximate resident-memory footprint, for the one-time log line at
+    // `resident()` load — makes RSS visible in the field without needing a
+    // profiler (SEARCH-LATENCY-PLAN.md Phase 5a).
+    pub fn approx_bytes(&self) -> usize {
+        self.ids.len() * 8
+            + self.embed.len() * 4
+            + self.rose.len() * 4
+            + self.gram.len() * 4
+            + self.color.len() * 4
+    }
+
+    // Diagnostic only — counts of live entries whose embedding cosine
+    // reaches each of `thresholds`, over the *whole* population. Unlike
+    // `near_family`, which only ever reports entries already at or above its
+    // own floor, this is what the `NEAR_FAMILY_MIN_SIM` calibration
+    // procedure needs: what a lower (or higher) floor would have admitted.
+    // See SEARCH-LATENCY-PLAN.md Phase 3.
+    pub fn cosine_histogram(&self, query_embed: &[f32], thresholds: &[f32]) -> Vec<usize> {
+        if self.ids.is_empty() {
+            return vec![0; thresholds.len()];
+        }
+        let mut query_embed_n = query_embed.to_vec();
+        normalize_zoom_levels(&mut query_embed_n, EMBED_DIM);
+        let query_embed = query_embed_n.as_slice();
+
+        self.ids
+            .par_iter()
+            .enumerate()
+            .filter(|&(_, &id)| id != TOMBSTONE)
+            .map(|(i, _)| {
+                let e = &self.embed[i * EMBED_TOTAL..(i + 1) * EMBED_TOTAL];
+                best_zoom_dot(query_embed, e, EMBED_DIM)
+            })
+            .fold(
+                || vec![0usize; thresholds.len()],
+                |mut acc, sim| {
+                    for (j, &t) in thresholds.iter().enumerate() {
+                        if sim >= t { acc[j] += 1; }
+                    }
+                    acc
+                },
+            )
+            .reduce(
+                || vec![0usize; thresholds.len()],
+                |mut a, b| {
+                    for j in 0..a.len() { a[j] += b[j]; }
+                    a
+                },
+            )
     }
 
     // ── Compaction ────────────────────────────────────────────────────
 
     fn maybe_compact(&mut self) {
-        let total      = self.ids.len();
+        let total = self.ids.len();
         let tombstones = self.ids.iter().filter(|&&id| id == TOMBSTONE).count();
         if total == 0 || tombstones * 5 < total { return; }
 
         let keep = total - tombstones;
-        let mut new_ids     = Vec::with_capacity(keep);
-        let mut new_regions = Vec::with_capacity(keep);
-        let mut new_design  = Vec::with_capacity(keep * self.design_dim);
-        let mut new_color   = Vec::with_capacity(keep * self.color_dim);
-
+        let mut nids = Vec::with_capacity(keep);
+        let mut nembed = Vec::with_capacity(keep * EMBED_TOTAL);
+        let mut nrose = Vec::with_capacity(keep * ROSE_DIM);
+        let mut ngram = Vec::with_capacity(keep * GRAM_DIM);
+        let mut ncolor = Vec::with_capacity(keep * COLOR_DIM);
         for (i, &id) in self.ids.iter().enumerate() {
             if id != TOMBSTONE {
-                new_ids.push(id);
-                new_regions.push(self.regions[i]);
-                new_design.extend_from_slice(
-                    &self.design[i * self.design_dim..(i + 1) * self.design_dim],
-                );
-                new_color.extend_from_slice(
-                    &self.color[i * self.color_dim..(i + 1) * self.color_dim],
-                );
+                nids.push(id);
+                nembed.extend_from_slice(&self.embed[i * EMBED_TOTAL..(i + 1) * EMBED_TOTAL]);
+                nrose.extend_from_slice(&self.rose[i * ROSE_DIM..(i + 1) * ROSE_DIM]);
+                ngram.extend_from_slice(&self.gram[i * GRAM_DIM..(i + 1) * GRAM_DIM]);
+                ncolor.extend_from_slice(&self.color[i * COLOR_DIM..(i + 1) * COLOR_DIM]);
             }
         }
-
-        self.ids     = new_ids;
-        self.regions = new_regions;
-        self.design  = new_design;
-        self.color   = new_color;
-        log::debug!("vector store compacted: {} -> {} entries", total, self.ids.len());
+        log::debug!("vector store compacted: {} -> {} entries", total, nids.len());
+        self.ids = nids; self.embed = nembed; self.rose = nrose; self.gram = ngram; self.color = ncolor;
     }
-}
-
-/// Hashable identity of an entry.  `f32` is not `Hash`/`Eq`, and the values are
-/// round-tripped verbatim through the file, so comparing raw bits is exact.
-fn entry_key(id: i64, r: &Region) -> (i64, [u32; 4]) {
-    (id, [r.x.to_bits(), r.y.to_bits(), r.w.to_bits(), r.h.to_bits()])
 }
 
 impl Default for VectorStore {
     fn default() -> Self { Self::new() }
 }
 
+// ── Similarity helpers ───────────────────────────────────────────────────
+
+fn cos_sim(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na <= 0.0 || nb <= 0.0 { 0.0 } else { dot / (na * nb) }
+}
+
+// Embedding and gram vectors both carry several concatenated zoom levels;
+// score is the best over every (query zoom, candidate zoom) pair. That is
+// what makes matching scale-robust — two related images at different pixel
+// scales still match, because some pair of zoom levels lines them up.
+//
+// `per_zoom` is the width of one level, so one function serves both
+// (`EMBED_DIM` and `GRAM_DIM_PER_ZOOM`).
+fn best_zoom_sim(query: &[f32], candidate: &[f32], per_zoom: usize) -> f32 {
+    let mut best = f32::NEG_INFINITY;
+    for qz in query.chunks(per_zoom) {
+        for cz in candidate.chunks(per_zoom) {
+            let s = cos_sim(qz, cz);
+            if s > best { best = s; }
+        }
+    }
+    if best.is_finite() { best } else { 0.0 }
+}
+
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+// Same cross-zoom search as `best_zoom_sim`, but a plain dot product instead
+// of a full cosine — correct only when both `query` and `candidate` are
+// already unit vectors per zoom level (see `normalize_zoom_levels`). Used
+// only for the embedding (SEARCH-LATENCY-PLAN.md Phase 5b); rose, gram, and
+// color keep `best_zoom_sim`/`cos_sim` because they are not both normalised
+// the same way (gram not at all, rose L1 not L2).
+fn best_zoom_dot(query: &[f32], candidate: &[f32], per_zoom: usize) -> f32 {
+    let mut best = f32::NEG_INFINITY;
+    for qz in query.chunks(per_zoom) {
+        for cz in candidate.chunks(per_zoom) {
+            let s = dot(qz, cz);
+            if s > best { best = s; }
+        }
+    }
+    if best.is_finite() { best } else { 0.0 }
+}
+
+// L2-normalizes each contiguous `per_zoom` chunk of `v` independently, in
+// place — each zoom level becomes its own unit vector rather than the whole
+// concatenation being normalised together. That mirrors how
+// `pipeline.py::embed_descriptor` already produces the embedding (each zoom
+// level is meant to stand alone), and is the precondition `best_zoom_dot`
+// needs to equal `best_zoom_sim`.
+fn normalize_zoom_levels(v: &mut [f32], per_zoom: usize) {
+    for chunk in v.chunks_mut(per_zoom) {
+        let norm: f32 = chunk.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 1e-12 {
+            for x in chunk.iter_mut() { *x /= norm; }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn unit(dim: usize, seed: f32) -> Vec<f32> {
-        let mut v: Vec<f32> = (0..dim).map(|i| ((i as f32) * seed).sin()).collect();
-        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
-        for x in v.iter_mut() { *x /= n; }
-        v
+    fn unit_embed(seed: f32) -> Vec<f32> {
+        (0..EMBED_ZOOM_LEVELS)
+            .flat_map(|z| normalize((0..EMBED_DIM).map(|i| ((i as f32 + z as f32) * seed).sin()).collect()))
+            .collect()
     }
-
-    fn region(x: f32, y: f32) -> Region {
-        Region { x, y, w: 0.5, h: 0.5 }
+    fn unit_rose(seed: f32) -> Vec<f32> {
+        normalize((0..ROSE_DIM).map(|i| ((i as f32) * seed).sin()).collect())
+    }
+    fn unit_gram(seed: f32) -> Vec<f32> {
+        (0..GRAM_ZOOM_LEVELS)
+            .flat_map(|z| normalize((0..GRAM_DIM_PER_ZOOM).map(|i| ((i as f32 + z as f32) * seed).sin()).collect()))
+            .collect()
+    }
+    fn normalize(v: Vec<f32>) -> Vec<f32> {
+        let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
+        v.into_iter().map(|x| x / n).collect()
+    }
+    fn color(seed: f32) -> Vec<f32> {
+        normalize((0..COLOR_DIM).map(|i| ((i as f32) * seed).sin()).collect())
     }
 
     #[test]
-    fn round_trips_many_regions_per_file() {
+    fn round_trips_to_disk() {
         let dir = std::env::temp_dir().join(format!("vs_test_{}", std::process::id()));
         let _ = fs::create_dir_all(&dir);
         let path = dir.join("vectors.bin");
 
         let mut s = VectorStore::new();
-        let color = vec![0.0; COLOR_DIM];
-        s.add(7, Region::WHOLE, &unit(EMB_DIM, 0.1), &color).unwrap();
-        s.add(7, region(0.0, 0.0), &unit(EMB_DIM, 0.2), &color).unwrap();
-        s.add(7, region(0.5, 0.5), &unit(EMB_DIM, 0.3), &color).unwrap();
+        s.upsert(7, &unit_embed(0.1), &unit_rose(0.1), &unit_gram(0.1), &color(0.1)).unwrap();
+        s.upsert(8, &unit_embed(0.2), &unit_rose(0.2), &unit_gram(0.2), &color(0.2)).unwrap();
         s.save(&path).unwrap();
 
         let back = VectorStore::load(&path).unwrap();
-        assert_eq!(back.live_count(), 3, "all regions of a file must survive");
+        assert_eq!(back.live_count(), 2);
+        // Round-tripping must preserve the embedding itself, not just the row
+        // count — the entry stride grew in v7 and an off-by-one there would
+        // still load two entries, just misaligned ones.
+        let hits = back.near_family(&unit_embed(0.1), &unit_rose(0.1), &unit_gram(0.1), &[], 0.99);
+        assert_eq!(hits.len(), 1, "exactly the id-7 entry should clear 0.99");
+        assert_eq!(hits[0].id, 7);
         let _ = fs::remove_file(&path);
     }
 
     #[test]
-    fn remove_sweeps_every_region_of_a_file() {
+    fn upsert_replaces_not_duplicates() {
         let mut s = VectorStore::new();
-        let color = vec![0.0; COLOR_DIM];
-        s.add(1, Region::WHOLE, &unit(EMB_DIM, 0.1), &color).unwrap();
-        s.add(1, region(0.0, 0.0), &unit(EMB_DIM, 0.2), &color).unwrap();
-        s.add(2, Region::WHOLE, &unit(EMB_DIM, 0.3), &color).unwrap();
+        s.upsert(1, &unit_embed(0.1), &unit_rose(0.1), &unit_gram(0.1), &color(0.1)).unwrap();
+        s.upsert(1, &unit_embed(0.9), &unit_rose(0.9), &unit_gram(0.9), &color(0.9)).unwrap();
+        assert_eq!(s.live_count(), 1);
+    }
 
+    #[test]
+    fn remove_tombstones() {
+        let mut s = VectorStore::new();
+        s.upsert(1, &unit_embed(0.1), &unit_rose(0.1), &unit_gram(0.1), &color(0.1)).unwrap();
+        s.upsert(2, &unit_embed(0.2), &unit_rose(0.2), &unit_gram(0.2), &color(0.2)).unwrap();
         s.remove(&[1]);
         assert_eq!(s.live_count(), 1);
-        assert!(s.ids.iter().filter(|&&i| i != TOMBSTONE).all(|&i| i == 2));
     }
 
     #[test]
-    fn search_returns_each_file_once_with_its_best_region() {
+    fn near_family_ranks_the_closest_match_first() {
         let mut s = VectorStore::new();
-        let color = vec![0.0; COLOR_DIM];
-        let target = unit(EMB_DIM, 0.7);
-
-        // File 1: a poor whole-frame vector but one region that matches exactly.
-        s.add(1, Region::WHOLE, &unit(EMB_DIM, 0.1), &color).unwrap();
-        s.add(1, region(0.5, 0.5), &target, &color).unwrap();
-        // File 2: mediocre everywhere.
-        s.add(2, Region::WHOLE, &unit(EMB_DIM, 0.2), &color).unwrap();
-
-        let hits = s.search(std::slice::from_ref(&target), &[], 10);
-        assert_eq!(hits.len(), 2, "one hit per file, not per region");
-        assert_eq!(hits[0].id, 1, "the file with the matching region ranks first");
-        assert!(!hits[0].region.is_whole(), "the matching region is reported");
-        assert!(hits[0].design_sim > 0.99);
-    }
-
-    /// `whole_sim` must survive a later region overtaking the whole frame — the
-    /// carry logic in the collapse loop is easy to get wrong, and if it reports
-    /// NEG_INFINITY the caller sees an infinite margin and badges everything.
-    #[test]
-    fn whole_frame_score_is_reported_alongside_the_winning_region() {
-        let color = vec![0.0; COLOR_DIM];
-        let target = unit(EMB_DIM, 0.7);
-        let mediocre = unit(EMB_DIM, 0.11);
-
-        // Whole frame added FIRST, then a region that beats it.
-        let mut a = VectorStore::new();
-        a.add(1, Region::WHOLE, &mediocre, &color).unwrap();
-        a.add(1, region(0.5, 0.5), &target, &color).unwrap();
-
-        // Same file, entries in the opposite order.
-        let mut b = VectorStore::new();
-        b.add(1, region(0.5, 0.5), &target, &color).unwrap();
-        b.add(1, Region::WHOLE, &mediocre, &color).unwrap();
-
-        for (store, label) in [(&a, "whole first"), (&b, "region first")] {
-            let hit = store.search(std::slice::from_ref(&target), &[], 5)[0];
-            assert!(!hit.region.is_whole(), "{label}: region should win");
-            assert!(hit.design_sim > 0.99, "{label}: winning score");
-            assert!(
-                hit.whole_sim.is_finite() && (hit.whole_sim - mediocre.iter().zip(&target).map(|(x, y)| x * y).sum::<f32>()).abs() < 1e-5,
-                "{label}: whole_sim must report the whole frame's own score, got {}",
-                hit.whole_sim
-            );
-        }
+        let target_embed = unit_embed(0.7);
+        s.upsert(1, &unit_embed(0.11), &unit_rose(0.11), &unit_gram(0.11), &color(0.1)).unwrap();
+        s.upsert(2, &target_embed, &unit_rose(0.7), &unit_gram(0.7), &color(0.2)).unwrap();
+        let hits = s.near_family(&target_embed, &unit_rose(0.7), &unit_gram(0.7), &[], -1.0);
+        assert_eq!(hits[0].id, 2);
+        assert!(hits[0].embed_sim > hits[1].embed_sim);
     }
 
     #[test]
-    fn one_file_cannot_crowd_out_the_result_set() {
+    fn near_family_excludes_everything_below_the_threshold() {
         let mut s = VectorStore::new();
-        let color = vec![0.0; COLOR_DIM];
-        let target = unit(EMB_DIM, 0.7);
+        let target_embed = unit_embed(0.7);
+        s.upsert(1, &unit_embed(0.11), &unit_rose(0.11), &unit_gram(0.11), &color(0.1)).unwrap();
+        s.upsert(2, &target_embed, &unit_rose(0.7), &unit_gram(0.7), &color(0.2)).unwrap();
 
-        // A composite with many decent regions, plus one other file.
-        for i in 0..12 {
-            s.add(1, region(i as f32 * 0.01, 0.0), &target, &color).unwrap();
+        // A threshold just under a perfect self-match admits only the exact
+        // entry; the point of the threshold is that it is a floor on
+        // membership, not a ranking cut, so nothing below it survives however
+        // few candidates that leaves.
+        let hits = s.near_family(&target_embed, &unit_rose(0.7), &unit_gram(0.7), &[], 0.999);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, 2);
+
+        // Nothing can clear a cosine above 1.0 — an empty family is a valid
+        // outcome, not an error.
+        let none = s.near_family(&target_embed, &unit_rose(0.7), &unit_gram(0.7), &[], 1.01);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn near_family_is_unbounded_by_count() {
+        // No top-N cut: every entry over the floor comes back, even when that
+        // is the entire library. This is the behaviour the fixed shortlist
+        // used to silently violate.
+        let mut s = VectorStore::new();
+        let target_embed = unit_embed(0.5);
+        for id in 1..=50i64 {
+            s.upsert(id, &target_embed, &unit_rose(0.5), &unit_gram(0.5), &color(0.5)).unwrap();
         }
-        s.add(2, Region::WHOLE, &unit(EMB_DIM, 0.5), &color).unwrap();
+        let hits = s.near_family(&target_embed, &unit_rose(0.5), &unit_gram(0.5), &[], 0.9);
+        assert_eq!(hits.len(), 50);
+    }
 
-        let hits = s.search(std::slice::from_ref(&target), &[], 2);
-        assert_eq!(hits.len(), 2);
-        assert_ne!(hits[0].id, hits[1].id, "the same file must not appear twice");
+    #[test]
+    fn gram_zoom_levels_are_matched_independently_not_flattened() {
+        // A candidate whose zoom-1 vector equals the query's zoom-0 vector
+        // should still score near-perfectly, because best_zoom_sim tries
+        // every (query zoom, candidate zoom) pair.
+        let qz0 = unit_gram(0.3)[..GRAM_DIM_PER_ZOOM].to_vec();
+        let mut query_gram = qz0.clone();
+        query_gram.extend(vec![0.0; GRAM_DIM_PER_ZOOM * (GRAM_ZOOM_LEVELS - 1)]);
+
+        let mut candidate_gram = vec![0.0; GRAM_DIM_PER_ZOOM];
+        candidate_gram.extend(qz0);
+        candidate_gram.extend(vec![0.0; GRAM_DIM_PER_ZOOM * (GRAM_ZOOM_LEVELS - 2).max(0)]);
+        candidate_gram.truncate(GRAM_DIM);
+
+        let sim = best_zoom_sim(&query_gram, &candidate_gram, GRAM_DIM_PER_ZOOM);
+        assert!(sim > 0.99, "expected near-1.0 cross-zoom match, got {sim}");
+    }
+
+    #[test]
+    fn best_zoom_dot_matches_best_zoom_sim_on_unit_inputs() {
+        // `unit_embed` already L2-normalizes each zoom level independently
+        // (see its own `flat_map` over `normalize`), so this is exactly the
+        // precondition `best_zoom_dot` requires — the two must then agree
+        // to floating-point precision, per SEARCH-LATENCY-PLAN.md Phase 5b.
+        let q = unit_embed(0.3);
+        let c = unit_embed(0.9);
+        let via_cos = best_zoom_sim(&q, &c, EMBED_DIM);
+        let via_dot = best_zoom_dot(&q, &c, EMBED_DIM);
+        assert!((via_cos - via_dot).abs() < 1e-5, "cos={via_cos} dot={via_dot}");
+    }
+
+    #[test]
+    fn embed_zoom_levels_are_matched_independently_not_flattened() {
+        // Same cross-zoom property as gram above, at the embedding's own
+        // width — this is what lets a query and a candidate shot at different
+        // pixel scales still land in one another's near family.
+        let qz0 = unit_embed(0.3)[..EMBED_DIM].to_vec();
+        let mut query_embed = qz0.clone();
+        query_embed.extend(vec![0.0; EMBED_DIM * (EMBED_ZOOM_LEVELS - 1)]);
+
+        let mut candidate_embed = vec![0.0; EMBED_DIM];
+        candidate_embed.extend(qz0);
+        candidate_embed.resize(EMBED_TOTAL, 0.0);
+
+        let sim = best_zoom_sim(&query_embed, &candidate_embed, EMBED_DIM);
+        assert!(sim > 0.99, "expected near-1.0 cross-zoom match, got {sim}");
     }
 }

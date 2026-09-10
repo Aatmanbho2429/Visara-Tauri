@@ -1,14 +1,14 @@
 import { Component, NgZone, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { PrimengComponentsModule } from '../primeng-components-module';
+import { DialogModule } from 'primeng/dialog';
 import { BaseComponent } from '../../core/base.component';
-import { AuthService } from '../../services/auth.service';
-import { UserStateService } from '../../services/user-state.service';
-import { Plan } from '../../models/auth.model';
+import { AuthService } from '../../services/auth/auth.service';
+import { UserStateService } from '../../services/user/user-state.service';
+import { Plan } from '../../models/response/responseSubscription';
 
 @Component({
   selector: 'app-plans-dialog',
-  imports: [CommonModule, PrimengComponentsModule],
+  imports: [CommonModule, DialogModule],
   templateUrl: './plans-dialog.html',
 })
 export class PlansDialog extends BaseComponent {
@@ -34,11 +34,11 @@ export class PlansDialog extends BaseComponent {
     this.paySuccess  = false;
     this.payingPlanId = null;
 
-    this.handle(this.auth.getPlans(), res => {
-      this.loading = false;
-      if (res.success && res.data?.plans) this.plans = res.data.plans;
-      this.cdr.detectChanges();
-    });
+    this.handle(
+      this.auth.getPlans(),
+      data => { this.loading = false; this.plans = data.plans; this.cdr.detectChanges(); },
+      () => { this.loading = false; this.cdr.detectChanges(); },
+    );
   }
 
   close(): void {
@@ -56,59 +56,60 @@ export class PlansDialog extends BaseComponent {
     this.payingPlanId = plan.id;
     this.payError     = '';
 
-    this.handle(this.auth.createOrder(this.userState.userId!, plan.id), res => {
-      if (!res.success || !res.data) {
-        this.payError     = res.message || 'Failed to create order. Please try again.';
-        this.payingPlanId = null;
-        this.cdr.detectChanges();
-        return;
-      }
-
-      const d = res.data;
-      this.openRazorpay({
-        key:         d.key_id,
-        amount:      d.amount,
-        currency:    d.currency,
-        name:        'Pictoria',
-        description: `${plan.name} Plan`,
-        order_id:    d.order_id,
-        prefill: {
-          name:    d.user?.name    ?? '',
-          email:   d.user?.email   ?? '',
-          contact: d.user?.phone   ?? '',
-        },
-        theme: { color: '#d946ef' },
-        handler: (response: any) => {
-          this.zone.run(() => {
-            this.handle(
-              this.auth.verifyPayment(
-                response.razorpay_order_id,
-                response.razorpay_payment_id,
-                response.razorpay_signature,
-                this.userState.userId!,
-                plan.id,
-              ),
-              verRes => {
-                this.payingPlanId = null;
-                if (verRes.success && verRes.data) {
+    this.handle(
+      this.auth.createOrder(this.userState.userId!, plan.id),
+      d => {
+        this.openRazorpay({
+          key:         d.keyId,
+          amount:      d.amount,
+          currency:    d.currency,
+          name:        'Pictoria',
+          description: `${plan.name} Plan`,
+          order_id:    d.orderId,
+          prefill: {
+            name:    d.user?.name    ?? '',
+            email:   d.user?.email   ?? '',
+            contact: d.user?.phone   ?? '',
+          },
+          theme: { color: '#d946ef' },
+          handler: (response: any) => {
+            this.zone.run(() => {
+              this.handle(
+                this.auth.verifyPayment(
+                  response.razorpay_order_id,
+                  response.razorpay_payment_id,
+                  response.razorpay_signature,
+                  this.userState.userId!,
+                  plan.id,
+                ),
+                verData => {
+                  this.payingPlanId = null;
                   this.userState.updateSubscription({
-                    subscription_status: verRes.data.subscription_status,
-                    subscription_end:    verRes.data.subscription_end,
-                    days_remaining:      verRes.data.days_remaining,
+                    subscriptionStatus: verData.subscriptionStatus,
+                    subscriptionEnd:    verData.subscriptionEnd,
+                    daysRemaining:      verData.daysRemaining,
                   });
                   this.paySuccess = true;
-                  this.successMsg = `${plan.name} plan activated! ${verRes.data.days_remaining} days remaining.`;
+                  this.successMsg = `${plan.name} plan activated! ${verData.daysRemaining} days remaining.`;
                   setTimeout(() => this.close(), 2800);
-                } else {
-                  this.payError = verRes.message || 'Payment verification failed.';
-                }
-                this.cdr.detectChanges();
-              }
-            );
-          });
-        },
-      });
-    });
+                  this.cdr.detectChanges();
+                },
+                err => {
+                  this.payingPlanId = null;
+                  this.payError = err.message || 'Payment verification failed.';
+                  this.cdr.detectChanges();
+                },
+              );
+            });
+          },
+        });
+      },
+      err => {
+        this.payError     = err.message || 'Failed to create order. Please try again.';
+        this.payingPlanId = null;
+        this.cdr.detectChanges();
+      },
+    );
   }
 
   private openRazorpay(options: any): void {

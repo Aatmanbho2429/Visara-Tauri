@@ -1,9 +1,9 @@
 pub mod color;
 pub mod database;
-pub mod embedder;
 pub mod migrate;
 pub mod progress;
-pub mod regions;
+pub mod search_gate;
+pub mod sidecar;
 pub mod thumbs;
 pub mod vector_store;
 pub mod watcher;

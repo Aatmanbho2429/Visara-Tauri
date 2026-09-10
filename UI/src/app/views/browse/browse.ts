@@ -1,17 +1,17 @@
 import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { convertFileSrc } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { MessageService } from 'primeng/api';
 import { BaseComponent } from '../../core/base.component';
-import { BrowseService } from '../../services/browse.service';
-import { TagsService } from '../../services/tags.service';
-import { TauriService } from '../../services/tauri.service';
+import { ZoneWrapperService } from '../../core/zone-wrapper/zone-wrapper.service';
+import { BrowseService } from '../../services/browse/browse.service';
+import { TagsService } from '../../services/tags/tags.service';
+import { FileService } from '../../services/file/file.service';
+import { BrowseEntry } from '../../models/response/responseBrowse';
 import {
-  BrowseEntry, FileTag, TagFacet, TagSuggestion, TAG_PRESETS, CATEGORY_LABEL,
-} from '../../models/browse.model';
+  FileTag, TagFacet, TagSuggestion, TAG_PRESETS, CATEGORY_LABEL,
+} from '../../models/response/responseTags';
 
 @Component({
   selector: 'app-browse',
@@ -20,11 +20,12 @@ import {
   styleUrl: './browse.scss',
 })
 export class Browse extends BaseComponent implements OnInit, OnDestroy {
-  private browseSvc  = inject(BrowseService);
-  private tagsSvc    = inject(TagsService);
-  private tauri      = inject(TauriService);
-  private messages   = inject(MessageService);
-  private t          = inject(TranslateService);
+  private browseSvc   = inject(BrowseService);
+  private tagsSvc     = inject(TagsService);
+  private fileSvc     = inject(FileService);
+  private zoneWrapper = inject(ZoneWrapperService);
+  private messages    = inject(MessageService);
+  private t           = inject(TranslateService);
 
   loading = true;
 
@@ -57,12 +58,12 @@ export class Browse extends BaseComponent implements OnInit, OnDestroy {
   readonly catLabel = CATEGORY_LABEL;
 
   private readonly BROWSER_SAFE = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp']);
-  private unlistenTags: UnlistenFn | null = null;
+  private unlistenTags: (() => void) | null = null;
 
   ngOnInit(): void {
     this.loadFacets();
     this.openPath('');
-    listen('tags_updated', () => this.loadFacets()).then(u => (this.unlistenTags = u));
+    this.unlistenTags = this.tagsSvc.onTagsUpdated(() => this.loadFacets());
   }
 
   ngOnDestroy(): void {
@@ -75,24 +76,27 @@ export class Browse extends BaseComponent implements OnInit, OnDestroy {
   // ── Navigation ──────────────────────────────────────────────────
   openPath(path: string): void {
     this.loading = true;
-    this.handle(this.browseSvc.list(path), res => {
-      this.loading = false;
-      if (res.success && res.data) {
-        this.current    = res.data.current;
-        this.breadcrumb = res.data.breadcrumb;
-        this.folders    = res.data.folders;
-        this.images     = res.data.images;
+    this.handle(
+      this.browseSvc.list(path),
+      data => {
+        this.loading = false;
+        this.current    = data.current;
+        this.breadcrumb = data.breadcrumb;
+        this.folders    = data.folders;
+        this.images     = data.images;
         this.loadThumbs(this.images);
-      } else {
-        this.toastErr(res.message || this.t.instant('browse.couldNotOpen'));
-      }
-    });
+      },
+      err => {
+        this.loading = false;
+        this.toastErr(err.message || this.t.instant('browse.couldNotOpen'));
+      },
+    );
   }
 
   // ── Facets / filtering ──────────────────────────────────────────
   loadFacets(): void {
-    this.handle(this.tagsSvc.facets(), res => {
-      const facets = (res.success && res.data?.facets) ? res.data.facets : [];
+    this.handle(this.tagsSvc.facets(), data => {
+      const facets = data?.facets ?? [];
       const order = ['color', 'material', 'finish', 'size', 'design', 'collection', 'custom'];
       this.facetGroups = order
         .map(cat => ({ category: cat, label: this.catLabel[cat] ?? cat, facets: facets.filter(f => f.category === cat) }))
@@ -119,12 +123,12 @@ export class Browse extends BaseComponent implements OnInit, OnDestroy {
 
   runQuery(): void {
     this.loading = true;
-    this.handle(this.tagsSvc.query(this.activeFilters), res => {
+    this.handle(this.tagsSvc.query(this.activeFilters), data => {
       this.loading = false;
-      const paths = (res.success && res.data?.paths) ? res.data.paths : [];
+      const paths = data?.paths ?? [];
       this.filterImages = paths.map(p => ({ name: this.basename(p), path: p }));
       this.loadThumbs(this.filterImages);
-    });
+    }, () => { this.loading = false; });
   }
 
   // ── Thumbnails ──────────────────────────────────────────────────
@@ -134,10 +138,10 @@ export class Browse extends BaseComponent implements OnInit, OnDestroy {
     for (const it of items) {
       if (this.thumbs.has(it.path)) continue;
       if (this.BROWSER_SAFE.has(this.ext(it.path))) {
-        this.thumbs.set(it.path, convertFileSrc(it.path));
+        this.thumbs.set(it.path, this.zoneWrapper.toAssetUrl(it.path));
       } else {
         this.browseSvc.thumbnail(it.path)
-          .then(tp => { this.thumbs.set(it.path, convertFileSrc(tp)); this.cdr.detectChanges(); })
+          .then(tp => { this.thumbs.set(it.path, this.zoneWrapper.toAssetUrl(tp)); this.cdr.detectChanges(); })
           .catch(() => { this.thumbErr.add(it.path); this.cdr.detectChanges(); });
       }
     }
@@ -164,7 +168,7 @@ export class Browse extends BaseComponent implements OnInit, OnDestroy {
   clearSelection(): void { this.selected.clear(); this.cdr.detectChanges(); }
   get selectedPaths(): string[] { return [...this.selected]; }
 
-  openFile(p: string): void { this.tauri.openFilePath(p); }
+  openFile(p: string): void { this.fileSvc.openFilePath(p); }
 
   // ── Categorize panel ────────────────────────────────────────────
   openCategorize(): void {
@@ -172,16 +176,16 @@ export class Browse extends BaseComponent implements OnInit, OnDestroy {
     this.showPanel = true;
     this.customInput = '';
     this.refreshPanel();
-    this.handle(this.tagsSvc.suggest(this.selectedPaths), res => {
-      this.suggestions = (res.success && res.data?.suggestions) ? res.data.suggestions : [];
+    this.handle(this.tagsSvc.suggest(this.selectedPaths), data => {
+      this.suggestions = data?.suggestions ?? [];
     });
   }
 
   closePanel(): void { this.showPanel = false; }
 
   refreshPanel(): void {
-    this.handle(this.tagsSvc.get(this.selectedPaths), res => {
-      this.selTags = (res.success && res.data?.tags) ? res.data.tags : [];
+    this.handle(this.tagsSvc.get(this.selectedPaths), data => {
+      this.selTags = data?.tags ?? [];
     });
   }
 

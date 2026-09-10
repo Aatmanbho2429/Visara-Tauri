@@ -1,0 +1,9 @@
+flask>=3.0
+waitress>=3.0
+opencv-python>=4.8
+numpy
+torch
+torchvision
+onnxruntime>=1.17
+cryptography>=42.0
+pyinstaller>=6.0

@@ -1,5 +1,5 @@
-//! Thread-safe progress state shared between the sync/search worker thread
-//! and the Tauri command that polls it every 500 ms.
+// Thread-safe progress state shared between the sync/search worker thread
+// and the Tauri command that polls it every 500 ms.
 
 use once_cell::sync::Lazy;
 use serde::Serialize;
@@ -11,7 +11,11 @@ use std::{
 
 // ── Public snapshot type (sent to Angular) ────────────────────────────────
 
+// camelCase — this snapshot is embedded directly into the `library_sync_progress`
+// / `search_progress` event payloads, so it needs to match the wire format
+// every other IPC payload uses; see models.md.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProgressSnapshot {
     pub active:      bool,
     pub phase:       String,

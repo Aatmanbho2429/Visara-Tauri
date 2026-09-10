@@ -51,19 +51,37 @@ jobs:
             target: x86_64-pc-windows-msvc
             label: windows
             blocking: true
+            py_arch: x64
+            sidecar_reqs: requirements.txt
 
           - os: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm
             blocking: true
+            py_arch: arm64
+            sidecar_reqs: requirements.txt
 
           # Intel macOS (x86_64) is cross-compiled on the same Apple Silicon
           # runner, since GitHub's macos-13 (last Intel runner image) is no
           # longer reliably available.
+          #
+          # Rust cross-compiles from a `--target` flag, but PyInstaller cannot:
+          # it freezes whatever interpreter is running it. So this leg installs
+          # an *x86_64* Python (`py_arch`), which runs under Rosetta on the
+          # arm64 runner, and freezes the sidecar through that — otherwise the
+          # Intel .dmg ships an arm64 sidecar that Intel Macs cannot execute at
+          # all (Rosetta translates x86_64 -> arm64, never the reverse), giving
+          # users an app that opens and silently never searches.
+          #
+          # An x86_64 Python also forces pip to resolve x86_64 wheels, and
+          # torch/torchvision stopped publishing those — hence the separate,
+          # pinned `sidecar_reqs`. See sidecar/requirements-macos-x86_64.txt.
           - os: macos-latest
             target: x86_64-apple-darwin
             label: macos-intel
             blocking: false
+            py_arch: x64
+            sidecar_reqs: requirements-macos-x86_64.txt
 
     runs-on: ${{ matrix.os }}
     # Apple's notarization queue has no SLA and can take well over 90
@@ -98,6 +116,258 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
         working-directory: UI
+
+      # `architecture` is what makes the Intel leg work: on the arm64 macOS
+      # runner it fetches an x86_64 CPython, which then runs under Rosetta.
+      # Everything downstream — pip's wheel resolution and the architecture
+      # PyInstaller freezes — follows from which interpreter this installs.
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: ${{ matrix.py_arch }}
+
+      # Rosetta is required to run the x86_64 interpreter installed above on
+      # an Apple Silicon runner. Usually already present on GitHub's images;
+      # this is a cheap no-op when it is.
+      - name: Ensure Rosetta (Intel macOS leg)
+        if: matrix.label == 'macos-intel'
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      # The model checkpoint is shipped inside the sidecar rather than fetched
+      # at first run. torchvision's `weights=IMAGENET1K_V1` downloads ~13.5MB
+      # from download.pytorch.org the first time it runs on a machine, which
+      # made every fresh install depend on the end user's network: on a
+      # locked-down or offline machine it stalls with no timeout and the app
+      # sits on "Model is loading..." indefinitely. Downloading it here means
+      # the build machine pays that cost once, and users never do.
+      - name: Fetch model weights for bundling
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sidecar/weights
+          curl -fL --retry 3 --retry-delay 2 \
+            -o sidecar/weights/mobilenet_v2-b0353104.pth \
+            https://download.pytorch.org/models/mobilenet_v2-b0353104.pth
+
+          # Verify before it gets baked into a signed, notarised binary — a
+          # truncated or substituted checkpoint would otherwise ship silently
+          # and only surface as wrong search results.
+          EXPECTED=b03531047ffacf1e2488318dcd2aba1126cde36e3bfe1aa5cb07700aeeee9889
+          if command -v sha256sum >/dev/null; then
+            ACTUAL=$(sha256sum sidecar/weights/mobilenet_v2-b0353104.pth | cut -d' ' -f1)
+          else
+            ACTUAL=$(shasum -a 256 sidecar/weights/mobilenet_v2-b0353104.pth | cut -d' ' -f1)
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::model checkpoint hash mismatch"
+            echo "::error::expected $EXPECTED"
+            echo "::error::actual   $ACTUAL"
+            exit 1
+          fi
+          echo "checkpoint verified ($ACTUAL)"
+
+      # The encrypted DINO model comes from the repo via Git LFS, not a
+      # download — it is the licensed artefact and there is nowhere public to
+      # fetch it from. The check that matters is the LFS one: if `lfs: true`
+      # ever regresses, or the object is missing from the LFS remote, checkout
+      # silently leaves a ~134-byte pointer *text file* in its place.
+      # PyInstaller would bundle that quite happily, and the failure would only
+      # surface on a user's machine as a decryption error behind a permanent
+      # "Model is loading...".
+      - name: Verify encrypted DINO model
+        shell: bash
+        working-directory: sidecar
+        run: |
+          set -euo pipefail
+          MODEL=clip_vitb32.onnx.enc
+          if [ ! -f "$MODEL" ]; then
+            echo "::error::$MODEL missing — it must be committed (Git LFS)."
+            exit 1
+          fi
+          if head -c 40 "$MODEL" | grep -q 'git-lfs.github.com'; then
+            echo "::error::$MODEL is an unexpanded Git LFS pointer, not the model."
+            echo "::error::Check that checkout ran with lfs:true and the LFS object exists."
+            exit 1
+          fi
+          # Fernet tokens are URL-safe base64 of a 0x80 version byte, which is
+          # always "gAAAAA" once encoded. Catches a truncated or wrong file.
+          if ! head -c 6 "$MODEL" | grep -q '^gAAAAA'; then
+            echo "::error::$MODEL is not a Fernet token (bad magic)."
+            exit 1
+          fi
+          echo "DINO model present ($(wc -c < "$MODEL") bytes)"
+
+      # Produces sidecar/dist/pictoria-sidecar[.exe] — see sidecar/README.md.
+      #
+      # PyInstaller freezes whatever interpreter runs it, so the Intel leg has
+      # to run an *x86_64 Python process*. `setup-python`'s `architecture: x64`
+      # is not sufficient on its own: the macOS CPython it installs is a
+      # universal2 binary, and a universal2 binary on Apple Silicon runs its
+      # arm64 slice by default — which is how the first attempt still produced
+      # an arm64 sidecar despite `architecture: x64`.
+      #
+      # `arch -x86_64` selects the x86_64 slice instead. Everything downstream
+      # follows from that one choice: platform.machine(), the wheels pip
+      # resolves, and the architecture PyInstaller emits.
+      - name: Freeze sidecar (PyInstaller)
+        shell: bash
+        working-directory: sidecar
+        run: |
+          set -euo pipefail
+
+          PY=(python)
+          if [ "${{ matrix.label }}" = "macos-intel" ]; then
+            PY=(arch -x86_64 python)
+          fi
+
+          echo "--- interpreter diagnostics ---"
+          echo "which python : $(which python)"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            echo "python slices: $(lipo -archs "$(python -c 'import sys; print(sys.executable)')" 2>/dev/null || echo 'n/a')"
+          fi
+          "${PY[@]}" -c "import platform, sys; print('freezing with', platform.machine(), '| python', sys.version.split()[0])"
+
+          # Fail here, with the reason, rather than 2 minutes later at the
+          # architecture check — this is the step that can actually explain it.
+          if [ "${{ matrix.label }}" = "macos-intel" ]; then
+            got="$("${PY[@]}" -c 'import platform; print(platform.machine())')"
+            if [ "$got" != "x86_64" ]; then
+              echo "::error::interpreter reports '$got', need 'x86_64'."
+              echo '::error::arch -x86_64 did not yield an x86_64 process — the installed'
+              echo '::error::CPython is probably arm64-only rather than universal2, so an'
+              echo '::error::x86_64 interpreter has to come from elsewhere (python.org installer).'
+              exit 1
+            fi
+          fi
+
+          "${PY[@]}" -m pip install --upgrade pip
+
+          # Intel leg: refuse source builds outright.
+          #
+          # This runner is arm64 executing an x86_64 interpreter under Rosetta.
+          # If pip cannot find an x86_64 wheel it falls back to the sdist, and
+          # any native extension then compiles for the *host* (arm64) rather
+          # than the target — producing a package that imports fine here but
+          # blows up at PyInstaller's PKG stage, ~15 minutes into the job:
+          #
+          #   IncompatibleBinaryArchError: .../_rust.abi3.so is incompatible
+          #   with target arch x86_64 (has arch: arm64)
+          #
+          # cryptography 49.0.0 dropping its universal2 macOS wheel is what hit
+          # this first. `--only-binary` makes pip pick the newest release that
+          # actually has a usable wheel instead, and fail immediately (naming
+          # the package) when none exists. The whole Intel set is verified to
+          # resolve wheel-only, so this constrains nothing today.
+          if [ "${{ matrix.label }}" = "macos-intel" ]; then
+            "${PY[@]}" -m pip install --only-binary=:all: -r "${{ matrix.sidecar_reqs }}"
+          else
+            "${PY[@]}" -m pip install -r "${{ matrix.sidecar_reqs }}"
+          fi
+
+          # PyInstaller's --add-data separator is os.pathsep: ';' on Windows,
+          # ':' everywhere else. Getting it wrong silently produces a build with
+          # no weights, which only shows up as a hung "Model is loading..." on a
+          # machine that has never downloaded them.
+          if [ "${{ runner.os }}" = "Windows" ]; then SEP=";"; else SEP=":"; fi
+
+          "${PY[@]}" -m PyInstaller --onefile --name pictoria-sidecar \
+            --add-data "weights/mobilenet_v2-b0353104.pth${SEP}weights" \
+            --add-data "clip_vitb32.onnx.enc${SEP}." \
+            --distpath dist --workpath build --specpath . server.py
+
+      # The whole point of the per-leg Python above is that the frozen binary
+      # matches the target. Assert it rather than trust it — a silent mismatch
+      # here is what previously shipped an arm64 sidecar to Intel users, and it
+      # is invisible until someone launches the app on real hardware.
+      - name: Verify sidecar architecture
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) want=arm64  ;;
+            x86_64-apple-darwin)  want=x86_64 ;;
+            *) echo "::error::unhandled target"; exit 1 ;;
+          esac
+          got="$(lipo -archs sidecar/dist/pictoria-sidecar)"
+          echo "sidecar archs: '$got' (want '$want' for ${{ matrix.target }})"
+          if ! echo "$got" | tr ' ' '\n' | grep -qx "$want"; then
+            echo "::error::sidecar is '$got' but ${{ matrix.target }} needs '$want' —"
+            echo "::error::PyInstaller froze the wrong interpreter; check the Setup Python step."
+            exit 1
+          fi
+
+      # `bundle.externalBin` names the sidecar `binaries/pictoria-sidecar` and
+      # resolves it per-platform as `<name>-<target-triple>[.exe]`, so the
+      # frozen binary has to be staged under that exact filename before
+      # tauri-action runs. Tauri strips the suffix again when it copies the
+      # binary into the bundle, which is why the app only ever probes the
+      # plain name (see config::sidecar_bin_path).
+      - name: Stage sidecar for externalBin
+        shell: bash
+        run: |
+          mkdir -p UI/src-tauri/binaries
+          if [ "${{ matrix.label }}" = "windows" ]; then
+            cp sidecar/dist/pictoria-sidecar.exe \
+               "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}.exe"
+          else
+            cp sidecar/dist/pictoria-sidecar \
+               "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}"
+            chmod +x "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}"
+          fi
+          ls -l UI/src-tauri/binaries/
+
+      # PyInstaller ad-hoc-signs its output (Signature=adhoc, TeamIdentifier
+      # not set, no hardened runtime). Notarization rejects that: every Mach-O
+      # inside the bundle must carry a Developer ID signature AND the hardened
+      # runtime. Sign it here, before tauri-action seals the .app around it —
+      # once the outer signature exists it is too late.
+      #
+      # Signed with the same entitlements the app declares, because the
+      # hardened runtime is what a --onefile binary trips over at startup;
+      # see UI/src-tauri/entitlements.plist for why each key is needed.
+      - name: Sign sidecar (macOS)
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE:          ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY:     ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/sidecar-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+
+          # Prepend to the search list rather than replacing it — tauri-action
+          # imports the same certificate into its own keychain afterwards, and
+          # taking over the default keychain here has broken that in the past.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          BIN="UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}"
+          codesign --force --timestamp --options runtime \
+            --entitlements UI/src-tauri/entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" "$BIN"
+
+          echo "--- verifying ---"
+          codesign -dvvv "$BIN" 2>&1 | grep -E "Authority|TeamIdentifier|flags"
+          codesign --verify --strict --verbose=2 "$BIN"
+          # Fail loudly here rather than at notarization, which is ~40 min later.
+          if codesign -dvvv "$BIN" 2>&1 | grep -q "adhoc"; then
+            echo "::error::sidecar is still ad-hoc signed — notarization would reject it"
+            exit 1
+          fi
 
       - name: Verify signing secrets are present
         shell: bash

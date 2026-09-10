@@ -32,8 +32,39 @@
         </div>
       }
 
+      <!-- Sidecar (Gabor/Gram/SIFT) still starting up — folders exist, but
+           nothing can search yet. Distinct from the "no folders" empty
+           state above: nothing to click here, just a moment to wait.
+           Three sub-states share this block: plain first boot, mid-crash
+           recovery (`sidecarReconnecting`), and the watchdog having given
+           up (`sidecarErrorMessage`) — see `onSidecarCrashed` in search.ts. -->
+      @if (!foldersLoading && hasWatchedFolders && !sidecarReady) {
+        <div class="search-empty">
+          <!-- Waiting shows the ring orb (the app's loading design, shared
+               with GlobalLoader via <app-loader-orb>); only a genuine failure
+               falls back to an icon. Note the two states must not collapse
+               into one <i> with several [class.pi-*] bindings — `pi` and the
+               layout class have to share ONE static class attribute, since a
+               second `class` on the same element silently replaces the first
+               at compile time and drops the icon font. -->
+          @if (sidecarErrorMessage) {
+            <i class="pi pi-exclamation-triangle search-empty__icon"></i>
+          } @else {
+            <app-loader-orb />
+          }
+          <h2 class="search-empty__title">
+            {{ sidecarErrorMessage ? 'AI engine unavailable' : sidecarReconnecting ? 'Reconnecting…' : 'Model is loading…' }}
+          </h2>
+          <p class="search-empty__hint">
+            {{ sidecarErrorMessage || (sidecarReconnecting
+              ? 'The AI engine stopped unexpectedly — restarting it now…'
+              : 'Getting the design-match engine ready — this only takes a moment.') }}
+          </p>
+        </div>
+      }
+
       <!-- Image picker + scope selector + go (only when at least 1 watched folder) -->
-      @if (!foldersLoading && hasWatchedFolders) {
+      @if (!foldersLoading && hasWatchedFolders && sidecarReady) {
         <div class="search-hero__solo">
 
           <div class="pick-card" [class.pick-card--set]="state.imageName" (click)="pickImage()">
@@ -60,7 +91,9 @@
 
         </div>
 
-        <!-- Scope selector -->
+        <!-- Scope selector — custom multi-select dropdown. Every watched
+             folder is in scope by default (see `isFolderInScope`); the
+             checkboxes narrow it down from there. -->
         <div class="scope-row">
           <span class="scope-row__label">Searching in</span>
 
@@ -83,23 +116,11 @@
                     <input type="checkbox"
                            [checked]="isFolderInScope(f.path)"
                            (change)="toggleFolderInScope(f.path)" />
-                    <span class="scope-dropdown__name" [title]="f.path">{{ shortName(f.path) }}</span>
-                    <span class="scope-dropdown__count">{{ f.image_count }}</span>
+                    <span class="scope-dropdown__name" [title]="f.path">{{ f.path }}</span>
+                    <span class="scope-dropdown__count">{{ f.imageCount }}</span>
                   </label>
                 }
               </div>
-            }
-          </div>
-        </div>
-
-        <!-- Top-K selector -->
-        <div class="topk-row">
-          <span class="topk-row__label">{{ 'search.maxResults' | translate }}</span>
-          <div class="topk-row__options">
-            @for (opt of topKOptions; track opt) {
-              <button class="topk-btn" [class.topk-btn--active]="state.topK === opt" (click)="state.topK = opt">
-                {{ opt }}
-              </button>
             }
           </div>
         </div>
@@ -139,7 +160,7 @@
           <span class="scan-progress__file">{{ state.progress.current }}</span>
           <span class="scan-progress__stats">
             @if (state.progress.total > 0) { {{ state.progress.done }}/{{ state.progress.total }} }
-            @if (state.progress.eta_sec > 0) { &nbsp;•&nbsp; ~{{ state.progress.eta_sec }}s }
+            @if (state.progress.etaSec > 0) { &nbsp;•&nbsp; ~{{ state.progress.etaSec }}s }
             @if (state.progress.errors > 0) {
               &nbsp;•&nbsp;
               <span class="scan-progress__errors">{{ state.progress.errors }} {{ 'search.errors' | translate }}</span>
@@ -168,6 +189,22 @@
         </button>
       </div>
 
+      <!-- Verification streams in behind the grid below (badges upgrade in
+           place as SIFT/RANSAC proves or rejects each candidate) — this is
+           what's still running once the ranked grid itself is already
+           visible. See SEARCH-LATENCY-PLAN.md Phase 4. -->
+      @if (isVerifying) {
+        <div class="verify-strip">
+          <span class="verify-strip__phase">{{ state.progress.phase }}</span>
+          <div class="verify-strip__track">
+            <div class="verify-strip__fill" [style.width.%]="state.progress.percent"></div>
+          </div>
+          @if (state.progress.total > 0) {
+            <span class="verify-strip__stats">{{ state.progress.done }}/{{ state.progress.total }}</span>
+          }
+        </div>
+      }
+
       @if (state.failedFiles.length > 0) {
         <div class="failed-notice">
           <span><i class="pi pi-exclamation-circle"></i> {{ state.failedFiles.length }} {{ 'search.failedFiles' | translate }}</span>
@@ -190,75 +227,156 @@
       }
 
       @if (state.results.length > 0) {
-        <div class="masonry-grid" #masonryGrid (scroll)="onGridScroll($event)">
-          @for (col of masonryColumns; track $index) {
-            <div class="masonry-col">
-              @for (item of col; track item.rank) {
-                <div class="pin-card" (click)="openFile(item.path)">
-                  <div class="pin-card__img-wrap">
-                    @if (item.thumbnailUrl && !item.imgError) {
-                      <img [src]="item.thumbnailUrl" [alt]="item.name"
-                           class="pin-card__img" loading="lazy"
-                           [attr.data-rank]="item.rank"
-                           (load)="onImgLoad(item, $event)"
-                           (error)="onImgError(item)" />
-                    } @else if (item.imgError) {
-                      <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
-                        <i class="pi pi-image"></i>
-                      </div>
-                    } @else {
-                      <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
-                        <i class="pi pi-spin pi-spinner"></i>
-                      </div>
-                    }
-                    @if (item.partial) {
-                      <!-- Box over the region that matched.  Its geometry is
-                           computed from the rendered image rather than set in
-                           percentages, because object-fit: cover crops the
-                           thumbnail and percentages of the card would land
-                           somewhere else entirely.  Note the crop also means a
-                           region outside the visible band is not shown at all. -->
-                      @if (item.matchBox) {
-                        <div class="pin-card__match-box" [ngStyle]="item.matchBox"></div>
+        <div class="results-scroll" #masonryGrid (scroll)="onGridScroll($event)">
+
+          <!-- Verified — SIFT/RANSAC-proven this design is actually present.
+               Never truncated by the backend, so always shown in full.
+               Collapsible like the tier below it, but open by default. -->
+          @if (familyResults.length > 0) {
+            <div class="result-section">
+              <button class="result-section__header result-section__header--toggle"
+                      (click)="familyExpanded = !familyExpanded">
+                <i class="pi pi-verified"></i>
+                <span>{{ 'search.familySection' | translate }}</span>
+                <span class="result-section__count">{{ familyResults.length }}</span>
+                <i class="pi pi-chevron-down result-section__chev"
+                   [class.result-section__chev--open]="familyExpanded"></i>
+              </button>
+              @if (familyExpanded) {
+                <div class="masonry-grid">
+                  @for (col of familyColumns; track $index) {
+                    <div class="masonry-col">
+                      @for (item of col; track item.rank) {
+                        <ng-container *ngTemplateOutlet="resultCard; context: { item }" />
                       }
-                      <span class="pin-card__found-inside" title="Your design was found inside this one">
-                        <i class="pi pi-search-plus"></i>
-                        Found inside
-                      </span>
-                    }
-                    <div class="pin-card__overlay">
-                      <span class="pin-card__open">
-                        <i class="pi pi-external-link"></i>
-                        {{ 'search.openInExplorer' | translate }}
-                      </span>
                     </div>
-                  </div>
-                  <div class="pin-card__foot">
-                    <div class="pin-card__foot-text">
-                      <span class="pin-card__name" [title]="item.path">{{ item.name }}</span>
-                      <span class="pin-card__folder" [title]="item.path">{{ item.path }}</span>
-                    </div>
-                    <div class="pin-card__scores">
-                      <span class="pin-card__badge pin-card__badge--{{ similarityClass(item.pattern_match) }}"
-                            title="Pattern match">
-                        <i class="pi pi-th-large"></i>
-                        <span class="pin-card__badge-label">Pattern</span>
-                        {{ item.pattern_match | number:'1.0-0' }}%
-                      </span>
-                      <span class="pin-card__badge pin-card__badge--clr-{{ colorMatchClass(item.color_match) }}"
-                            title="Color match">
-                        <i class="pi pi-palette"></i>
-                        <span class="pin-card__badge-label">Color</span>
-                        {{ item.color_match | number:'1.0-0' }}%
-                      </span>
-                    </div>
-                  </div>
+                  }
                 </div>
               }
             </div>
           }
+
+          <!-- Similar — ranked by texture similarity but not geometrically
+               confirmed. Open by default, same as the verified tier. -->
+          @if (similarResults.length > 0) {
+            <div class="result-section">
+              <button class="result-section__header result-section__header--toggle"
+                      (click)="similarExpanded = !similarExpanded">
+                <i class="pi pi-images"></i>
+                <span>{{ 'search.similarSection' | translate }}</span>
+                <span class="result-section__count">{{ similarResults.length }}</span>
+                <i class="pi pi-chevron-down result-section__chev"
+                   [class.result-section__chev--open]="similarExpanded"></i>
+              </button>
+              @if (similarExpanded) {
+                <div class="masonry-grid">
+                  @for (col of similarColumns; track $index) {
+                    <div class="masonry-col">
+                      @for (item of col; track item.rank) {
+                        <ng-container *ngTemplateOutlet="resultCard; context: { item }" />
+                      }
+                    </div>
+                  }
+                </div>
+                <!-- Reveals the next page of the near family. The count tells
+                     the user how much is left, so a long tail is obvious up
+                     front rather than after ten more clicks. -->
+                @if (hasMoreSimilar) {
+                  <div class="show-more-row">
+                    <button class="show-more-btn" (click)="showMoreSimilar()">
+                      <i class="pi pi-chevron-down"></i>
+                      <span>{{ 'search.showMore' | translate }}</span>
+                      <span class="show-more-btn__count">{{ remainingSimilar }}</span>
+                    </button>
+                  </div>
+                }
+              }
+            </div>
+          }
+
         </div>
       }
+
+      <ng-template #resultCard let-item="item">
+        <div class="pin-card" (click)="openFile(item.path)">
+          <div class="pin-card__img-wrap">
+            @if (item.thumbnailUrl && !item.imgError) {
+              <img [src]="item.thumbnailUrl" [alt]="item.name"
+                   class="pin-card__img" loading="lazy"
+                   [attr.data-rank]="item.rank"
+                   (load)="onImgLoad(item, $event)"
+                   (error)="onImgError(item)" />
+            } @else if (item.imgError) {
+              <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
+                <i class="pi pi-image"></i>
+              </div>
+            } @else {
+              <div class="pin-card__fallback" [style.background]="similarityGradient(item.similarity)">
+                <i class="pi pi-spin pi-spinner"></i>
+              </div>
+            }
+            @if (item.partial) {
+              <!-- Box over the region that matched.  Its geometry is
+                   computed from the rendered image rather than set in
+                   percentages, because object-fit: cover crops the
+                   thumbnail and percentages of the card would land
+                   somewhere else entirely.  Note the crop also means a
+                   region outside the visible band is not shown at all. -->
+              @if (item.matchBox) {
+                <div class="pin-card__match-box" [ngStyle]="item.matchBox"></div>
+              }
+              <span class="pin-card__found-inside" title="Your design was found inside this one">
+                <i class="pi pi-search-plus"></i>
+                Found inside
+              </span>
+            }
+            @if (item.mirrored) {
+              <!-- Sits top-right so it never collides with the top-left
+                   "Found inside" chip; a match can be both. -->
+              <span class="pin-card__mirrored" title="Matched as a mirror image of your reference">
+                <i class="pi pi-arrows-h"></i>
+                Mirrored
+              </span>
+            }
+            @if (item.verification === 'unchecked') {
+              <!-- Distinguishes "hasn't been checked yet" from "checked and
+                   rejected" — both land in the Similar section (see
+                   `similarResults`), and without this a candidate the verify
+                   budget hasn't reached yet reads as a false negative. -->
+              <span class="pin-card__unchecked" title="Verification hasn't reached this candidate yet">
+                <i class="pi pi-clock"></i>
+                Not yet checked
+              </span>
+            }
+            <div class="pin-card__overlay">
+              <span class="pin-card__open">
+                <i class="pi pi-external-link"></i>
+                {{ 'search.openInExplorer' | translate }}
+              </span>
+            </div>
+          </div>
+          <div class="pin-card__foot">
+            <div class="pin-card__foot-text">
+              <span class="pin-card__name" [title]="item.path">{{ item.name }}</span>
+              <span class="pin-card__folder" [title]="item.path">{{ item.path }}</span>
+            </div>
+            <div class="pin-card__scores">
+              <span class="pin-card__badge pin-card__badge--{{ similarityClass(item.patternMatch) }}"
+                    title="Pattern match">
+                <i class="pi pi-th-large"></i>
+                <span class="pin-card__badge-label">Pattern</span>
+                {{ item.patternMatch | number:'1.0-0' }}%
+              </span>
+              <span class="pin-card__badge pin-card__badge--clr-{{ colorMatchClass(item.colorMatch) }}"
+                    title="Color match">
+                <i class="pi pi-palette"></i>
+                <span class="pin-card__badge-label">Color</span>
+                {{ item.colorMatch | number:'1.0-0' }}%
+              </span>
+            </div>
+          </div>
+        </div>
+      </ng-template>
 
       @if (state.showScrollTop) {
         <button class="scroll-top-btn" (click)="scrollToTop()">

@@ -1,21 +1,19 @@
-//! On-demand image cache for the Browse grid and the catalog.
-//!
-//! Cached renders live in `~/.pictoria/thumbs/<hash>_v<ver>_<max>.jpg`.  The key
-//! is (source path, version, size), so re-use is instant.  Generation reuses the
-//! main image loader, so exotic files (CMYK TIFF, PSB) flow through the same
-//! colour-managed `sips` path used during indexing.
+// On-demand image cache for the Browse grid.
+//
+// Cached renders live in `~/.pictoria/thumbs/<hash>_v<ver>_<max>.jpg`.  The key
+// is (source path, version, size), so re-use is instant.  Generation reuses the
+// main image loader, so exotic files (CMYK TIFF, PSB) flow through the same
+// colour-managed `sips` path used during indexing.
 
 use crate::{config, error::Result, utils::image_loader};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-/// Grid thumbnail size (longest edge).
+// Grid thumbnail size (longest edge).
 const THUMB_MAX: u32 = 256;
-/// Higher-resolution render embedded into generated catalogs.
-const CATALOG_MAX: u32 = 1100;
 
-/// Bump when the decode pipeline changes so stale renders regenerate instead of
-/// being served from cache (e.g. the TIFF colour-management fix).
+// Bump when the decode pipeline changes so stale renders regenerate instead of
+// being served from cache (e.g. the TIFF colour-management fix).
 const THUMB_VERSION: u32 = 2;
 
 fn thumbs_dir() -> PathBuf {
@@ -29,17 +27,12 @@ fn sized_path(orig: &Path, max: u32) -> PathBuf {
     thumbs_dir().join(format!("{}_v{}_{}.jpg", &hex[..32], THUMB_VERSION, max))
 }
 
-/// Grid thumbnail (256 px).
+// Grid thumbnail (256 px).
 pub fn ensure_thumb(orig: &Path) -> Result<PathBuf> {
     ensure_sized(orig, THUMB_MAX)
 }
 
-/// Catalog-quality render (1100 px).
-pub fn ensure_catalog_image(orig: &Path) -> Result<PathBuf> {
-    ensure_sized(orig, CATALOG_MAX)
-}
-
-/// Return the cached render at `max` px, generating it first if needed.
+// Return the cached render at `max` px, generating it first if needed.
 pub fn ensure_sized(orig: &Path, max: u32) -> Result<PathBuf> {
     let dest = sized_path(orig, max);
     if dest.exists() {
