@@ -1,0 +1,74 @@
+@if (updates.required()) {
+  <!-- No (click) on this backdrop, no Escape handler, no close button
+       anywhere in this template — that omission is deliberate, not an
+       oversight. See force-update.ts for why. -->
+  <div
+    class="force-update-overlay"
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="force-update-title">
+
+    <div class="force-update-modal">
+
+      <div class="force-update-modal__hero">
+        <div class="force-update-modal__hero-icon">
+          <i class="pi pi-arrow-circle-up"></i>
+        </div>
+        <h2 id="force-update-title" class="force-update-modal__title">
+          {{ 'update.forceTitle' | translate }}
+        </h2>
+        <p class="force-update-modal__sub">
+          {{ 'update.forceSubtitle' | translate: { version: updates.info()?.version } }}
+        </p>
+      </div>
+
+      <!-- Real error text, not a euphemism — this is what makes a support
+           request solvable in one round trip (plan §2.1). -->
+      @if (updates.error(); as err) {
+        <div class="force-update-modal__error-banner">
+          <i class="pi pi-exclamation-triangle"></i>
+          <span>{{ err }}</span>
+        </div>
+      }
+
+      @if (!updates.installing() && updates.info()?.notes) {
+        <div class="force-update-modal__notes">{{ updates.info()?.notes }}</div>
+      }
+
+      @if (updates.installing()) {
+        <div class="force-update-modal__progress"
+             [class.force-update-modal__progress--indeterminate]="updates.pct() === null">
+          <div class="force-update-modal__progress-bar" [style.width.%]="updates.pct() ?? 100"></div>
+        </div>
+        <div class="force-update-modal__pct">
+          {{ updates.pct() === null ? ('update.downloading' | translate) : (updates.pct() + '%') }}
+        </div>
+      }
+
+      <div class="force-update-modal__actions">
+        @if (!updates.installing()) {
+          <button class="force-update-modal__btn force-update-modal__btn--primary" (click)="updates.install()">
+            <i class="pi" [ngClass]="updates.error() ? 'pi-refresh' : 'pi-arrow-circle-up'"></i>
+            <span>{{ (updates.error() ? 'update.retry' : 'update.updateNow') | translate }}</span>
+          </button>
+        }
+
+        <!-- Manual-download escape hatch — only surfaced once the in-app
+             installer has actually failed once, not on first offer. -->
+        @if (updates.error()) {
+          <button class="force-update-modal__btn force-update-modal__btn--secondary" (click)="updates.openReleasesPage()">
+            <i class="pi pi-external-link"></i>
+            <span>{{ 'update.manualDownload' | translate }}</span>
+          </button>
+        }
+
+        <!-- Always available, in every state — the one way out that never
+             depends on the updater itself working. -->
+        <button class="force-update-modal__btn force-update-modal__btn--quit" (click)="updates.quitApp()">
+          {{ 'update.quit' | translate }}
+        </button>
+      </div>
+
+    </div>
+  </div>
+}

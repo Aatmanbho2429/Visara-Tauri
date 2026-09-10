@@ -212,7 +212,7 @@ export class Profile extends BaseComponent implements OnInit {
     return new Date(date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
   }
 
-  formatAmount(amount: string, currency: string): string {
+  formatAmount(amount: number, currency: string): string {
     const symbol = currency === 'INR' ? '₹' : currency;
     return `${symbol}${Number(amount).toLocaleString('en-IN')}`;
   }

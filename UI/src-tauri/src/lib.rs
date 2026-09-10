@@ -371,6 +371,8 @@ pub fn run() {
             notice_commands::notice_dismiss_reset,
             update_commands::update_check,
             update_commands::update_install,
+            update_commands::update_open_releases_page,
+            update_commands::update_quit_app,
             // ── Library / watched folders ────────────────────────────
             library_commands::library_list_folders,
             library_commands::library_add_folder,

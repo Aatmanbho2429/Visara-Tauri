@@ -193,7 +193,13 @@
     "available":   "Update available —",
     "installBtn":  "Install & Restart",
     "dismiss":     "Dismiss",
-    "downloading": "Downloading update…"
+    "downloading": "Downloading update…",
+    "forceTitle":    "Update required",
+    "forceSubtitle": "Pictoria v{{version}} is available. This version can no longer be used — downloading and installing it now.",
+    "updateNow":     "Update now",
+    "retry":         "Retry",
+    "manualDownload": "Download manually",
+    "quit":          "Quit Pictoria"
   },
 
   "register": {

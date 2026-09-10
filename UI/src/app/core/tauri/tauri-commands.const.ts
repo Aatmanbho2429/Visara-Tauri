@@ -27,6 +27,8 @@ export const TAURI_COMMANDS = {
   // ── Updates ────────────────────────────────────────────────────
   UPDATE_CHECK: 'update_check',
   UPDATE_INSTALL: 'update_install',
+  UPDATE_OPEN_RELEASES_PAGE: 'update_open_releases_page',
+  UPDATE_QUIT_APP: 'update_quit_app',
   // ── Library / watched folders ──────────────────────────────────
   LIBRARY_LIST_FOLDERS: 'library_list_folders',
   LIBRARY_ADD_FOLDER: 'library_add_folder',

@@ -104,4 +104,28 @@ mod tests {
         assert_eq!(user.subscription_end, None);
         assert_eq!(user.days_remaining, None);
     }
+
+    // login-user-test's real `user` object (2026-09-10 source) carries a
+    // `free_searches_remaining` field AuthUser doesn't declare at all. Serde
+    // ignores unknown fields by default (no `deny_unknown_fields` on this
+    // struct), but that's exactly the kind of assumption the `amount:
+    // String` bug proved isn't safe to leave unverified — this pins it down
+    // with a real test instead.
+    #[test]
+    fn deserializes_login_response_with_unknown_extra_field() {
+        let supabase_json = serde_json::json!({
+            "id": "u1",
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "a@example.com",
+            "subscription_status": "trial",
+            "subscription_end": null,
+            "free_searches_remaining": 10,
+            "days_remaining": null,
+        });
+        let user: AuthUser = serde_json::from_value(supabase_json)
+            .expect("an extra field login-user-test sends must not break deserialization");
+        assert_eq!(user.subscription_status, "trial");
+        assert_eq!(user.days_remaining, None);
+    }
 }

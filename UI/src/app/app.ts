@@ -9,10 +9,11 @@ import { responseHotkeyPressed } from './models/response/responseMisc';
 import { UpdateService } from './services/update/update.service';
 import { UserStateService } from './services/user/user-state.service';
 import { SearchStateService } from './services/search/search-state.service';
+import { ForceUpdate } from './shared/force-update/force-update';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, GlobalLoader, ToastModule],
+  imports: [RouterOutlet, GlobalLoader, ToastModule, ForceUpdate],
   providers: [MessageService],
   templateUrl: './app.html',
   styleUrl: './app.scss'
