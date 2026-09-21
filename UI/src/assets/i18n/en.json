@@ -204,7 +204,7 @@
 
   "register": {
     "title": "Create Account",
-    "subtitle": "Start your 45-day free trial — no card required",
+    "subtitle": "Start your 15-day free trial — no card required",
     "firstNameLabel": "First Name",
     "firstNamePlaceholder": "John",
     "lastNameLabel": "Last Name",
@@ -225,7 +225,7 @@
     "signIn": "Sign In",
     "required": "*",
     "requestSentTitle": "You're all set!",
-    "requestSentMessage": "Your 45-day free trial has started. Sign in with",
+    "requestSentMessage": "Your 15-day free trial has started. Sign in with",
     "backToSignIn": "Sign In Now",
     "deviceLockTitle": "Device-Locked Account",
     "deviceLockDesc": "Your licence will be bound to this PC. Pictoria will not work on any other machine unless you request a device reset.",
