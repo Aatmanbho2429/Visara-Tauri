@@ -7,6 +7,20 @@ paths:
 
 # Tauri invoke / emit
 
+## Commands resolve through an event, not a return value
+
+`ZoneWrapperService.invoke()` calls `invoke(command, {...args, requestId})` but resolves on a
+Tauri **event** named `<command>_response` — not the invoke's own return value. Rust commands emit
+that event, typically after spawning async work, rather than returning a value directly.
+
+The client-generated `requestId` is echoed back in the envelope and matched before the Observable
+resolves, so a command fired concurrently several times (`browse_get_thumbnail` — the Browse grid
+asks for dozens at once) can't have one response satisfy the wrong caller.
+
+**Every command emits its `_response` event.** There is no direct-return exception; the
+`requestId` correlation is what makes that safe under concurrency. When adding a command, follow
+the emission pattern and thread `request_id: Option<String>` through it.
+
 - Command names: `entity_action` in `snake_case` on the Rust side — `auth_login`, `user_get_list`.
 - Keep a single registry of command name strings on the Angular side, `core/tauri/tauri-commands.const.ts`, and reference it everywhere instead of hardcoding strings.
 - Same pattern for events: registry at `core/tauri/tauri-events.const.ts`.

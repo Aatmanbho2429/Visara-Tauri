@@ -193,12 +193,18 @@
     "available":   "Update available —",
     "installBtn":  "Install & Restart",
     "dismiss":     "Dismiss",
-    "downloading": "Downloading update…"
+    "downloading": "Downloading update…",
+    "forceTitle":    "Update required",
+    "forceSubtitle": "Pictoria v{{version}} is available. This version can no longer be used — downloading and installing it now.",
+    "updateNow":     "Update now",
+    "retry":         "Retry",
+    "manualDownload": "Download manually",
+    "quit":          "Quit Pictoria"
   },
 
   "register": {
     "title": "Create Account",
-    "subtitle": "Start your 45-day free trial — no card required",
+    "subtitle": "Start your 15-day free trial — no card required",
     "firstNameLabel": "First Name",
     "firstNamePlaceholder": "John",
     "lastNameLabel": "Last Name",
@@ -219,7 +225,7 @@
     "signIn": "Sign In",
     "required": "*",
     "requestSentTitle": "You're all set!",
-    "requestSentMessage": "Your 45-day free trial has started. Sign in with",
+    "requestSentMessage": "Your 15-day free trial has started. Sign in with",
     "backToSignIn": "Sign In Now",
     "deviceLockTitle": "Device-Locked Account",
     "deviceLockDesc": "Your licence will be bound to this PC. Pictoria will not work on any other machine unless you request a device reset.",

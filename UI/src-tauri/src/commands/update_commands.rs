@@ -127,3 +127,43 @@ pub async fn update_install(app: tauri::AppHandle) {
         Err(e) => emit_update_error(&app, e.to_string()),
     }
 }
+
+// docs/plans/force-update.md §2.3 — manual-download fallback for when the
+// in-app installer itself is broken (bad signature, missing platform
+// artifact, `latest.json` malformed). The URL is a constant, never accepted
+// from the webview — never give the frontend an "open any URL" primitive.
+// Follows the same per-platform shell-out shape as `file_commands::file_open_path`.
+#[tauri::command]
+pub fn update_open_releases_page(app: tauri::AppHandle, request_id: Option<String>) {
+    const RELEASES_URL: &str = "https://github.com/Aatmanbho2429/Visara-Tauri/releases/latest";
+
+    #[cfg(target_os = "windows")]
+    let spawn_result = std::process::Command::new("cmd")
+        .args(["/C", "start", "", RELEASES_URL])
+        .spawn();
+
+    #[cfg(target_os = "macos")]
+    let spawn_result = std::process::Command::new("open").arg(RELEASES_URL).spawn();
+
+    #[cfg(target_os = "linux")]
+    let spawn_result = std::process::Command::new("xdg-open").arg(RELEASES_URL).spawn();
+
+    let result: ApiResponse<()> = match spawn_result {
+        Ok(_) => ApiResponse::ok_empty("Opened"),
+        Err(e) => {
+            log::warn!("[updater] could not open releases page in browser: {e}");
+            ApiResponse::err(500, e.to_string())
+        }
+    };
+    let _ = app.emit("update_open_releases_page_response", result.with_request_id(request_id));
+}
+
+// §2.4 — the window's X hides Pictoria to the tray rather than quitting, so
+// the force-update overlay's Quit button needs a real exit path. Mirrors the
+// tray's own `tray_quit` handler in `lib.rs` exactly. No response event: the
+// process is gone by the time one could be observed.
+#[tauri::command]
+pub fn update_quit_app(app: tauri::AppHandle) {
+    crate::core::sidecar::shutdown();
+    app.exit(0);
+}

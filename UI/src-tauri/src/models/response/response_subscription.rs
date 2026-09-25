@@ -8,7 +8,12 @@ pub struct Plan {
     pub id: String,
     pub name: String,
     pub duration: i64,
-    pub amount: String,
+    // `plans.amount` is a Postgres `numeric` column — Postgres's JSON
+    // functions (what `get-plans` ultimately serializes through) emit that
+    // as a bare JSON number, never a quoted string. `String` here silently
+    // failed every deserialize (`unwrap_or_default()` in get_plans() turned
+    // that into an empty plan list, not a visible error) — see the test below.
+    pub amount: f64,
     pub currency: String,
 }
 
@@ -26,7 +31,8 @@ pub struct PlanRef {
 #[serde(rename_all = "camelCase")]
 pub struct Subscription {
     pub id: String,
-    pub amount: String,
+    // Same `numeric` -> bare-JSON-number shape as `Plan.amount` above.
+    pub amount: f64,
     pub currency: String,
     pub status: String,
     #[serde(alias = "start_date")]
@@ -84,12 +90,17 @@ mod tests {
     // `serde_json::from_value::<Vec<Subscription>>` straight against
     // Supabase's snake_case JSON, silently swallowed into an empty Vec via
     // `unwrap_or_default()` if it fails, which reads as "no purchase history"
-    // rather than an error.
+    // rather than an error. `amount` is deliberately a bare JSON number here,
+    // NOT a quoted string — that mismatch (an earlier version of this test
+    // used `"amount": "999"`) is exactly what caused get_plans()/
+    // get_user_subscriptions() to silently return an empty list for every
+    // real call, since Postgres's `numeric` columns serialize as JSON
+    // numbers, never strings.
     #[test]
     fn deserializes_supabase_snake_case_subscription_json() {
         let supabase_json = serde_json::json!({
             "id": "s1",
-            "amount": "999",
+            "amount": 999,
             "currency": "INR",
             "status": "active",
             "start_date": "2026-01-01",
@@ -100,6 +111,7 @@ mod tests {
             "plans": { "name": "Monthly", "duration": 30 },
         });
         let sub: Subscription = serde_json::from_value(supabase_json).expect("must parse Supabase's snake_case JSON");
+        assert_eq!(sub.amount, 999.0);
         assert_eq!(sub.start_date, "2026-01-01");
         assert_eq!(sub.end_date, "2026-02-01");
         assert_eq!(sub.created_at, "2026-01-01T00:00:00Z");
@@ -108,5 +120,26 @@ mod tests {
         let out = serde_json::to_value(&sub).unwrap();
         assert_eq!(out["startDate"], "2026-01-01");
         assert_eq!(out["razorpayPaymentId"], "pay_123");
+    }
+
+    // Guards the actual production bug found 2026-09-10: `get-plans` returns
+    // `amount` as a bare JSON number (Postgres `numeric` -> `to_json`), and
+    // `Plan.amount: String` failed to deserialize it on every single call —
+    // `get_plans()`'s `unwrap_or_default()` turned that parse failure into a
+    // silently empty plan list, which the UI showed as "Could not load
+    // plans." No network or server fault was ever involved.
+    #[test]
+    fn deserializes_get_plans_amount_as_a_bare_json_number() {
+        let supabase_json = serde_json::json!([{
+            "id": "b281da8e-b896-4314-b9ae-52d1955989b7",
+            "name": "Monthly",
+            "duration": 30,
+            "amount": 9999,
+            "currency": "INR",
+        }]);
+        let plans: Vec<Plan> = serde_json::from_value(supabase_json)
+            .expect("get-plans' real response shape must deserialize");
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].amount, 9999.0);
     }
 }

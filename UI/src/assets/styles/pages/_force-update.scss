@@ -1,0 +1,209 @@
+// ══ FORCE UPDATE OVERLAY ═══════════════════════════════════════
+// docs/plans/force-update.md. Deliberately hand-rolled rather than PrimeNG's
+// p-dialog — no library-provided Escape/mask-close behaviour to fight.
+//
+// z-index: the highest existing overlay in this app is the global loader at
+// 9999 (`_global-loader.scss`); PrimeNG's toast sits at its own internal
+// ~1100 (config.zIndex.modal). This has to sit above both, permanently —
+// there is no scenario where the loader or a toast should be able to cover
+// a mandatory update.
+
+.force-update-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: $space-6;
+  background: rgba(10, 6, 14, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: force-update-fade-in 0.2s ease;
+}
+
+@keyframes force-update-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.force-update-modal {
+  position: relative;
+  width: 100%;
+  max-width: 52rem;
+  background: linear-gradient(160deg, $surface-900 0%, rgba(34, 14, 50, 0.98) 100%);
+  border: 1px solid rgba(217, 70, 239, 0.22);
+  border-radius: 2rem;
+  overflow: hidden;
+  box-shadow:
+    0 40px 100px rgba(0, 0, 0, 0.8),
+    0 0 0 1px rgba(217, 70, 239, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  padding: $space-8;
+  display: flex;
+  flex-direction: column;
+  gap: $space-5;
+
+  &__hero {
+    text-align: center;
+  }
+
+  &__hero-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 5.6rem;
+    height: 5.6rem;
+    border-radius: 1.6rem;
+    background: linear-gradient(135deg, rgba(217, 70, 239, 0.2), rgba(251, 146, 60, 0.15));
+    border: 1px solid rgba(217, 70, 239, 0.3);
+    margin-bottom: $space-4;
+    box-shadow: 0 0 32px rgba(217, 70, 239, 0.25);
+
+    i {
+      font-size: $font-size-2xl;
+      background: linear-gradient(135deg, $primary-300, $tertiary-300);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+  }
+
+  &__title {
+    font-size: $font-size-xl;
+    font-weight: $font-weight-bold;
+    font-family: $font-primary;
+    color: $surface-50;
+    margin-bottom: $space-2;
+  }
+
+  &__sub {
+    font-size: $font-size-sm;
+    color: $surface-400;
+    font-family: $font-primary;
+    line-height: $line-height-relaxed;
+    max-width: 40rem;
+    margin: 0 auto;
+  }
+
+  &__error-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: $space-3;
+    padding: $space-3 $space-5;
+    border-radius: $border-radius-sm;
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.25);
+    color: $color-invalid;
+    font-size: $font-size-sm;
+    font-family: $font-primary;
+    // Errors reported by the updater can be long (a full Deno/HTTP message)
+    // and must stay fully readable, never truncated — this is the text a
+    // support request gets built from.
+    word-break: break-word;
+    i { flex-shrink: 0; font-size: $font-size-md; margin-top: 0.1rem; }
+  }
+
+  &__notes {
+    font-size: $font-size-sm;
+    color: $surface-400;
+    font-family: $font-primary;
+    line-height: $line-height-base;
+    max-height: 12rem;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    padding: $space-4;
+    border-radius: $border-radius-sm;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  &__progress {
+    height: 0.8rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.07);
+    overflow: hidden;
+
+    &--indeterminate &-bar {
+      animation: force-update-indeterminate 1.4s ease-in-out infinite;
+    }
+  }
+
+  &__progress-bar {
+    height: 100%;
+    min-width: 0.8rem;
+    border-radius: 999px;
+    background: linear-gradient(90deg, $primary-500, $tertiary-400);
+    transition: width 0.25s ease;
+  }
+
+  &__pct {
+    text-align: center;
+    font-size: $font-size-sm;
+    color: $surface-300;
+    font-family: $font-primary;
+  }
+
+  &__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: $space-3;
+    margin-top: $space-2;
+  }
+
+  &__btn {
+    display: flex;
+    align-items: center;
+    gap: $space-2;
+    padding: $space-3 $space-6;
+    border-radius: $border-radius-md;
+    font-family: $font-primary;
+    font-size: $font-size-base;
+    font-weight: $font-weight-semibold;
+    cursor: pointer;
+    transition: all 0.22s ease;
+    border: 1px solid transparent;
+
+    &--primary {
+      background: linear-gradient(135deg, $primary-500, $tertiary-500);
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(217, 70, 239, 0.35);
+
+      &:hover {
+        box-shadow: 0 8px 32px rgba(217, 70, 239, 0.55);
+        transform: translateY(-2px);
+      }
+    }
+
+    &--secondary {
+      background: rgba(217, 70, 239, 0.08);
+      border-color: rgba(217, 70, 239, 0.35);
+      color: $primary-300;
+
+      &:hover {
+        background: rgba(217, 70, 239, 0.16);
+        color: $primary-200;
+      }
+    }
+
+    &--quit {
+      background: transparent;
+      border-color: rgba(255, 255, 255, 0.12);
+      color: $surface-400;
+      font-weight: $font-weight-medium;
+
+      &:hover {
+        border-color: rgba(255, 255, 255, 0.28);
+        color: $surface-100;
+      }
+    }
+  }
+}
+
+@keyframes force-update-indeterminate {
+  0%   { transform: translateX(-60%) scaleX(0.4); }
+  50%  { transform: translateX(20%)  scaleX(0.6); }
+  100% { transform: translateX(120%) scaleX(0.4); }
+}

@@ -4,7 +4,10 @@ export interface Plan {
   id: string;
   name: string;
   duration: number;
-  amount: string;
+  // A Postgres `numeric` column, sent as a bare JSON number — not a string.
+  // Mismatching this on the Rust side silently emptied the plan list; see
+  // the regression test in response_subscription.rs.
+  amount: number;
   currency: string;
 }
 
@@ -15,7 +18,7 @@ export interface PlanRef {
 
 export interface Subscription {
   id: string;
-  amount: string;
+  amount: number;
   currency: string;
   status: string;
   startDate: string;

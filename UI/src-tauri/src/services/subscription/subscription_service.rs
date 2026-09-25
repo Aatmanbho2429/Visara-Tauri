@@ -17,14 +17,47 @@ pub async fn get_plans() -> ApiResponse<ResponsePlans> {
         .await;
 
     let resp = match result {
-        Err(e) => return network_error(e),
+        Err(e) => {
+            log::warn!("[subscription] get_plans: request failed: {e}");
+            return network_error(e);
+        }
         Ok(r) => r,
     };
-    let data: Value = resp.json().await.unwrap_or(Value::Null);
+
+    let status = resp.status();
+    let body = match resp.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            log::warn!("[subscription] get_plans: could not read response body: {e}");
+            return ApiResponse::err(500, "Could not fetch plans");
+        }
+    };
+
+    let data: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("[subscription] get_plans: bad response status={status} parse_error={e} body_len={}", body.len());
+            return ApiResponse::err(500, "Could not fetch plans");
+        }
+    };
+
     if !data["success"].as_bool().unwrap_or(false) {
+        log::warn!("[subscription] get_plans: server returned success=false status={status} message={:?}", data["message"].as_str());
         return ApiResponse::err(500, message_of(&data, "Could not fetch plans"));
     }
-    let plans: Vec<Plan> = serde_json::from_value(data["plans"].clone()).unwrap_or_default();
+
+    // Logged loudly rather than silently defaulted to an empty list: this is
+    // exactly the failure mode that hid the 2026-09-10 bug (`Plan.amount`
+    // typed as `String` against Supabase's bare-JSON-number `numeric`
+    // column) — a shape mismatch here must never again present as "zero
+    // plans" with no trace of why.
+    let plans: Vec<Plan> = match serde_json::from_value(data["plans"].clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("[subscription] get_plans: plans array failed to deserialize: {e} raw={}", data["plans"]);
+            return ApiResponse::err(500, "Could not fetch plans");
+        }
+    };
     ApiResponse::ok_with_message("Plans fetched", ResponsePlans { plans })
 }
 
@@ -66,14 +99,26 @@ pub async fn get_user_subscriptions() -> ApiResponse<ResponseSubscriptions> {
         .await;
 
     let resp = match result {
-        Err(e) => return network_error(e),
+        Err(e) => {
+            log::warn!("[subscription] get_user_subscriptions: request failed: {e}");
+            return network_error(e);
+        }
         Ok(r) => r,
     };
     let data: Value = resp.json().await.unwrap_or(Value::Null);
     if !data["success"].as_bool().unwrap_or(false) {
+        log::warn!("[subscription] get_user_subscriptions: server returned success=false message={:?}", data["message"].as_str());
         return ApiResponse::err(500, message_of(&data, "Could not fetch subscriptions"));
     }
-    let subscriptions: Vec<Subscription> = serde_json::from_value(data["subscriptions"].clone()).unwrap_or_default();
+    // Same shape-mismatch class of bug as get_plans() above — log rather
+    // than silently default to "no purchase history".
+    let subscriptions: Vec<Subscription> = match serde_json::from_value(data["subscriptions"].clone()) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("[subscription] get_user_subscriptions: subscriptions array failed to deserialize: {e} raw={}", data["subscriptions"]);
+            return ApiResponse::err(500, "Could not fetch subscriptions");
+        }
+    };
     ApiResponse::ok_with_message("Fetched", ResponseSubscriptions { subscriptions })
 }
 
