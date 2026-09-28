@@ -171,7 +171,10 @@ fn read_token_from_store() -> Option<String> {
 // ── Public API ────────────────────────────────────────────────────────────
 
 pub async fn login(email: &str, password: &str) -> ApiResponse<ResponseLogin> {
-    let device_id = license::device_id();
+    let device_id = match license::device_id() {
+        Ok(id) => id,
+        Err(e) => return e.to_response(),
+    };
 
     let result = reqwest::Client::new()
         .post(format!("{SUPABASE_EDGE}/login-user-test"))
@@ -220,7 +223,10 @@ pub async fn validate_saved_token() -> ApiResponse<ResponseValidateToken> {
         None    => return ApiResponse::err(401, "No saved session - please login"),
     };
 
-    let device_id = license::device_id();
+    let device_id = match license::device_id() {
+        Ok(id) => id,
+        Err(e) => return e.to_response(),
+    };
 
     let result = reqwest::Client::new()
         .get(format!("{SUPABASE_EDGE}/validate-token-test"))
@@ -412,6 +418,11 @@ pub async fn register_request(
     company_name: Option<&str>,
     otp_code:     &str,
 ) -> ApiResponse<()> {
+    let device_id = match license::device_id() {
+        Ok(id) => id,
+        Err(e) => return e.to_response(),
+    };
+
     let result = reqwest::Client::new()
         .post(format!("{SUPABASE_EDGE}/register-request"))
         .json(&serde_json::json!({
@@ -422,7 +433,7 @@ pub async fn register_request(
             "phone_number": phone_number,
             "company_name": company_name,
             "otp_code":     otp_code,
-            "device_id":    license::device_id(),
+            "device_id":    device_id,
         }))
         .send()
         .await;
