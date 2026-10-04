@@ -2,8 +2,9 @@ flask>=3.0
 waitress>=3.0
 opencv-python>=4.8
 numpy
-torch
-torchvision
+# Pinned: an unpinned torchvision 0.29 renamed its ops to `_C_stable` and broke the frozen build.
+torch==2.14.1
+torchvision==0.29.1
 onnxruntime>=1.17
 cryptography>=42.0
 pyinstaller>=6.0

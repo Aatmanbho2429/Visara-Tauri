@@ -42,7 +42,8 @@ def _base_dir() -> str:
     server.py`, used in dev). Under PyInstaller's onefile bootloader,
     `__file__` resolves *inside* the `_MEI*` temp extraction dir, which is
     wiped when the process exits — a log written there vanishes with it.
-    `sys.executable` is the actual frozen `.exe` path in that case.
+    `sys.executable` is the actual frozen `.exe` path in that case, and in the
+    Windows --onedir build too.
     """
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)

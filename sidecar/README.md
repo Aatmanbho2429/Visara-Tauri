@@ -63,8 +63,16 @@ in CI; the encrypted DINO model comes from the repo through Git LFS, and the
 would otherwise be bundled silently and fail only on a user's machine.
 
 `.github/workflows/release.yml` freezes this with PyInstaller
-(`--onefile --name pictoria-sidecar`) before the Tauri build step, on every
-platform in the release matrix, then does two things with the output:
+(`--name pictoria-sidecar`) before the Tauri build step, on every platform in
+the release matrix: `--onefile` on macOS, and on Windows `--onedir
+--contents-directory pictoria-sidecar-lib`, so nothing is re-unpacked into
+`%TEMP%\_MEI*` on every launch. Every platform passes `--hidden-import
+torchvision._C_stable --hidden-import torchvision.image_stable`: torchvision ≥0.29 loads `_C_stable` dynamically, PyInstaller's
+hook misses it, and the sidecar then dies on `operator torchvision::nms does
+not exist`. The Windows contents dir is staged at `UI/src-tauri/binaries/pictoria-sidecar-lib/`
+and bundled by `UI/src-tauri/tauri.windows.conf.json` as a resource, which on
+Windows lands in the install dir next to the exe. CI then does two things with
+the output:
 
 1. **Stages it for `bundle.externalBin`** (declared in `tauri.conf.json` as
    `binaries/pictoria-sidecar`). Tauri resolves that per-platform as

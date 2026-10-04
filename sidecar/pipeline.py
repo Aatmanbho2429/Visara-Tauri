@@ -92,7 +92,8 @@ def bundled_weights_path():
     """Where the frozen build keeps the checkpoint.
 
     `sys._MEIPASS` is the directory PyInstaller unpacks a --onefile build into
-    at launch; outside a frozen build it falls back to this source tree, so a
+    at launch, or the `pictoria-sidecar-lib` contents dir of a --onedir build
+    (Windows); outside a frozen build it falls back to this source tree, so a
     developer who drops the file in `sidecar/weights/` gets the same path.
     """
     base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))

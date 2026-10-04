@@ -153,9 +153,10 @@ pub fn sidecar_bin_path() -> PathBuf {
     // target-triple suffix Tauri requires there is stripped when it lands in
     // the bundle, so only the plain name is probed at runtime.
     candidates.push(manifest.join("binaries").join(SIDECAR_FILE));
-    candidates.push(
-        manifest.join("..").join("..").join("sidecar").join("dist").join(SIDECAR_FILE),
-    );
+    let dist = manifest.join("..").join("..").join("sidecar").join("dist");
+    candidates.push(dist.join(SIDECAR_FILE));
+    // A local `--onedir` freeze (Windows) nests the exe in a folder of the same name.
+    candidates.push(dist.join("pictoria-sidecar").join(SIDECAR_FILE));
 
     for candidate in &candidates {
         if candidate.exists() {

@@ -49,11 +49,20 @@ python server.py               # first run downloads mobilenet_v2 weights (~14MB
 Freezing into a binary — only needed to test the frozen path, not for normal dev:
 
 ```bash
-pyinstaller --onefile --name pictoria-sidecar \
+pyinstaller <MODE> --name pictoria-sidecar \
   --add-data "weights/mobilenet_v2-b0353104.pth<SEP>weights" \
   --add-data "clip_vitb32.onnx.enc<SEP>." \
   server.py   # <SEP> is ';' on Windows, ':' elsewhere
 ```
+
+`<MODE>` is `--onedir --contents-directory pictoria-sidecar-lib` on Windows (no per-launch unpack
+into `%TEMP%`) and `--onefile` on macOS. The exe and `pictoria-sidecar-lib/` must sit side by side;
+the name is shared with `release.yml` and `UI/src-tauri/tauri.windows.conf.json`.
+
+Always add `--hidden-import torchvision._C_stable --hidden-import torchvision.image_stable`
+(`--collect-binaries` skips `.pyd` files, so it doesn't work). torchvision ≥0.29 loads `_C_stable`
+through `torch.ops.load_library`, which PyInstaller's hook doesn't see. A bundle without it starts and then
+dies on `operator torchvision::nms does not exist`, which is what v1.1.42 shipped on Windows.
 
 Releases cross-freeze per-platform in `.github/workflows/release.yml` on `v*` tags, including an
 x86_64-under-Rosetta leg for Intel macOS — PyInstaller freezes whatever interpreter runs it, not a

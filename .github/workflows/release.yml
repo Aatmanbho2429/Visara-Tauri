@@ -27,6 +27,18 @@ jobs:
         with:
           script: |
             const tag = context.ref.replace('refs/tags/', '');
+            // Re-pushing an existing tag rebuilds into its release; tauri-action replaces same-name assets.
+            try {
+              const { data } = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                tag,
+              });
+              core.info(`Reusing existing release ${data.id} for ${tag}`);
+              return data.id;
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo:  context.repo.repo,
@@ -271,7 +283,21 @@ jobs:
           # machine that has never downloaded them.
           if [ "${{ runner.os }}" = "Windows" ]; then SEP=";"; else SEP=":"; fi
 
-          "${PY[@]}" -m PyInstaller --onefile --name pictoria-sidecar \
+          # Windows freezes --onedir: --onefile re-unpacks ~2,800 torch files into
+          # %TEMP%\_MEI* on every launch, which is slow and trips antivirus.
+          # The contents dir is renamed from `_internal` because it lands in the
+          # shared install dir; tauri.windows.conf.json bundles it under this name.
+          # macOS stays --onefile — onedir would mean signing every nested dylib.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            MODE=(--onedir --contents-directory pictoria-sidecar-lib)
+          else
+            MODE=(--onefile)
+          fi
+
+          # torchvision >=0.29 loads `_C_stable` via torch.ops.load_library, which PyInstaller's
+          # hook misses (it only knows `_C`) — without it the sidecar dies on `torchvision::nms`.
+          "${PY[@]}" -m PyInstaller "${MODE[@]}" --name pictoria-sidecar \
+            --hidden-import torchvision._C_stable --hidden-import torchvision.image_stable \
             --add-data "weights/mobilenet_v2-b0353104.pth${SEP}weights" \
             --add-data "clip_vitb32.onnx.enc${SEP}." \
             --distpath dist --workpath build --specpath . server.py
@@ -304,13 +330,20 @@ jobs:
       # tauri-action runs. Tauri strips the suffix again when it copies the
       # binary into the bundle, which is why the app only ever probes the
       # plain name (see config::sidecar_bin_path).
+      # On Windows the onedir exe is useless without its contents dir, which
+      # tauri.windows.conf.json bundles as a resource next to it.
       - name: Stage sidecar for externalBin
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p UI/src-tauri/binaries
           if [ "${{ matrix.label }}" = "windows" ]; then
-            cp sidecar/dist/pictoria-sidecar.exe \
+            cp sidecar/dist/pictoria-sidecar/pictoria-sidecar.exe \
                "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}.exe"
+            rm -rf UI/src-tauri/binaries/pictoria-sidecar-lib
+            cp -r sidecar/dist/pictoria-sidecar/pictoria-sidecar-lib UI/src-tauri/binaries/
+            # Fail here, not on a user's machine, if torchvision's ops didn't make it in.
+            ls UI/src-tauri/binaries/pictoria-sidecar-lib/torchvision/_C*.pyd
           else
             cp sidecar/dist/pictoria-sidecar \
                "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}"

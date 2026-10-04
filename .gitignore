@@ -36,3 +36,6 @@ Thumbs.db
 # Logs (sidecar/logs/sidecar.log; Rust side logs to %APPDATA%, outside the repo)
 sidecar/logs/
 *.log
+
+# Local Windows --onedir sidecar build, copied by hand into an install dir for testing
+/pictoria-sidecar/

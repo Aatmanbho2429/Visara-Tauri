@@ -59,6 +59,10 @@ cp sidecar/dist/pictoria-sidecar \
    "UI/src-tauri/binaries/pictoria-sidecar-$(rustc -vV | awk '/host:/{print $2}')"
 ```
 
+Windows freezes `--onedir` (macOS stays `--onefile`), so it also needs the contents dir at
+`UI/src-tauri/binaries/pictoria-sidecar-lib/`, which `tauri.windows.conf.json` bundles as a resource
+next to the exe. The build check accepts an empty directory there; a working sidecar needs the real one.
+
 Only the build script's existence check needs it — at runtime a debug build falls back to
 `python server.py`. Sidecar dev loop and freezing: `.claude/rules/sidecar.md`, `sidecar/README.md`.
 
@@ -69,7 +73,8 @@ machine, not at build time.
 
 - **App version lives in three places** and they must match: `UI/src-tauri/tauri.conf.json`
   (`version`), `UI/src-tauri/Cargo.toml` (`package.version`), and `UI/src-tauri/src/config.rs`
-  (`APP_VERSION`). Currently `1.1.40`.
+  (`APP_VERSION`). Release commits (`vX.Y.Z`) bump all three; check with
+  `grep -nE '^version|"version"|APP_VERSION' UI/src-tauri/tauri.conf.json UI/src-tauri/Cargo.toml UI/src-tauri/src/config.rs`.
 - **`config::EMBED_DIM` must match the sidecar model's real output width.**
   `sidecar/pipeline.py::load_embed_model` measures it and reports it through `/health`, and
   `core::sidecar` refuses a mismatch rather than let a wrong stride reach `vectors.bin`.
@@ -143,7 +148,13 @@ a relevant rule before re-deriving how a layer works:
 | `services.md` | Per-entity service folders |
 | `ui-framework.md` | Angular structure, PrimeNG usage |
 
-`/scaffold-entity` walks the structure a new entity should follow.
+Project skills in `.claude/skills/`:
+
+- `/scaffold-entity` walks the structure a new entity should follow.
+- `/test-app` is the end-to-end suite against the *running* app (SIFT/RANSAC regressions, sidecar
+  contract, vector-store integrity, stage-1 recall, latency from the logs). `cargo test` and
+  `npm test` don't exercise search quality — run this after any search, sidecar, or vector-store
+  change, and to calibrate `NEAR_FAMILY_MIN_SIM`.
 
 One documented simplification versus a literal reading of `models.md`: a request/response shape
 shared by several commands (e.g. `requestPath { path }`, used by `browse_directory`,
