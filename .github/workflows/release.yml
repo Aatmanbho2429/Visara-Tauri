@@ -344,6 +344,18 @@ jobs:
             cp -R sidecar/dist/pictoria-sidecar UI/src-tauri/binaries/pictoria-sidecar-macos
             rm -rf UI/src-tauri/binaries/pictoria-sidecar-macos/logs
             ls UI/src-tauri/binaries/pictoria-sidecar-macos/pictoria-sidecar-lib/torchvision/_C*.so
+            # Tauri dereferences symlinks when it bundles resources, and a framework binary copied out of its
+            # bundle fails notarization: make the top-level alias (libpython) a real file, drop the root link.
+            L=UI/src-tauri/binaries/pictoria-sidecar-macos/pictoria-sidecar-lib
+            for fw in "$L"/*.framework; do
+              [ -d "$fw" ] || continue
+              name="$(basename "$fw" .framework)"
+              if [ -L "$L/$name" ]; then
+                cp -L "$L/$name" "$L/$name.real" && mv -f "$L/$name.real" "$L/$name"
+              fi
+              rm -f "$fw/$name"
+              echo "flattened $name.framework aliases"
+            done
           elif [ "${{ matrix.label }}" = "windows" ]; then
             cp sidecar/dist/pictoria-sidecar/pictoria-sidecar.exe \
                "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}.exe"
@@ -421,6 +433,19 @@ jobs:
               exit 1
             fi
           done < "$RUNNER_TEMP/macho.txt"
+
+          # Re-verify a symlink-dereferenced copy, which is what Tauri actually puts in the .app.
+          DEREF="$RUNNER_TEMP/sidecar-deref"
+          rm -rf "$DEREF" && mkdir -p "$DEREF" && cp -RL "$DIR" "$DEREF/"
+          find "$DEREF" -type f -print0 | xargs -0 file | grep 'Mach-O' | cut -d: -f1 > "$RUNNER_TEMP/deref.txt"
+          while IFS= read -r f; do
+            if ! codesign --verify --strict "$f"; then
+              echo "::error::$f has an invalid signature once dereferenced — notarization would reject it"
+              exit 1
+            fi
+          done < "$RUNNER_TEMP/deref.txt"
+          echo "dereferenced copy: $(wc -l < "$RUNNER_TEMP/deref.txt") Mach-O files verified"
+          rm -rf "$DEREF"
 
       - name: Verify signing secrets are present
         shell: bash
