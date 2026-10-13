@@ -15,8 +15,8 @@ never two Gabor/Gram/SIFT computations running concurrently, which avoids
 both CPU oversubscription and calling the shared model from two threads at
 once. Two priority lanes feed it: "search" jobs (interactive, user is
 waiting) always get pulled before "index" jobs (background watcher work),
-so a search never waits for more than the single file currently in flight —
-indexing effectively pauses and resumes around it.
+so a search never waits for more than the one index batch (`pipeline.EMBED_BATCH_IMAGES`
+files) currently in flight — indexing effectively pauses and resumes around it.
 """
 from __future__ import annotations
 
@@ -201,13 +201,18 @@ def _run(job: Job) -> dict:
             log.error("describe rejected: DINO embed model not loaded")
             return {"error": "embed-model-not-loaded"}
         results = []
-        for p in job.payload["paths"]:
-            d = pipeline.describe(p)
-            results.append({"path": p, "embed": d.embed, "rose": d.rose, "gram": d.gram,
-                            "color": d.color, "dominant": d.dominant} if d
-                            else {"path": p, "error": "decode-failed"})
-            if job.priority != "search":
-                _drain_search()  # let a just-arrived search cut in, file by file
+        paths = job.payload["paths"]
+        # Index work goes through DINO in fixed, padded groups; a search runs exactly the files it sent.
+        pad = job.priority != "search"
+        step = pipeline.EMBED_BATCH_IMAGES if pad else len(paths)
+        for start in range(0, len(paths), step):
+            group = paths[start:start + step]
+            for p, d in zip(group, pipeline.describe_batch(group, pad=pad)):
+                results.append({"path": p, "embed": d.embed, "rose": d.rose, "gram": d.gram,
+                                "color": d.color, "dominant": d.dominant} if d
+                                else {"path": p, "error": "decode-failed"})
+            if pad:
+                _drain_search()  # let a just-arrived search cut in, batch by batch
         compute_ms = (time.perf_counter() - t_start) * 1000
         log.info(
             "[timing] job kind=describe priority=%s n=%d queue_wait_ms=%.2f compute_ms=%.2f total_ms=%.2f",

@@ -55,9 +55,14 @@ pyinstaller <MODE> --name pictoria-sidecar \
   server.py   # <SEP> is ';' on Windows, ':' elsewhere
 ```
 
-`<MODE>` is `--onedir --contents-directory pictoria-sidecar-lib` on Windows (no per-launch unpack
-into `%TEMP%`) and `--onefile` on macOS. The exe and `pictoria-sidecar-lib/` must sit side by side;
-the name is shared with `release.yml` and `UI/src-tauri/tauri.windows.conf.json`.
+`<MODE>` is `--onedir --contents-directory pictoria-sidecar-lib` on Windows and macOS (no per-launch
+unpack into a temp dir). The exe and `pictoria-sidecar-lib/` must sit side by side; the name is
+shared with `release.yml` and `UI/src-tauri/tauri.{windows,macos}.conf.json`. On macOS both live in
+`Contents/Resources/sidecar/`, and CI signs every nested Mach-O (~230) before the exe.
+
+Index-time `/describe` runs DINO on `pipeline.EMBED_BATCH_IMAGES` (8) images per call, padded to a
+fixed 24 crops; search describes stay unpadded. `PICTORIA_PARITY_CHECK=1` logs the first batch's
+`[parity]` cosine against the one-image path.
 
 Always add `--hidden-import torchvision._C_stable --hidden-import torchvision.image_stable`
 (`--collect-binaries` skips `.pyd` files, so it doesn't work). torchvision ≥0.29 loads `_C_stable`

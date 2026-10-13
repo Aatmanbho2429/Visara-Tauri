@@ -283,12 +283,11 @@ jobs:
           # machine that has never downloaded them.
           if [ "${{ runner.os }}" = "Windows" ]; then SEP=";"; else SEP=":"; fi
 
-          # Windows freezes --onedir: --onefile re-unpacks ~2,800 torch files into
-          # %TEMP%\_MEI* on every launch, which is slow and trips antivirus.
-          # The contents dir is renamed from `_internal` because it lands in the
-          # shared install dir; tauri.windows.conf.json bundles it under this name.
-          # macOS stays --onefile — onedir would mean signing every nested dylib.
-          if [ "${{ runner.os }}" = "Windows" ]; then
+          # Windows and macOS freeze --onedir: --onefile re-unpacks every torch file
+          # into a temp dir on every launch (~30 s on Apple Silicon, ~100 s under Rosetta).
+          # The contents dir is renamed from `_internal` because it lands in the shared
+          # install dir on Windows; tauri.<os>.conf.json bundles it under this name.
+          if [ "${{ runner.os }}" = "Windows" ] || [ "${{ runner.os }}" = "macOS" ]; then
             MODE=(--onedir --contents-directory pictoria-sidecar-lib)
           else
             MODE=(--onefile)
@@ -316,7 +315,7 @@ jobs:
             x86_64-apple-darwin)  want=x86_64 ;;
             *) echo "::error::unhandled target"; exit 1 ;;
           esac
-          got="$(lipo -archs sidecar/dist/pictoria-sidecar)"
+          got="$(lipo -archs sidecar/dist/pictoria-sidecar/pictoria-sidecar)"
           echo "sidecar archs: '$got' (want '$want' for ${{ matrix.target }})"
           if ! echo "$got" | tr ' ' '\n' | grep -qx "$want"; then
             echo "::error::sidecar is '$got' but ${{ matrix.target }} needs '$want' —"
@@ -332,12 +331,20 @@ jobs:
       # plain name (see config::sidecar_bin_path).
       # On Windows the onedir exe is useless without its contents dir, which
       # tauri.windows.conf.json bundles as a resource next to it.
+      # macOS ships exe + contents dir together as one resource folder instead
+      # (tauri.macos.conf.json, which also empties externalBin): in Contents/MacOS
+      # PyInstaller's bootloader would look for its libs in Contents/Frameworks.
       - name: Stage sidecar for externalBin
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p UI/src-tauri/binaries
-          if [ "${{ matrix.label }}" = "windows" ]; then
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            rm -rf UI/src-tauri/binaries/pictoria-sidecar-macos
+            cp -R sidecar/dist/pictoria-sidecar UI/src-tauri/binaries/pictoria-sidecar-macos
+            rm -rf UI/src-tauri/binaries/pictoria-sidecar-macos/logs
+            ls UI/src-tauri/binaries/pictoria-sidecar-macos/pictoria-sidecar-lib/torchvision/_C*.so
+          elif [ "${{ matrix.label }}" = "windows" ]; then
             cp sidecar/dist/pictoria-sidecar/pictoria-sidecar.exe \
                "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}.exe"
             rm -rf UI/src-tauri/binaries/pictoria-sidecar-lib
@@ -357,8 +364,8 @@ jobs:
       # runtime. Sign it here, before tauri-action seals the .app around it —
       # once the outer signature exists it is too late.
       #
-      # Signed with the same entitlements the app declares, because the
-      # hardened runtime is what a --onefile binary trips over at startup;
+      # The exe is signed with the same entitlements the app declares, because the
+      # hardened runtime is what a frozen Python binary trips over at startup;
       # see UI/src-tauri/entitlements.plist for why each key is needed.
       - name: Sign sidecar (macOS)
         if: startsWith(matrix.os, 'macos')
@@ -388,19 +395,32 @@ jobs:
           # taking over the default keychain here has broken that in the past.
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
 
-          BIN="UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}"
+          # Onedir: every Mach-O in the contents dir needs its own Developer ID signature,
+          # inside-out — libraries and helper executables first, the sidecar exe last.
+          DIR="UI/src-tauri/binaries/pictoria-sidecar-macos"
+          BIN="$DIR/pictoria-sidecar"
+          find "$DIR/pictoria-sidecar-lib" -type f -print0 \
+            | xargs -0 file | grep 'Mach-O' | cut -d: -f1 > "$RUNNER_TEMP/macho.txt"
+          echo "signing $(wc -l < "$RUNNER_TEMP/macho.txt") nested Mach-O files"
+          while IFS= read -r f; do
+            codesign --force --timestamp --options runtime \
+              --sign "$APPLE_SIGNING_IDENTITY" "$f"
+          done < "$RUNNER_TEMP/macho.txt"
           codesign --force --timestamp --options runtime \
             --entitlements UI/src-tauri/entitlements.plist \
             --sign "$APPLE_SIGNING_IDENTITY" "$BIN"
 
           echo "--- verifying ---"
           codesign -dvvv "$BIN" 2>&1 | grep -E "Authority|TeamIdentifier|flags"
-          codesign --verify --strict --verbose=2 "$BIN"
+          echo "$BIN" >> "$RUNNER_TEMP/macho.txt"
           # Fail loudly here rather than at notarization, which is ~40 min later.
-          if codesign -dvvv "$BIN" 2>&1 | grep -q "adhoc"; then
-            echo "::error::sidecar is still ad-hoc signed — notarization would reject it"
-            exit 1
-          fi
+          while IFS= read -r f; do
+            codesign --verify --strict "$f"
+            if codesign -dvvv "$f" 2>&1 | grep -q "adhoc"; then
+              echo "::error::$f is still ad-hoc signed — notarization would reject it"
+              exit 1
+            fi
+          done < "$RUNNER_TEMP/macho.txt"
 
       - name: Verify signing secrets are present
         shell: bash

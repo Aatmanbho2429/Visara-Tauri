@@ -59,9 +59,14 @@ cp sidecar/dist/pictoria-sidecar \
    "UI/src-tauri/binaries/pictoria-sidecar-$(rustc -vV | awk '/host:/{print $2}')"
 ```
 
-Windows freezes `--onedir` (macOS stays `--onefile`), so it also needs the contents dir at
+Windows freezes `--onedir`, so it also needs the contents dir at
 `UI/src-tauri/binaries/pictoria-sidecar-lib/`, which `tauri.windows.conf.json` bundles as a resource
 next to the exe. The build check accepts an empty directory there; a working sidecar needs the real one.
+
+macOS also freezes `--onedir`, but ships exe + `pictoria-sidecar-lib/` together as one resource
+folder, `binaries/pictoria-sidecar-macos/` → `Contents/Resources/sidecar/` (`tauri.macos.conf.json`
+empties `externalBin`). It can't go in `Contents/MacOS`: there PyInstaller's bootloader looks for its
+libs in `Contents/Frameworks`. Stage with `cp -R sidecar/dist/pictoria-sidecar UI/src-tauri/binaries/pictoria-sidecar-macos`.
 
 Only the build script's existence check needs it — at runtime a debug build falls back to
 `python server.py`. Sidecar dev loop and freezing: `.claude/rules/sidecar.md`, `sidecar/README.md`.

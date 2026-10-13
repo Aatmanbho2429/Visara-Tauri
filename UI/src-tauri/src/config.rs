@@ -130,6 +130,13 @@ pub(crate) const SIDECAR_FILE: &str = "pictoria-sidecar";
 pub fn sidecar_bin_path() -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
+    // macOS ships the onedir sidecar as a resource folder (tauri.macos.conf.json), never in
+    // `Contents/MacOS`, where PyInstaller's bootloader would look for its libs in `Frameworks/`.
+    #[cfg(target_os = "macos")]
+    if let Some(dir) = RESOURCE_DIR.get() {
+        candidates.push(dir.join("sidecar").join(SIDECAR_FILE));
+    }
+
     // `externalBin` (see tauri.conf.json) drops the sidecar next to the main
     // executable — `Pictoria.app/Contents/MacOS/` on macOS, the install dir on
     // Windows, and `target/<profile>/` under `tauri dev`. This is checked
@@ -159,7 +166,8 @@ pub fn sidecar_bin_path() -> PathBuf {
     candidates.push(dist.join("pictoria-sidecar").join(SIDECAR_FILE));
 
     for candidate in &candidates {
-        if candidate.exists() {
+        // `is_file`, not `exists`: a onedir freeze makes `dist/pictoria-sidecar` a directory.
+        if candidate.is_file() {
             log::info!("[config] sidecar binary resolved to {:?}", candidate);
             return candidate.clone();
         }

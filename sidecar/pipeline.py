@@ -190,7 +190,7 @@ def load_embed_model(key_b64: str):
         # (`config::NUM_WORKERS = 8`) for no benefit — the same contention
         # `core/search_gate.rs` already exists to mitigate on the Rust side.
         # See SEARCH-LATENCY-PLAN.md Phase 2a.
-        opts.intra_op_num_threads = 1
+        opts.intra_op_num_threads = 8
         # CoreML where it exists (Neural Engine on Apple Silicon, Metal on
         # Intel), CPU everywhere else. Listing CPU explicitly as the tail
         # provider is what makes an unsupported/unavailable CoreML fall back
@@ -391,7 +391,7 @@ def gram_descriptor(img_rgb=None, size=_EMBED_INPUT_SIZE, zoom_scales=_GRAM_ZOOM
     return grams
 
 
-def embed_descriptor(img_rgb=None, size=_EMBED_INPUT_SIZE, zoom_scales=_GRAM_ZOOM_SCALES, crops=None):
+def embed_descriptor(img_rgb=None, size=_EMBED_INPUT_SIZE, zoom_scales=_GRAM_ZOOM_SCALES, crops=None, pad_to=None):
     """DINO embedding per zoom level — the vector the near-family scan uses.
 
     One batched ONNX call for all zoom levels rather than one per level: the
@@ -411,10 +411,14 @@ def embed_descriptor(img_rgb=None, size=_EMBED_INPUT_SIZE, zoom_scales=_GRAM_ZOO
     if crops is None:
         crops = zoom_crops(img_rgb, size=size, zoom_scales=zoom_scales)
 
+    n = len(crops)
+    # Zero crops fill the batch to `pad_to` so CoreML sees one fixed shape; their rows are dropped below.
+    if pad_to is not None and n < pad_to:
+        crops = list(crops) + [np.zeros_like(crops[0])] * (pad_to - n)
     batch = np.stack(crops).astype(np.float32).transpose(0, 3, 1, 2) / 255.0
     batch = (batch - _IMAGENET_MEAN) / _IMAGENET_STD
     out = sess.run([_embed_output_name], {_embed_input_name: np.ascontiguousarray(batch)})[0]
-    out = np.asarray(out, dtype=np.float32).reshape(len(crops), -1)
+    out = np.asarray(out, dtype=np.float32).reshape(len(crops), -1)[:n]
     norms = np.linalg.norm(out, axis=1, keepdims=True)
     np.maximum(norms, 1e-9, out=norms)
     return out / norms
@@ -683,25 +687,26 @@ class Descriptor:
     dominant: list  # 1-2 bucket names for the Browse colour tag, see dominant_colors()
 
 
-def describe(path, max_dim=512):
-    """Full descriptor for one image, or None if it can't be read.
+# Images per index-time DINO call — fixed so CoreML only ever sees one batch shape (8 × 3 crops).
+EMBED_BATCH_IMAGES = 8
 
-    The zoom crops are computed once and handed to both the DINO embedding and
-    the gram matrix — they are the same pixels, and doing the resize/crop twice
-    was pure waste.
-    """
+# Dev-only: `PICTORIA_PARITY_CHECK=1` re-embeds the first batch one image at a time and logs the drift.
+_parity_pending = os.environ.get("PICTORIA_PARITY_CHECK") == "1"
+
+
+# Everything except the DINO embedding for one image, or None if it can't be read.
+def _prepare(path, max_dim):
     t0 = time.perf_counter()
     img = load_image_rgb(path, max_dim=max_dim)
     t_decode = time.perf_counter()
     if img is None:
         log.debug("[timing] describe path=%s decode_ms=%.2f result=decode-failed",
-                   os.path.basename(path), (t_decode - t0) * 1000)
+                  os.path.basename(path), (t_decode - t0) * 1000)
         return None
 
+    # Crops computed once and shared by the embedding and the gram matrix — same pixels.
     crops = zoom_crops(img)
     t_crops = time.perf_counter()
-    embed = embed_descriptor(crops=crops)
-    t_embed = time.perf_counter()
     rose = gabor_rose(img)
     t_gabor = time.perf_counter()
     gram = gram_descriptor(crops=crops)
@@ -711,15 +716,61 @@ def describe(path, max_dim=512):
     t_color = time.perf_counter()
 
     log.debug(
-        "[timing] describe path=%s dim=%dx%d decode_ms=%.2f crops_ms=%.2f embed_ms=%.2f "
-        "gabor_ms=%.2f gram_ms=%.2f color_ms=%.2f total_ms=%.2f",
+        "[timing] describe path=%s dim=%dx%d decode_ms=%.2f crops_ms=%.2f "
+        "gabor_ms=%.2f gram_ms=%.2f color_ms=%.2f prep_ms=%.2f",
         os.path.basename(path), img.shape[1], img.shape[0],
-        (t_decode - t0) * 1000, (t_crops - t_decode) * 1000, (t_embed - t_crops) * 1000,
-        (t_gabor - t_embed) * 1000, (t_gram - t_gabor) * 1000,
-        (t_color - t_gram) * 1000, (t_color - t0) * 1000,
+        (t_decode - t0) * 1000, (t_crops - t_decode) * 1000, (t_gabor - t_crops) * 1000,
+        (t_gram - t_gabor) * 1000, (t_color - t_gram) * 1000, (t_color - t0) * 1000,
     )
-    return Descriptor(embed=[e.tolist() for e in embed], rose=rose.tolist(),
-                      gram=[g.tolist() for g in gram], color=color, dominant=dominant)
+    return crops, rose, gram, color, dominant
+
+
+# Logs how far batched embeddings drift from the one-image-per-call path they replace.
+def _log_parity(prepared, batched, n_levels):
+    worst = 1.0
+    for i, (crops, *_rest) in enumerate(prepared):
+        single = embed_descriptor(crops=crops)
+        cos = np.sum(single * batched[i * n_levels:(i + 1) * n_levels], axis=1)
+        worst = min(worst, float(cos.min()))
+    log.info("[parity] batched vs single-image embed: images=%d min_cos=%.7f", len(prepared), worst)
+
+
+# Full descriptors for several images with one DINO call; None in place of any unreadable file.
+def describe_batch(paths, max_dim=512, pad=True):
+    global _parity_pending
+    prepared = [_prepare(p, max_dim) for p in paths]
+    live = [p for p in prepared if p is not None]
+    if not live:
+        return [None] * len(paths)
+
+    n_levels = len(_GRAM_ZOOM_SCALES)
+    all_crops = [c for crops, *_rest in live for c in crops]
+    t0 = time.perf_counter()
+    embeds = embed_descriptor(crops=all_crops, pad_to=EMBED_BATCH_IMAGES * n_levels if pad else None)
+    embed_ms = (time.perf_counter() - t0) * 1000
+    log.debug("[timing] embed_batch images=%d crops=%d padded=%s embed_ms=%.2f per_image_ms=%.2f",
+              len(live), len(all_crops), pad, embed_ms, embed_ms / len(live))
+
+    if _parity_pending:
+        _parity_pending = False
+        _log_parity(live, embeds, n_levels)
+
+    out, i = [], 0
+    for p in prepared:
+        if p is None:
+            out.append(None)
+            continue
+        _crops, rose, gram, color, dominant = p
+        embed = embeds[i * n_levels:(i + 1) * n_levels]
+        i += 1
+        out.append(Descriptor(embed=[e.tolist() for e in embed], rose=rose.tolist(),
+                              gram=[g.tolist() for g in gram], color=color, dominant=dominant))
+    return out
+
+
+# Full descriptor for one image, unpadded — the search path, where latency beats throughput.
+def describe(path, max_dim=512):
+    return describe_batch([path], max_dim=max_dim, pad=False)[0]
 
 
 def prepare_query(query_path, max_dim=800, mirror=False):

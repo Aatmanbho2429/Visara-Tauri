@@ -64,15 +64,19 @@ would otherwise be bundled silently and fail only on a user's machine.
 
 `.github/workflows/release.yml` freezes this with PyInstaller
 (`--name pictoria-sidecar`) before the Tauri build step, on every platform in
-the release matrix: `--onefile` on macOS, and on Windows `--onedir
---contents-directory pictoria-sidecar-lib`, so nothing is re-unpacked into
-`%TEMP%\_MEI*` on every launch. Every platform passes `--hidden-import
+the release matrix: `--onedir --contents-directory pictoria-sidecar-lib` on
+both Windows and macOS, so nothing is re-unpacked into a `_MEI*` temp dir on
+every launch. Every platform passes `--hidden-import
 torchvision._C_stable --hidden-import torchvision.image_stable`: torchvision ≥0.29 loads `_C_stable` dynamically, PyInstaller's
 hook misses it, and the sidecar then dies on `operator torchvision::nms does
 not exist`. The Windows contents dir is staged at `UI/src-tauri/binaries/pictoria-sidecar-lib/`
 and bundled by `UI/src-tauri/tauri.windows.conf.json` as a resource, which on
-Windows lands in the install dir next to the exe. CI then does two things with
-the output:
+Windows lands in the install dir next to the exe. macOS instead stages exe and
+contents dir together at `UI/src-tauri/binaries/pictoria-sidecar-macos/`, which
+`UI/src-tauri/tauri.macos.conf.json` bundles to `Contents/Resources/sidecar/`
+(and empties `externalBin`): inside `Contents/MacOS` PyInstaller's bootloader
+would look for its libraries in `Contents/Frameworks`. CI then does two things
+with the output:
 
 1. **Stages it for `bundle.externalBin`** (declared in `tauri.conf.json` as
    `binaries/pictoria-sidecar`). Tauri resolves that per-platform as
@@ -80,16 +84,18 @@ the output:
    `dist/pictoria-sidecar` to that name under `UI/src-tauri/binaries/`.
    Tauri strips the suffix again when it copies the binary into the bundle,
    landing it *next to the main executable* (`Contents/MacOS/` on macOS) —
-   which is the first path `core::config::sidecar_bin_path()` probes.
-2. **Signs it (macOS only)** with the Developer ID identity, `--options
-   runtime`, and `UI/src-tauri/entitlements.plist`. This has to happen before
+   which is where `core::config::sidecar_bin_path()` looks on Windows/Linux
+   (macOS probes `Resources/sidecar/` first).
+2. **Signs it (macOS only)** with the Developer ID identity and `--options
+   runtime`: every nested Mach-O in the contents dir (~230) first, then the
+   exe with `UI/src-tauri/entitlements.plist`. This has to happen before
    tauri-action seals the `.app`, because the outer signature covers its
    contents.
 
 Both steps matter for notarization: Apple requires every Mach-O inside the
 bundle to carry a Developer ID signature *and* the hardened runtime, and
 PyInstaller leaves its output ad-hoc signed with neither. The hardened runtime
-in turn breaks a `--onefile` binary unless the entitlements are granted — see
+in turn breaks a frozen Python binary unless the entitlements are granted — see
 the comment block in `entitlements.plist` for why each key is there. The
 signing step self-checks and fails the job if the binary is still ad-hoc,
 rather than letting it surface ~40 minutes later at notarization.
@@ -121,7 +127,8 @@ alternative.
 ### Local dev
 
 `cargo build`/`cargo check` needs `UI/src-tauri/binaries/pictoria-sidecar-<your
-host triple>` to exist — Tauri's build script validates declared external
+host triple>` to exist on Windows/Linux, and `UI/src-tauri/binaries/pictoria-sidecar-macos/`
+(the onedir output, `cp -R sidecar/dist/pictoria-sidecar ...`) on macOS — Tauri's build script validates declared external
 binaries eagerly, before the app ever runs, and fails with `resource path ...
 doesn't exist` otherwise. Stage it with:
 
