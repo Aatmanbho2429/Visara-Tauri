@@ -178,7 +178,12 @@
     "showMore":        "Show more",
     "familySection":   "Verified matches",
     "similarSection":  "Similar patterns",
-    "hotkeyHint":      "Or copy any image and press"
+    "hotkeyHint":      "Or copy any image and press",
+    "verifyDownTo":    "Verify down to",
+    "deepFast":        "(fast)",
+    "deepDeep":        "(deep)",
+    "stop":            "Stop",
+    "stopping":        "Stopping…"
   },
 
   "activity": {

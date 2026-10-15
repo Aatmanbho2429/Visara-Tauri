@@ -27,7 +27,8 @@ export class SearchService {
   //
   // @param scopePaths Watched-folder paths to restrict the search to.  Empty
   //                    array means "search every folder in the Library".
-  searchStream(imagePath: string, scopePaths: string[], topK: number): Observable<SearchEvent> {
+  // @param deepMinSim Cosine floor the background deep tier verifies down to.
+  searchStream(imagePath: string, scopePaths: string[], topK: number, deepMinSim?: number): Observable<SearchEvent> {
     return new Observable(observer => {
       const subs = [
         this.zoneWrapper.listen<responseSearchProgress>(TAURI_EVENTS.SEARCH_PROGRESS).subscribe(res => {
@@ -48,12 +49,17 @@ export class SearchService {
       // events above, not a `search_start_response` — fire-and-forget.
       this.zoneWrapper.invokeFireAndForget(
         TAURI_COMMANDS.SEARCH_START,
-        { imagePath, scopePaths, topK },
+        { imagePath, scopePaths, topK, deepMinSim },
         message => observer.next({ type: 'error', data: { message } }),
       );
 
       return () => subs.forEach(s => s.unsubscribe());
     });
+  }
+
+  // Asks Rust to stop the running search; it still ends with a normal `search_complete`.
+  cancel(): void {
+    this.zoneWrapper.invokeSilent<void>(TAURI_COMMANDS.SEARCH_CANCEL).subscribe({ error: () => {} });
   }
 
   onSidecarCrashed(cb: (payload: responseSidecarCrashed) => void): () => void {

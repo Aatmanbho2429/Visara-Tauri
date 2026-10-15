@@ -360,6 +360,7 @@ pub fn run() {
             auth_commands::auth_request_access,
             // ── Image search ─────────────────────────────────────────
             search_commands::search_start,
+            search_commands::search_cancel,
             search_commands::sidecar_status,
             // ── Subscription / payments ──────────────────────────────
             subscription_commands::subscription_get_plans,

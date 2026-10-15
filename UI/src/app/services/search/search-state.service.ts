@@ -10,6 +10,16 @@ export interface SearchResultVM extends SearchResult {
   matchBox: Record<string, string> | null;
 }
 
+// "Verify down to" choices; the value is the cosine floor sent as `deepMinSim`.
+export const DEEP_MIN_SIM_OPTIONS: { value: number; tag: 'fast' | 'deep' | '' }[] = [
+  { value: 0.7, tag: 'fast' },
+  { value: 0.6, tag: '' },
+  { value: 0.5, tag: '' },
+  { value: 0.4, tag: 'deep' },
+];
+// Every search starts at 70% (fast, no deep tier); a deeper floor is opt-in per search.
+export const DEEP_MIN_SIM_DEFAULT = 0.7;
+
 @Injectable({ providedIn: 'root' })
 export class SearchStateService {
   private zoneWrapper = inject(ZoneWrapperService);
@@ -23,6 +33,9 @@ export class SearchStateService {
   imagePreview = '';
   // Subset of watched-folder paths to search.  Empty array = all watched.
   scopePaths:   string[] = [];
+
+  // Cosine floor the deep tier verifies down to; back to the default on `reset()`.
+  deepMinSim = DEEP_MIN_SIM_DEFAULT;
 
   results:      SearchResultVM[] = [];
   failedFiles:  FailedFile[]     = [];
@@ -45,8 +58,13 @@ export class SearchStateService {
     this.imagePreview = this.zoneWrapper.toAssetUrl(imagePath);
   }
 
+  setDeepMinSim(value: number): void {
+    this.deepMinSim = value;
+  }
+
   reset(): void {
     this.searchState   = 'idle';
+    this.deepMinSim    = DEEP_MIN_SIM_DEFAULT;
     this.imageName     = '';
     this.imagePath     = '';
     this.imagePreview  = '';

@@ -27,7 +27,14 @@ use crate::{
     models::response::{ApiResponse, ResponseSearchComplete, ResponseSearchPartial, ResponseSearchProgress, ResponseSidecarStatus, SearchProgressSnapshot},
     services::search,
 };
-use std::{path::PathBuf, sync::Mutex, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
+    time::Duration,
+};
 use tauri::Emitter;
 use tokio::time;
 
@@ -42,6 +49,9 @@ static SEARCH_STATE: std::sync::OnceLock<Mutex<SearchState>> = std::sync::OnceLo
 fn search_state() -> &'static Mutex<SearchState> {
     SEARCH_STATE.get_or_init(|| Mutex::new(SearchState { running: false }))
 }
+
+// Bumped by every `search_start`; a worker whose generation is stale stops emitting events.
+static SEARCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 // ── Command ───────────────────────────────────────────────────────────────
 
@@ -63,6 +73,14 @@ pub fn sidecar_status(app: tauri::AppHandle, request_id: Option<String>) {
     let _ = app.emit("sidecar_status_response", result);
 }
 
+// Asks the running search (if any) to stop at its next chunk boundary; it still ends with `search_complete`.
+#[tauri::command]
+pub fn search_cancel(app: tauri::AppHandle, request_id: Option<String>) {
+    search::SEARCH_CANCEL.store(true, Ordering::Relaxed);
+    let result: ApiResponse<()> = ApiResponse::ok_empty("Cancelling").with_request_id(request_id);
+    let _ = app.emit("search_cancel_response", result);
+}
+
 fn emit_search_error(app: &tauri::AppHandle, message: impl Into<String>) {
     let payload: ApiResponse<()> = ApiResponse::err(409, message);
     let _ = app.emit("search_error", payload);
@@ -70,22 +88,53 @@ fn emit_search_error(app: &tauri::AppHandle, message: impl Into<String>) {
 
 // `scope_paths` empty or omitted → search every watched folder in the Library.
 // Otherwise the search is restricted to the provided folders.
+// `deep_min_sim` is the deep tier's cosine floor (clamped; absent means the default).
 #[tauri::command]
 pub async fn search_start(
-    app:         tauri::AppHandle,
-    image_path:  String,
-    scope_paths: Option<Vec<String>>,
-    top_k:       usize,
+    app:          tauri::AppHandle,
+    image_path:   String,
+    scope_paths:  Option<Vec<String>>,
+    top_k:        usize,
+    deep_min_sim: Option<f32>,
 ) {
-    // Guard: reject concurrent searches.
-    {
-        let mut state = search_state().lock().unwrap();
-        if state.running {
-            emit_search_error(&app, "A search is already in progress.");
+    let deep_min_sim = search::resolve_deep_min_sim(deep_min_sim);
+
+    // A new search replaces a running one: stale the old worker's events, cancel it, and wait for it to finish.
+    let my_generation = SEARCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut announced_stop = false;
+    loop {
+        {
+            let mut state = search_state().lock().unwrap();
+            if !state.running {
+                state.running = true;
+                break;
+            }
+        }
+        // A newer search_start took over while this one waited; it is the one that runs.
+        if SEARCH_GENERATION.load(Ordering::SeqCst) != my_generation {
             return;
         }
-        state.running = true;
+        search::SEARCH_CANCEL.store(true, Ordering::Relaxed);
+        if !announced_stop {
+            announced_stop = true;
+            let payload = ApiResponse::ok(ResponseSearchProgress {
+                progress: SearchProgressSnapshot {
+                    active:  true,
+                    phase:   "Stopping previous search…".to_string(),
+                    done:    0,
+                    total:   0,
+                    current: String::new(),
+                    percent: 0.0,
+                    eta_sec: -1,
+                    errors:  0,
+                },
+            });
+            let _ = app.emit("search_progress", payload);
+        }
+        time::sleep(Duration::from_millis(150)).await;
     }
+    // Cleared only now that the previous worker is done, so a stale flag can't kill this search.
+    search::SEARCH_CANCEL.store(false, Ordering::Relaxed);
 
     if !sidecar::is_ready() {
         emit_search_error(&app, "Still getting ready — please wait a moment and try again.");
@@ -102,6 +151,8 @@ pub async fn search_start(
         .to_string();
 
     let app_clone = app.clone();
+    // Deep-tier label shows the real floor, e.g. "Deep search · down to 40%".
+    let deep_label = format!("Deep search · down to {}%", (deep_min_sim * 100.0).round() as i32);
     // The initial "Searching" snapshot below (after spawn_blocking) also
     // needs `query_name`, so the worker closure gets its own clone rather
     // than moving the original in.
@@ -132,13 +183,26 @@ pub async fn search_start(
         // with the full "unchecked" ranking, and then once per verify chunk
         // as candidates are proven or rejected — so the grid can render
         // before `search_complete` ever fires.
+        // Replaced by a newer search: stop emitting so its events can't reach the new one's stream.
+        let is_current = move || SEARCH_GENERATION.load(Ordering::SeqCst) == my_generation;
+        // `total` grows when the mirrored pass triggers, so the emitted percent never steps backwards.
+        let mut last_percent = 0.0f32;
         let on_verify_progress = |progress: search::VerifyProgress| {
-            let percent = if progress.total > 0 {
+            if !is_current() {
+                return;
+            }
+            let raw = if progress.total > 0 {
                 (progress.done as f32 / progress.total as f32 * 100.0).min(100.0)
             } else {
                 0.0
             };
-            let phase = if progress.mirrored { "Checking mirrored orientation" } else { "Verifying matches" }.to_string();
+            let percent = raw.max(last_percent);
+            last_percent = percent;
+            let phase = match progress.tier {
+                "mirrored" => "Checking mirrored orientation".to_string(),
+                "deep"     => deep_label.clone(),
+                _          => "Verifying matches".to_string(),
+            };
             let payload = ApiResponse::ok(ResponseSearchProgress {
                 progress: SearchProgressSnapshot {
                     active:  true,
@@ -164,14 +228,17 @@ pub async fn search_start(
             }
         };
 
-        match search::execute(&image, &scope, top_k, on_verify_progress) {
-            Ok((results, failed_files)) => {
-                let payload = ApiResponse::ok(ResponseSearchComplete { done: true, results, failed_files });
-                let _ = app_clone.emit("search_complete", payload);
-            }
-            Err(e) => {
-                let payload: ApiResponse<()> = e.to_response();
-                let _ = app_clone.emit("search_error", payload);
+        let outcome = search::execute(&image, &scope, top_k, deep_min_sim, on_verify_progress);
+        if is_current() {
+            match outcome {
+                Ok((results, failed_files)) => {
+                    let payload = ApiResponse::ok(ResponseSearchComplete { done: true, results, failed_files });
+                    let _ = app_clone.emit("search_complete", payload);
+                }
+                Err(e) => {
+                    let payload: ApiResponse<()> = e.to_response();
+                    let _ = app_clone.emit("search_error", payload);
+                }
             }
         }
 
@@ -204,7 +271,8 @@ pub async fn search_start(
     // Wait for the blocking search to finish; it emits search_complete/_error.
     loop {
         time::sleep(Duration::from_millis(150)).await;
-        if !search_state().lock().unwrap().running {
+        // A newer search_start now owns `running`, so this call's search is over either way.
+        if !search_state().lock().unwrap().running || SEARCH_GENERATION.load(Ordering::SeqCst) != my_generation {
             break;
         }
     }

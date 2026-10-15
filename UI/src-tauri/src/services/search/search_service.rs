@@ -16,10 +16,16 @@
 // moment stage 1 finishes, then per-chunk updates as verification proves or
 // rejects each candidate — see `VerifyProgress` and Phase 4 of the same plan.
 //
+// A deep tier then keeps verifying the band below that floor in the background, returning only rows
+// that verify — see docs/plans/deep-verify.md.
+//
 // Multi-folder model unchanged: empty `scope` means every watched folder.
 
 use crate::{
-    config::{CALIBRATION_LOGGING_ENABLED, NEAR_FAMILY_MIN_SIM, VECTOR_STORE_PATH, VERIFY_MAX_CANDIDATES, VERIFY_TIME_BUDGET_MS},
+    config::{
+        CALIBRATION_LOGGING_ENABLED, DEEP_VERIFY_DEFAULT_MIN_SIM, DEEP_VERIFY_MAX_CANDIDATES, DEEP_VERIFY_MIN_SIM_FLOOR,
+        DEEP_VERIFY_TIME_BUDGET_MS, NEAR_FAMILY_MIN_SIM, VECTOR_STORE_PATH, VERIFY_MAX_CANDIDATES, VERIFY_TIME_BUDGET_MS,
+    },
     core::{database, search_gate, sidecar, vector_store},
     error::{Result, PictoriaError},
     models::response::{FailedFile, MatchRegion, SearchResult},
@@ -29,8 +35,12 @@ use image::DynamicImage;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
+
+// Set by `search_cancel` (or a replacing `search_start`); `verify_pass` stops at the next chunk boundary.
+pub static SEARCH_CANCEL: AtomicBool = AtomicBool::new(false);
 
 // ── Public API ────────────────────────────────────────────────────────────
 
@@ -91,13 +101,12 @@ struct Candidate {
 // the first one starts). `updated` carries the `SearchResult`s that changed
 // in this tick — freshly verified or rejected — so the caller can stream
 // them on rather than wait for the whole search to finish; it's empty for
-// the very first, all-`"unchecked"` call. `mirrored` distinguishes the
-// second, flipped-query pass so the UI can label it rather than have the
-// counters look like they restarted.
+// the very first, all-`"unchecked"` call. `done`/`total` span every pass, and
+// `tier` (`"near"`, `"mirrored"`, `"deep"`) tells the UI which one is running.
 pub struct VerifyProgress<'a> {
     pub done: usize,
     pub total: usize,
-    pub mirrored: bool,
+    pub tier: &'static str,
     pub updated: &'a [SearchResult],
 }
 
@@ -111,6 +120,9 @@ struct VerifyPassResult {
     attempted: HashSet<String>,
     any_chunk_failed: bool,
     budget_exhausted: bool,
+    cancelled: bool,
+    // Candidates this pass got through, so the caller can keep one cumulative counter.
+    done: usize,
 }
 
 // Run `paths` through the sidecar in chunks, stopping once `budget` elapses
@@ -130,6 +142,7 @@ fn verify_pass(
     paths: &[String],
     mirror: bool,
     budget: Duration,
+    cancel: &AtomicBool,
     mut on_chunk: impl FnMut(usize, usize, bool, &HashMap<String, sidecar::VerifyResult>),
 ) -> VerifyPassResult {
     let total = paths.len();
@@ -137,6 +150,7 @@ fn verify_pass(
     let mut attempted = HashSet::with_capacity(total);
     let mut any_chunk_failed = false;
     let mut budget_exhausted = false;
+    let mut cancelled = false;
     let mut done = 0usize;
     let deadline = Instant::now() + budget;
 
@@ -148,6 +162,11 @@ fn verify_pass(
                 "[search] verify budget ({budget:?}) exhausted after {done}/{total} \
                  candidates (mirror={mirror}) — remainder left unchecked, not rejected"
             );
+            break;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            log::info!("[search] verify cancelled after {done}/{total} candidates (mirror={mirror})");
             break;
         }
         let mut chunk_out: HashMap<String, sidecar::VerifyResult> = HashMap::with_capacity(chunk.len());
@@ -172,7 +191,7 @@ fn verify_pass(
         out.extend(chunk_out);
     }
 
-    VerifyPassResult { by_path: out, attempted, any_chunk_failed, budget_exhausted }
+    VerifyPassResult { by_path: out, attempted, any_chunk_failed, budget_exhausted, cancelled, done }
 }
 
 // Build (or rebuild) one result row from a candidate and, if verification has
@@ -245,9 +264,53 @@ fn apply_chunk(
     updated
 }
 
+// Resolves the request's `deepMinSim` into the floor the search uses: absent or non-finite means the default, anything else is clamped.
+pub fn resolve_deep_min_sim(requested: Option<f32>) -> f32 {
+    match requested {
+        Some(v) if v.is_finite() => v.clamp(DEEP_VERIFY_MIN_SIM_FLOOR, NEAR_FAMILY_MIN_SIM),
+        _ => DEEP_VERIFY_DEFAULT_MIN_SIM,
+    }
+}
+
+// The deep tier only exists when the user asked to verify below the fast floor.
+fn deep_enabled(deep_min_sim: f32) -> bool {
+    deep_min_sim < NEAR_FAMILY_MIN_SIM
+}
+
+// Stage 1 runs once, at the lower of the two floors, and is split afterwards.
+fn stage1_floor(deep_min_sim: f32) -> f32 {
+    deep_min_sim.min(NEAR_FAMILY_MIN_SIM)
+}
+
+// How many leading candidates are Tier A (cosine at or above the fast floor); `sims` is sorted descending.
+fn tier_a_count(sims: &[f32]) -> usize {
+    sims.partition_point(|&s| s >= NEAR_FAMILY_MIN_SIM)
+}
+
+// Applies one deep-tier chunk: only rows that verified are built, appended to `results` and returned.
+fn apply_deep_chunk(
+    results: &mut Vec<SearchResult>,
+    path_index: &HashMap<String, usize>,
+    candidates: &[Candidate],
+    chunk_out: &HashMap<String, sidecar::VerifyResult>,
+) -> Vec<SearchResult> {
+    let mut updated = Vec::new();
+    for (path, v) in chunk_out {
+        if !v.matched {
+            continue;
+        }
+        if let Some(&i) = path_index.get(path) {
+            let row = build_result(&candidates[i], Some(v), "verified");
+            results.push(row.clone());
+            updated.push(row);
+        }
+    }
+    updated
+}
+
 // `on_verify_progress` fires once before verification starts (the initial
 // all-`"unchecked"` set) and once per verify chunk after — see
-// `VerifyProgress`.
+// `VerifyProgress`. `deep_min_sim` below `NEAR_FAMILY_MIN_SIM` adds the deep tier.
 pub fn execute(
     image_path: &Path,
     scope: &[PathBuf],
@@ -256,6 +319,7 @@ pub fn execute(
     // logged, because a large gap between it and `results` is the first thing
     // to look at if the UI feels heavy after a broad search.
     top_k: usize,
+    deep_min_sim: f32,
     mut on_verify_progress: impl FnMut(VerifyProgress),
 ) -> Result<(Vec<SearchResult>, Vec<FailedFile>)> {
     let t_total = Instant::now();
@@ -335,14 +399,14 @@ pub fn execute(
         &query_desc.rose,
         &query_gram,
         &query_color,
-        NEAR_FAMILY_MIN_SIM,
+        stage1_floor(deep_min_sim),
     );
     let stage1_ms = t_stage1.elapsed().as_secs_f64() * 1000.0;
     log::info!(
         "[search] near family: {} of {} indexed files cleared embed cosine {:.2}",
         stage1.len(),
         store.live_count(),
-        NEAR_FAMILY_MIN_SIM,
+        stage1_floor(deep_min_sim),
     );
     // Top hit's full breakdown. rose/gram no longer select anything, so this
     // is the only place their disagreement with the embedding shows up — a
@@ -401,27 +465,44 @@ pub fn execute(
     // `candidates` is already sorted by embed_sim descending (stage1's own
     // order, preserved through the filter above), so taking a prefix here
     // keeps exactly the highest-cosine members — see `VERIFY_MAX_CANDIDATES`.
-    let near_family_n = candidates.len();
+    // Tier A is the fast tier (cosine at or above the fast floor); the rest, if
+    // any, is the deep band `[deep_min_sim, NEAR_FAMILY_MIN_SIM)`.
+    let deep_on = deep_enabled(deep_min_sim);
+    let sims: Vec<f32> = candidates.iter().map(|c| c.m.embed_sim).collect();
+    let tier_a_n = tier_a_count(&sims);
+    let near_family_n = tier_a_n;
     let verify_pool_n = near_family_n.min(VERIFY_MAX_CANDIDATES);
     let verify_paths: Vec<String> = candidates[..verify_pool_n].iter().map(|c| c.path.clone()).collect();
 
-    let path_index: HashMap<String, usize> =
-        candidates.iter().enumerate().map(|(i, c)| (c.path.clone(), i)).collect();
+    let deep_available_n = candidates.len() - tier_a_n;
+    let deep_pool_n = if deep_on { deep_available_n.min(DEEP_VERIFY_MAX_CANDIDATES) } else { 0 };
+    let deep_paths: Vec<String> =
+        candidates[tier_a_n..tier_a_n + deep_pool_n].iter().map(|c| c.path.clone()).collect();
 
-    // The initial set: every family member, unverified. This is what lets the
+    let path_index: HashMap<String, usize> =
+        candidates[..tier_a_n].iter().enumerate().map(|(i, c)| (c.path.clone(), i)).collect();
+    let deep_index: HashMap<String, usize> =
+        (tier_a_n..tier_a_n + deep_pool_n).map(|i| (candidates[i].path.clone(), i)).collect();
+
+    // The initial set: every Tier A member, unverified. This is what lets the
     // UI paint a ranked grid before SIFT/RANSAC has looked at a single
-    // candidate — see SEARCH-LATENCY-PLAN.md Phase 4.
+    // candidate — see SEARCH-LATENCY-PLAN.md Phase 4. Tier B rows join only once verified.
     let mut results: Vec<SearchResult> =
-        candidates.iter().map(|c| build_result(c, None, "unchecked")).collect();
-    on_verify_progress(VerifyProgress { done: 0, total: verify_pool_n, mirrored: false, updated: &results });
+        candidates[..tier_a_n].iter().map(|c| build_result(c, None, "unchecked")).collect();
+    // One counter for the whole search: `total` grows only when the mirrored pass triggers.
+    let mut total = verify_pool_n + deep_pool_n;
+    let mut done_so_far = 0usize;
+    on_verify_progress(VerifyProgress { done: 0, total, tier: "near", updated: &results });
 
     let budget = Duration::from_millis(VERIFY_TIME_BUDGET_MS);
     let t_verify = Instant::now();
-    let straight = verify_pass(&query_sidecar_path, &verify_paths, false, budget, |done, total, mirrored, chunk_out| {
+    let straight = verify_pass(&query_sidecar_path, &verify_paths, false, budget, &SEARCH_CANCEL, |done, _, _, chunk_out| {
         let updated = apply_chunk(&mut results, &path_index, &candidates, chunk_out, false);
-        on_verify_progress(VerifyProgress { done, total, mirrored, updated: &updated });
+        on_verify_progress(VerifyProgress { done, total, tier: "near", updated: &updated });
     });
     let verify_ms = t_verify.elapsed().as_secs_f64() * 1000.0;
+    done_so_far += straight.done;
+    let mut cancelled = straight.cancelled;
 
     // ── Stage 2b: mirrored retry ───────────────────────────────────────
     // Neither half of the verify stage can match a reflection: SIFT
@@ -442,6 +523,7 @@ pub fn execute(
     let mirror_attempted = !straight.by_path.values().any(|r| r.matched)
         && !straight.any_chunk_failed
         && !straight.budget_exhausted
+        && !straight.cancelled
         && !verify_paths.is_empty();
     let mut mirror_hits = 0usize;
     if mirror_attempted {
@@ -449,14 +531,52 @@ pub fn execute(
             "[search] no verified matches in {verify_pool_n} verified candidates \
              ({near_family_n} in the family) — retrying mirrored"
         );
-        let mirrored = verify_pass(&query_sidecar_path, &verify_paths, true, budget, |done, total, m, chunk_out| {
+        total += verify_pool_n;
+        let base = done_so_far;
+        let mirrored = verify_pass(&query_sidecar_path, &verify_paths, true, budget, &SEARCH_CANCEL, |done, _, _, chunk_out| {
             let updated = apply_chunk(&mut results, &path_index, &candidates, chunk_out, true);
             mirror_hits += updated.len();
-            on_verify_progress(VerifyProgress { done, total, mirrored: m, updated: &updated });
+            on_verify_progress(VerifyProgress { done: base + done, total, tier: "mirrored", updated: &updated });
         });
-        let _ = mirrored; // by_path/attempted not needed past the chunk-apply above
+        done_so_far += mirrored.done;
+        cancelled |= mirrored.cancelled;
     }
     let mirror_ms = if mirror_attempted { t_mirror.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+
+    // ── Stage 2c: deep tier ────────────────────────────────────────────
+    // Straight pass only over the Tier B band; just the rows that verify are emitted and kept.
+    let t_deep = Instant::now();
+    let mut deep_attempted_n = 0usize;
+    let mut deep_stopped = "none";
+    if deep_on && deep_pool_n > 0 && !cancelled {
+        let base = done_so_far;
+        let deep = verify_pass(
+            &query_sidecar_path,
+            &deep_paths,
+            false,
+            Duration::from_millis(DEEP_VERIFY_TIME_BUDGET_MS),
+            &SEARCH_CANCEL,
+            |done, _, _, chunk_out| {
+                let updated = apply_deep_chunk(&mut results, &deep_index, &candidates, chunk_out);
+                on_verify_progress(VerifyProgress { done: base + done, total, tier: "deep", updated: &updated });
+            },
+        );
+        deep_attempted_n = deep.attempted.len();
+        cancelled |= deep.cancelled;
+        deep_stopped = if deep.cancelled {
+            "cancelled"
+        } else if deep.budget_exhausted {
+            "budget"
+        } else if deep_available_n > deep_pool_n {
+            "cap"
+        } else {
+            "none"
+        };
+    } else if deep_on && cancelled {
+        deep_stopped = "cancelled";
+    }
+    let deep_ms = t_deep.elapsed().as_secs_f64() * 1000.0;
+    let deep_verified_n = results.len() - tier_a_n;
 
     // Verified matches first (the stage-1 score breaks ties within that
     // group, same as every other tier), then rejected/unchecked together by
@@ -500,8 +620,10 @@ pub fn execute(
          scope_ms={scope_ms:.2} query_prep_ms={prep_ms:.2} \
          describe_ms={describe_ms:.2} store_load_ms={store_load_ms:.2} id_map_ms={id_map_ms:.2} \
          near_family_ms={stage1_ms:.2} verify_ms={verify_ms:.2} mirror_attempted={mirror_attempted} \
-         mirror_hits={mirror_hits} mirror_ms={mirror_ms:.2} assemble_ms={assemble_ms:.2} \
-         total_ms={:.2}",
+         mirror_hits={mirror_hits} mirror_ms={mirror_ms:.2} deep_min_sim={deep_min_sim:.2} \
+         deep_pool_n={deep_pool_n} deep_attempted_n={deep_attempted_n} deep_verified_n={deep_verified_n} \
+         deep_ms={deep_ms:.2} deep_stopped={deep_stopped} search_cancelled={cancelled} \
+         assemble_ms={assemble_ms:.2} total_ms={:.2}",
         query_sidecar_path.rsplit(['/', '\\']).next().unwrap_or(&query_sidecar_path),
         scope_paths.len(),
         id_map.len(),
@@ -640,8 +762,50 @@ mod tests {
         // a real budget cutoff does, just via a different cause. Either way
         // `attempted` must stay empty for paths that were never resolved.
         let paths = vec!["a".to_string(), "b".to_string()];
-        let result = verify_pass("nonexistent-query.png", &paths, false, Duration::from_millis(0), |_, _, _, _| {});
+        let result = verify_pass("nonexistent-query.png", &paths, false, Duration::from_millis(0), &AtomicBool::new(false), |_, _, _, _| {});
         assert!(result.budget_exhausted, "zero-duration budget must trip immediately");
         assert!(result.attempted.is_empty());
+    }
+
+    // A cancel flag raised before the pass starts must stop it before any chunk is sent.
+    #[test]
+    fn verify_pass_returns_early_when_cancelled() {
+        let paths = vec!["a".to_string(), "b".to_string()];
+        let cancel = AtomicBool::new(true);
+        let result = verify_pass("nonexistent-query.png", &paths, false, Duration::from_secs(60), &cancel, |_, _, _, _| {});
+        assert!(result.cancelled);
+        assert!(!result.budget_exhausted);
+        assert!(result.attempted.is_empty());
+        assert_eq!(result.done, 0);
+    }
+
+    // Candidates sorted by cosine split at the fast floor: the band below it is Tier B.
+    #[test]
+    fn tier_split_puts_candidates_below_the_fast_floor_in_tier_b() {
+        let sims = [0.92, 0.80, 0.70, 0.69, 0.55, 0.41];
+        assert_eq!(tier_a_count(&sims), 3);
+        assert_eq!(tier_a_count(&[0.6, 0.5]), 0);
+        assert_eq!(tier_a_count(&[]), 0);
+    }
+
+    // A floor at or above the fast floor leaves the search exactly as it was: no deep tier, stage 1 at 0.70.
+    #[test]
+    fn deep_min_sim_at_or_above_fast_floor_has_no_deep_tier() {
+        assert!(!deep_enabled(NEAR_FAMILY_MIN_SIM));
+        assert!(!deep_enabled(0.9));
+        assert_eq!(stage1_floor(NEAR_FAMILY_MIN_SIM), NEAR_FAMILY_MIN_SIM);
+        assert_eq!(stage1_floor(0.9), NEAR_FAMILY_MIN_SIM);
+        assert!(deep_enabled(0.40));
+        assert_eq!(stage1_floor(0.40), 0.40);
+    }
+
+    // Out-of-range, missing and non-finite `deepMinSim` values all resolve to something usable.
+    #[test]
+    fn deep_min_sim_is_clamped_and_defaulted() {
+        assert_eq!(resolve_deep_min_sim(None), DEEP_VERIFY_DEFAULT_MIN_SIM);
+        assert_eq!(resolve_deep_min_sim(Some(0.10)), DEEP_VERIFY_MIN_SIM_FLOOR);
+        assert_eq!(resolve_deep_min_sim(Some(0.95)), NEAR_FAMILY_MIN_SIM);
+        assert_eq!(resolve_deep_min_sim(Some(0.5)), 0.5);
+        assert_eq!(resolve_deep_min_sim(Some(f32::NAN)), DEEP_VERIFY_DEFAULT_MIN_SIM);
     }
 }

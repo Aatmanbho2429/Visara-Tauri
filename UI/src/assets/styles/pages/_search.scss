@@ -425,6 +425,18 @@
   }
 
   &__stats { font-size: $font-size-xs; color: $surface-500; white-space: nowrap; flex-shrink: 0; }
+
+  &__stop {
+    appearance: none; flex-shrink: 0; cursor: pointer;
+    display: inline-flex; align-items: center; gap: $space-1;
+    background: rgba(217, 70, 239, 0.08);
+    border: 1px solid rgba(217, 70, 239, 0.22);
+    border-radius: 999px; padding: 0.2rem $space-3;
+    font-family: $font-primary; font-size: $font-size-xs; color: $surface-100;
+
+    &:hover:not(:disabled) { background: rgba(217, 70, 239, 0.16); }
+    &:disabled { opacity: 0.5; cursor: default; }
+  }
 }
 
 // ── Failed files notice ────────────────────────────────────────
@@ -938,6 +950,8 @@
     border-color: rgba(217, 70, 239, 0.4);
   }
 
+  &:disabled { opacity: 0.5; cursor: default; }
+
   i { color: $primary-400; font-size: 1.2rem; flex-shrink: 0; }
 
   span {
@@ -988,6 +1002,8 @@
     gap: 0.8rem;
 
     &:hover { background: rgba(217, 70, 239, 0.16); }
+
+    &--active { border-color: rgba(217, 70, 239, 0.5); }
 
     i { color: $primary-400; }
   }

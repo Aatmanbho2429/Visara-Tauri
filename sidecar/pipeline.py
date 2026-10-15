@@ -629,6 +629,7 @@ def dominant_colors(img_rgb):
 _MIN_CONTAINED = 0.75   # fraction of the projected quad that must land in-frame
 _MAX_KEYSTONE = 0.05    # perspective warp across the candidate's own span
 _MAX_ROT_OFF_DEG = 10.0  # deviation from the nearest right angle
+_MAX_PLACEMENTS = 3      # RANSAC refits tried after a geometry rejection; each costs a few ms
 
 
 def _placement_geometry(H, q_shape, c_shape):
@@ -886,57 +887,74 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
     # without touching the thresholds: 21/21 known colourway pairs still
     # verify, the known false positive stays rejected, and the true matches
     # that were being lost come back.
-    M, mask = cv2.estimateAffinePartial2D(
-        src, dst, method=cv2.RANSAC, ransacReprojThreshold=ransac_thresh,
-        maxIters=5000, confidence=0.995,
-    )
-    if M is None or mask is None:
-        log_timing("no-transform")
-        return {"matched": False, "reason": "no-transform", "good_matches": len(good)}
-    H = np.vstack([M, [0.0, 0.0, 1.0]]).astype(np.float64)
+    # A placement the geometry gate rejects (e.g. a panel cut off by the page edge) may hide a valid one
+    # elsewhere in the candidate, so peel its inliers off and refit — see docs/plans/verify-recall.md.
+    first = None  # (result, reason) of the first fit, reported when no placement passes
+    for placement in range(_MAX_PLACEMENTS):
+        M, mask = cv2.estimateAffinePartial2D(
+            src, dst, method=cv2.RANSAC, ransacReprojThreshold=ransac_thresh,
+            maxIters=5000, confidence=0.995,
+        )
+        if M is None or mask is None:
+            if first is None:
+                log_timing("no-transform")
+                return {"matched": False, "reason": "no-transform", "good_matches": len(good)}
+            break
+        H = np.vstack([M, [0.0, 0.0, 1.0]]).astype(np.float64)
 
-    inliers = int(mask.sum())
-    inlier_ratio = inliers / len(good)
-    # `min_inliers` is a floor against degenerate fits, not a confidence
-    # measure — `inlier_ratio` is what actually separates signal from noise,
-    # because it is scale-free. The absolute count is not: a recoloured crop
-    # keeps only a fraction of the query's SIFT correspondences (measured:
-    # 496 inliers between two greyscale-identical images collapsed to ~12
-    # once one side was recoloured), so a fixed floor silently penalises
-    # exactly the colourway matches this app exists to find. 12 sat right on
-    # top of that cluster — a 2px border trim on the query was enough to move
-    # a real match from 12 to 11 and drop it out of the verified tier.
-    matched = inliers >= min_inliers and inlier_ratio >= 0.35
-    result = {"matched": matched, "good_matches": len(good), "inliers": inliers,
-              "inlier_ratio": round(inlier_ratio, 3),
-              # Which orientation of the query produced this. Only meaningful
-              # when `matched`; the caller reports it so the UI can say the
-              # match is a mirror rather than silently presenting it as a
-              # straight hit (book-matched tile pairs are a real case).
-              "mirrored": bool(query_state.get("mirror", False))}
+        n_good = len(src)
+        inliers = int(mask.sum())
+        inlier_ratio = inliers / n_good
+        # `min_inliers` is a floor against degenerate fits, not a confidence
+        # measure — `inlier_ratio` is what actually separates signal from noise,
+        # because it is scale-free. The absolute count is not: a recoloured crop
+        # keeps only a fraction of the query's SIFT correspondences (measured:
+        # 496 inliers between two greyscale-identical images collapsed to ~12
+        # once one side was recoloured), so a fixed floor silently penalises
+        # exactly the colourway matches this app exists to find. 12 sat right on
+        # top of that cluster — a 2px border trim on the query was enough to move
+        # a real match from 12 to 11 and drop it out of the verified tier.
+        matched = inliers >= min_inliers and inlier_ratio >= 0.35
+        result = {"matched": matched, "good_matches": n_good, "inliers": inliers,
+                  "inlier_ratio": round(inlier_ratio, 3),
+                  # Which orientation of the query produced this. Only meaningful
+                  # when `matched`; the caller reports it so the UI can say the
+                  # match is a mirror rather than silently presenting it as a
+                  # straight hit (book-matched tile pairs are a real case).
+                  "mirrored": bool(query_state.get("mirror", False))}
+        if not matched:
+            if first is None:
+                first = (result, "low-confidence")
+            break
 
-    reason = "matched" if matched else "low-confidence"
-    if matched:
         # Counting votes is not enough — check the transform those votes
         # elected is one a real embedded crop could produce. See the
         # `_MIN_CONTAINED` block above for why and for the measured margins.
         geo, quad = _placement_geometry(H, qg.shape, cg.shape)
         rejected = _implausible_placement(geo)
-        if rejected:
-            log.debug(
-                "[verify] rejected candidate=%s on geometry (%s): inliers=%d ratio=%.2f "
-                "contained=%.3f keystone=%.3f rot_off=%.1f",
-                os.path.basename(candidate_path), rejected, inliers, inlier_ratio,
-                geo["contained"], geo["keystone"], geo["rot_off"],
-            )
-            matched = False
-            result["matched"] = False
-            result["reason"] = rejected
-            reason = rejected
-        else:
+        if not rejected:
             result["box"] = quad.tolist()
             result["candidate_size"] = [c.shape[1], c.shape[0]]
             sx, sy = float(np.hypot(H[0, 0], H[1, 0])), float(np.hypot(H[0, 1], H[1, 1]))
             result["scale"] = round((sx + sy) / 2, 3)
+            log_timing("matched" if placement == 0 else f"matched-placement-{placement + 1}")
+            return result
+
+        log.debug(
+            "[verify] rejected candidate=%s placement=%d on geometry (%s): inliers=%d ratio=%.2f "
+            "contained=%.3f keystone=%.3f rot_off=%.1f",
+            os.path.basename(candidate_path), placement + 1, rejected, inliers, inlier_ratio,
+            geo["contained"], geo["keystone"], geo["rot_off"],
+        )
+        result["matched"] = False
+        result["reason"] = rejected
+        if first is None:
+            first = (result, rejected)
+        keep = mask.ravel() == 0
+        src, dst = src[keep], dst[keep]
+        if len(src) < 4:
+            break
+
+    result, reason = first
     log_timing(reason)
     return result

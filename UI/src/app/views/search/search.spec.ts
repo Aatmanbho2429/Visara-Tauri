@@ -1,6 +1,20 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { NEVER, of } from 'rxjs';
+import { provideTranslateService } from '@ngx-translate/core';
+import { ZoneWrapperService } from '../../core/zone-wrapper/zone-wrapper.service';
 
 import { Search } from './search';
+import { SearchService } from '../../services/search/search.service';
+import { SearchStateService } from '../../services/search/search-state.service';
+
+// No Tauri runtime under jsdom: every IPC call is inert and the sidecar reports not-ready.
+const zoneWrapperStub = {
+  invoke:              () => NEVER,
+  invokeSilent:        () => of({ ready: false, healthy: false, embedReady: false }),
+  invokeFireAndForget: () => {},
+  listen:              () => NEVER,
+  toAssetUrl:          (p: string) => p,
+};
 
 describe('Search', () => {
   let component: Search;
@@ -9,6 +23,7 @@ describe('Search', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [Search],
+      providers: [provideTranslateService(), { provide: ZoneWrapperService, useValue: zoneWrapperStub }],
     }).compileComponents();
 
     fixture = TestBed.createComponent(Search);
@@ -54,5 +69,49 @@ describe('Search', () => {
     }]);
     expect(component.state.results.length).toBe(1);
     expect(component.state.results[0].path).toBe('b.png');
+  });
+
+  // Stopping on "New search": a search still running behind the grid must be cancelled in Rust too.
+  it('newSearch() cancels a running search', () => {
+    const cancel = vi.spyOn(TestBed.inject(SearchService), 'cancel').mockImplementation(() => {});
+    component.state.progress = { ...component.state.progress, active: true };
+    component.newSearch();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('newSearch() does not cancel when no search is active', () => {
+    const cancel = vi.spyOn(TestBed.inject(SearchService), 'cancel').mockImplementation(() => {});
+    component.state.progress = { ...component.state.progress, active: false };
+    component.newSearch();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('stopSearch() cancels once and shows the stopping state', () => {
+    const cancel = vi.spyOn(TestBed.inject(SearchService), 'cancel').mockImplementation(() => {});
+    component.stopSearch();
+    component.stopSearch();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(component.stopping).toBe(true);
+  });
+});
+
+describe('Search deep-verify floor', () => {
+  beforeEach(() => TestBed.resetTestingModule());
+
+  it('defaults to 70%', () => {
+    expect(TestBed.inject(SearchStateService).deepMinSim).toBe(0.7);
+  });
+
+  it('is not remembered across app restarts', () => {
+    TestBed.inject(SearchStateService).setDeepMinSim(0.4);
+    TestBed.resetTestingModule();
+    expect(TestBed.inject(SearchStateService).deepMinSim).toBe(0.7);
+  });
+
+  it('goes back to 70% on reset()', () => {
+    const state = TestBed.inject(SearchStateService);
+    state.setDeepMinSim(0.5);
+    state.reset();
+    expect(state.deepMinSim).toBe(0.7);
   });
 });

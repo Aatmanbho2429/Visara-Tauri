@@ -9,4 +9,6 @@ pub struct RequestStartSearch {
     pub image_path: String,
     pub scope_paths: Option<Vec<String>>,
     pub top_k: usize,
+    // Deep tier's cosine floor; clamped by `search_start`, absent means the default.
+    pub deep_min_sim: Option<f32>,
 }

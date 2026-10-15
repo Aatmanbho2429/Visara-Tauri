@@ -127,6 +127,13 @@ and trust its own checklist over any summary here.
 - `docs/plans/force-update.md` — mandatory-update overlay. Phases 1–3 shipped, phase 4 (server-
   issued `minVersion` kill switch) deferred. Forcing is gated on `!isDevMode()`, so `tauri dev` is
   never blocked; nothing can switch it *off* in a shipped build.
+- `docs/plans/verify-recall.md` — why verified matches go missing in large libraries (only ~100
+  of the cosine-ordered near family gets SIFT-checked), and the fix: hash-dedupe plus a separate,
+  backfilled SIFT-VLAD identity store. Proposed, not started. Its governing rule: no phase may
+  make an existing library stale, so `vectors.bin` and `EMBED_SCHEMA_VERSION` are never touched.
+- `docs/plans/deep-verify.md` — a two-tier search. The fast tier verifies cosine ≥ 0.70 as before,
+  then a background "deep" tier keeps verifying down to a user-chosen floor (default 0.40). One
+  progress counter covers both, and the search can be cancelled. Approved; handed to a Sonnet session.
 - `docs/backend/` — the Supabase project: schema, RLS, and all 20 deployed edge functions against
   the 11 the app calls. Read `docs/backend/README.md` before touching auth, subscription, or
   billing — it flags several load-bearing footguns.

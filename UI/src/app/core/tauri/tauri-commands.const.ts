@@ -15,6 +15,7 @@ export const TAURI_COMMANDS = {
   AUTH_REQUEST_ACCESS: 'auth_request_access',
   // ── Search ─────────────────────────────────────────────────────
   SEARCH_START: 'search_start',
+  SEARCH_CANCEL: 'search_cancel',
   SIDECAR_STATUS: 'sidecar_status',
   // ── Subscription / payments ────────────────────────────────────
   SUBSCRIPTION_GET_PLANS: 'subscription_get_plans',

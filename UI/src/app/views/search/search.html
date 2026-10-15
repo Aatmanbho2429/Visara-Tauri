@@ -123,6 +123,29 @@
               </div>
             }
           </div>
+
+          <span class="scope-row__label">{{ 'search.verifyDownTo' | translate }}</span>
+
+          <div class="scope-picker" (click)="$event.stopPropagation()">
+            <button class="scope-pill" [disabled]="state.progress.active" (click)="toggleDeepDropdown()">
+              <i class="pi pi-search-plus"></i>
+              <span>{{ state.deepMinSim * 100 | number:'1.0-0' }}%</span>
+              <i class="pi pi-chevron-down scope-pill__chev" [class.scope-pill__chev--open]="deepOpen"></i>
+            </button>
+
+            @if (deepOpen) {
+              <div class="scope-dropdown">
+                @for (o of deepOptions; track o.value) {
+                  <button class="scope-dropdown__all" [class.scope-dropdown__all--active]="o.value === state.deepMinSim"
+                          (click)="selectDeepMinSim(o.value)">
+                    <span>{{ o.value * 100 | number:'1.0-0' }}%</span>
+                    @if (o.tag === 'fast') { <span class="scope-dropdown__count">{{ 'search.deepFast' | translate }}</span> }
+                    @if (o.tag === 'deep') { <span class="scope-dropdown__count">{{ 'search.deepDeep' | translate }}</span> }
+                  </button>
+                }
+              </div>
+            }
+          </div>
         </div>
 
         <button class="search-trigger" [class.search-trigger--ready]="canSearch"
@@ -195,13 +218,17 @@
            visible. See SEARCH-LATENCY-PLAN.md Phase 4. -->
       @if (isVerifying) {
         <div class="verify-strip">
-          <span class="verify-strip__phase">{{ state.progress.phase }}</span>
+          <span class="verify-strip__phase">{{ stopping ? ('search.stopping' | translate) : state.progress.phase }}</span>
           <div class="verify-strip__track">
             <div class="verify-strip__fill" [style.width.%]="state.progress.percent"></div>
           </div>
           @if (state.progress.total > 0) {
             <span class="verify-strip__stats">{{ state.progress.done }}/{{ state.progress.total }}</span>
           }
+          <button class="verify-strip__stop" [disabled]="stopping" (click)="stopSearch()">
+            <i class="pi pi-stop-circle"></i>
+            {{ 'search.stop' | translate }}
+          </button>
         </div>
       }
 

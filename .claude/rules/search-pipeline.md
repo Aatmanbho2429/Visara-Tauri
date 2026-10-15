@@ -18,6 +18,11 @@ paths:
 4. Secondary Gabor-rose + Gram-matrix score (`ROSE_WEIGHT`/`GRAM_WEIGHT`) is still computed and
    returned, but no longer selects candidates — it only breaks ties at equal embedding cosine.
 
+5. **Deep tier** (`docs/plans/deep-verify.md`): when the request's `deepMinSim` is below
+   `NEAR_FAMILY_MIN_SIM`, stage 1 runs once at that lower floor and the band below 0.70 is
+   SIFT-verified after the fast tier. Only deep-tier rows that verify are returned; it is capped by
+   `DEEP_VERIFY_MAX_CANDIDATES` / `DEEP_VERIFY_TIME_BUDGET_MS` and stops on `search_cancel`.
+
 ## Watch the floor
 
 `NEAR_FAMILY_MIN_SIM` (0.70) is the only bound on how much work a search does, and it is not

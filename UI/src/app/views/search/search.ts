@@ -11,7 +11,8 @@ import { LibraryService } from '../../services/library/library.service';
 import { BrowseService } from '../../services/browse/browse.service';
 import { FileService } from '../../services/file/file.service';
 import { UserStateService } from '../../services/user/user-state.service';
-import { SearchStateService, SearchResultVM } from '../../services/search/search-state.service';
+import { Subscription } from 'rxjs';
+import { SearchStateService, SearchResultVM, DEEP_MIN_SIM_OPTIONS } from '../../services/search/search-state.service';
 import { PlansDialog } from '../../shared/plans-dialog/plans-dialog';
 import { LoaderOrb } from '../../shared/loader-orb/loader-orb';
 import { WatchedFolder } from '../../models/response/responseLibrary';
@@ -67,6 +68,14 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   watchedFolders: WatchedFolder[] = [];
   foldersLoading                  = true;
   scopeOpen                       = false;
+
+  // "Verify down to" dropdown: choices, open flag, and the Stop button's "Stopping…" state.
+  readonly deepOptions = DEEP_MIN_SIM_OPTIONS;
+  deepOpen             = false;
+  stopping             = false;
+
+  // The live search stream; dropped before the next search so an old search's late events can't land in it.
+  private searchSub: Subscription | null = null;
 
   // Drives the "Model is loading…" state. Two models sit behind it and they
   // arrive at different times: the bundled mobilenet (Gabor/Gram/SIFT) loads
@@ -270,6 +279,27 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   @HostListener('document:click')
   closeScopeDropdown(): void {
     this.scopeOpen = false;
+    this.deepOpen  = false;
+  }
+
+  // ── "Verify down to" picker ───────────────────────────────────────
+
+  toggleDeepDropdown(): void {
+    if (this.state.progress.active) return;
+    this.deepOpen = !this.deepOpen;
+  }
+
+  selectDeepMinSim(value: number): void {
+    this.state.setDeepMinSim(value);
+    this.deepOpen = false;
+    this.cdr.detectChanges();
+  }
+
+  // Ends the deep search; verified rows stay and the final `search_complete` closes the strip.
+  stopSearch(): void {
+    if (this.stopping) return;
+    this.stopping = true;
+    this.searchSvc.cancel();
   }
 
   isFolderInScope(path: string): boolean {
@@ -353,6 +383,8 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   }
 
   private runSearch(): void {
+    this.searchSub?.unsubscribe();
+    this.stopping            = false;
     this.state.searchState   = 'searching';
     this.state.searchError   = '';
     this.state.results       = [];
@@ -378,7 +410,7 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
     // `topK` no longer trims anything server-side (see `services::search`);
     // it is logged there as "what the client asked for". Sending the page size
     // keeps that log honest now that the picker is gone.
-    this.searchSvc.searchStream(this.state.imagePath, this.state.scopePaths, this.SIMILAR_PAGE).subscribe({
+    this.searchSub = this.searchSvc.searchStream(this.state.imagePath, this.state.scopePaths, this.SIMILAR_PAGE, this.state.deepMinSim).subscribe({
       next: event => {
         if (event.type === 'progress') {
           if (event.data?.progress) this.state.progress = event.data.progress;
@@ -405,6 +437,7 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
           this.resortResults();
           this.state.failedFiles = event.data?.failedFiles ?? [];
           this.state.progress    = { ...this.state.progress, active: false };
+          this.stopping          = false;
           if (this.state.searchState !== 'results') {
             this.state.searchState = 'results';
             this.similarExpanded = true;
@@ -415,6 +448,7 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
           this.state.searchError = event.data?.message ?? 'Search failed. Please try again.';
           this.state.searchState = 'idle';
           this.state.progress    = { ...this.state.progress, active: false };
+          this.stopping          = false;
         }
         this.cdr.detectChanges();
       }
@@ -455,6 +489,11 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   }
 
   newSearch(): void {
+    // A search still running behind the grid is stopped, and its stream dropped, before the view resets.
+    if (this.state.progress.active) this.searchSvc.cancel();
+    this.searchSub?.unsubscribe();
+    this.searchSub = null;
+    this.stopping  = false;
     // `reset()` clears `scopePaths`, which puts the scope back to its default
     // meaning — all watched folders — rather than inheriting the narrower
     // selection from the previous search.
