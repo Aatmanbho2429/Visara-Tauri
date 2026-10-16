@@ -128,21 +128,31 @@
 
           <div class="scope-picker" (click)="$event.stopPropagation()">
             <button class="scope-pill" [disabled]="state.progress.active" (click)="toggleDeepDropdown()">
-              <i class="pi pi-search-plus"></i>
-              <span>{{ state.deepMinSim * 100 | number:'1.0-0' }}%</span>
+              <i class="pi" [class.pi-database]="state.fullDb" [class.pi-search-plus]="!state.fullDb"></i>
+              @if (state.fullDb) {
+                <span>{{ 'search.fullDbShort' | translate }}</span>
+              } @else {
+                <span>{{ state.deepMinSim * 100 | number:'1.0-0' }}%</span>
+              }
               <i class="pi pi-chevron-down scope-pill__chev" [class.scope-pill__chev--open]="deepOpen"></i>
             </button>
 
             @if (deepOpen) {
               <div class="scope-dropdown">
                 @for (o of deepOptions; track o.value) {
-                  <button class="scope-dropdown__all" [class.scope-dropdown__all--active]="o.value === state.deepMinSim"
+                  <button class="scope-dropdown__all" [class.scope-dropdown__all--active]="!state.fullDb && o.value === state.deepMinSim"
                           (click)="selectDeepMinSim(o.value)">
                     <span>{{ o.value * 100 | number:'1.0-0' }}%</span>
                     @if (o.tag === 'fast') { <span class="scope-dropdown__count">{{ 'search.deepFast' | translate }}</span> }
                     @if (o.tag === 'deep') { <span class="scope-dropdown__count">{{ 'search.deepDeep' | translate }}</span> }
                   </button>
                 }
+                <div class="scope-dropdown__sep"></div>
+                <button class="scope-dropdown__all" [class.scope-dropdown__all--active]="state.fullDb"
+                        (click)="selectFullDb()">
+                  <span>{{ 'search.fullDb' | translate }}</span>
+                  <span class="scope-dropdown__count">{{ 'search.fullDbTag' | translate }}</span>
+                </button>
               </div>
             }
           </div>
@@ -183,7 +193,7 @@
           <span class="scan-progress__file">{{ state.progress.current }}</span>
           <span class="scan-progress__stats">
             @if (state.progress.total > 0) { {{ state.progress.done }}/{{ state.progress.total }} }
-            @if (state.progress.etaSec > 0) { &nbsp;•&nbsp; ~{{ state.progress.etaSec }}s }
+            @if (state.progress.etaSec > 0) { &nbsp;•&nbsp; ~{{ etaLabel }} }
             @if (state.progress.errors > 0) {
               &nbsp;•&nbsp;
               <span class="scan-progress__errors">{{ state.progress.errors }} {{ 'search.errors' | translate }}</span>
@@ -223,7 +233,10 @@
             <div class="verify-strip__fill" [style.width.%]="state.progress.percent"></div>
           </div>
           @if (state.progress.total > 0) {
-            <span class="verify-strip__stats">{{ state.progress.done }}/{{ state.progress.total }}</span>
+            <span class="verify-strip__stats">
+              {{ state.progress.done }}/{{ state.progress.total }}
+              @if (state.progress.etaSec > 0 && !stopping) { &nbsp;•&nbsp; ~{{ etaLabel }} }
+            </span>
           }
           <button class="verify-strip__stop" [disabled]="stopping" (click)="stopSearch()">
             <i class="pi pi-stop-circle"></i>

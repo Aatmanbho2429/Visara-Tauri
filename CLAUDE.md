@@ -133,8 +133,7 @@ and trust its own checklist over any summary here.
   make an existing library stale, so `vectors.bin` and `EMBED_SCHEMA_VERSION` are never touched.
 - `docs/plans/deep-verify.md` — a two-tier search. The fast tier verifies cosine ≥ 0.70 as before,
   then a background "deep" tier keeps verifying down to a user-chosen floor (default 0.40). One
-  progress counter covers both, and the search can be cancelled. Approved; handed to a Sonnet session.
-- `docs/backend/` — the Supabase project: schema, RLS, and all 20 deployed edge functions against
+  progress counter covers both, and the search can be cancelled. Approved; handed to a Sonnet session.- `docs/backend/` — the Supabase project: schema, RLS, and all 20 deployed edge functions against
   the 11 the app calls. Read `docs/backend/README.md` before touching auth, subscription, or
   billing — it flags several load-bearing footguns.
 - `SEARCH-LATENCY-PLAN.md`, `MIGRATION-PLAN.md` (root) — both fully landed. Historical record;

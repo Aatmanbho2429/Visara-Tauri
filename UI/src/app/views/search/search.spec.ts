@@ -115,3 +115,26 @@ describe('Search deep-verify floor', () => {
     expect(state.deepMinSim).toBe(0.7);
   });
 });
+
+describe('Search Full DB option', () => {
+  beforeEach(() => TestBed.resetTestingModule());
+
+  it('defaults to off', () => {
+    expect(TestBed.inject(SearchStateService).fullDb).toBe(false);
+  });
+
+  it('is cleared by reset()', () => {
+    const state = TestBed.inject(SearchStateService);
+    state.setFullDb(true);
+    state.reset();
+    expect(state.fullDb).toBe(false);
+  });
+
+  it('is cleared by picking a percentage', () => {
+    const state = TestBed.inject(SearchStateService);
+    state.setFullDb(true);
+    state.setDeepMinSim(0.6);
+    expect(state.fullDb).toBe(false);
+    expect(state.deepMinSim).toBe(0.6);
+  });
+});

@@ -123,6 +123,41 @@ struct VerifyPassResult {
     cancelled: bool,
     // Candidates this pass got through, so the caller can keep one cumulative counter.
     done: usize,
+    // Candidates sent in chunks that failed — never verified, and silently dropped in the deep tier.
+    failed_n: usize,
+}
+
+// Every bound one search runs under; `None` / `usize::MAX` mean unbounded (Full DB).
+#[derive(Debug, PartialEq)]
+struct VerifyLimits {
+    stage1_floor: f32,
+    tier_a_max: usize,
+    tier_a_budget: Option<Duration>,
+    deep_max: usize,
+    deep_budget: Option<Duration>,
+    deep_on: bool,
+}
+
+// Full DB drops the floor, both caps and both budgets; otherwise these are the configured bounds.
+fn verify_limits(deep_min_sim: f32, full_db: bool) -> VerifyLimits {
+    if full_db {
+        return VerifyLimits {
+            stage1_floor: f32::NEG_INFINITY,
+            tier_a_max: usize::MAX,
+            tier_a_budget: None,
+            deep_max: usize::MAX,
+            deep_budget: None,
+            deep_on: true,
+        };
+    }
+    VerifyLimits {
+        stage1_floor: stage1_floor(deep_min_sim),
+        tier_a_max: VERIFY_MAX_CANDIDATES,
+        tier_a_budget: Some(Duration::from_millis(VERIFY_TIME_BUDGET_MS)),
+        deep_max: DEEP_VERIFY_MAX_CANDIDATES,
+        deep_budget: Some(Duration::from_millis(DEEP_VERIFY_TIME_BUDGET_MS)),
+        deep_on: deep_enabled(deep_min_sim),
+    }
 }
 
 // Run `paths` through the sidecar in chunks, stopping once `budget` elapses
@@ -141,7 +176,8 @@ fn verify_pass(
     query_path: &str,
     paths: &[String],
     mirror: bool,
-    budget: Duration,
+    // `None` means no deadline (Full DB); `Instant + Duration::MAX` would panic, so it can't be a huge value.
+    budget: Option<Duration>,
     cancel: &AtomicBool,
     mut on_chunk: impl FnMut(usize, usize, bool, &HashMap<String, sidecar::VerifyResult>),
 ) -> VerifyPassResult {
@@ -152,11 +188,12 @@ fn verify_pass(
     let mut budget_exhausted = false;
     let mut cancelled = false;
     let mut done = 0usize;
-    let deadline = Instant::now() + budget;
+    let mut failed_n = 0usize;
+    let deadline = budget.map(|b| Instant::now() + b);
 
     on_chunk(0, total, mirror, &HashMap::new());
     for chunk in paths.chunks(VERIFY_CHUNK) {
-        if Instant::now() >= deadline {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
             budget_exhausted = true;
             log::warn!(
                 "[search] verify budget ({budget:?}) exhausted after {done}/{total} \
@@ -179,6 +216,7 @@ fn verify_pass(
             }
             Err(e) => {
                 any_chunk_failed = true;
+                failed_n += chunk.len();
                 log::warn!(
                     "[search] verify chunk failed (n={}, mirror={mirror}): {e} — \
                      those candidates stay unchecked, not rejected",
@@ -191,7 +229,7 @@ fn verify_pass(
         out.extend(chunk_out);
     }
 
-    VerifyPassResult { by_path: out, attempted, any_chunk_failed, budget_exhausted, cancelled, done }
+    VerifyPassResult { by_path: out, attempted, any_chunk_failed, budget_exhausted, cancelled, done, failed_n }
 }
 
 // Build (or rebuild) one result row from a candidate and, if verification has
@@ -310,7 +348,8 @@ fn apply_deep_chunk(
 
 // `on_verify_progress` fires once before verification starts (the initial
 // all-`"unchecked"` set) and once per verify chunk after — see
-// `VerifyProgress`. `deep_min_sim` below `NEAR_FAMILY_MIN_SIM` adds the deep tier.
+// `VerifyProgress`. `deep_min_sim` below `NEAR_FAMILY_MIN_SIM` adds the deep tier;
+// `full_db` verifies every file in scope with no floor, cap or budget.
 pub fn execute(
     image_path: &Path,
     scope: &[PathBuf],
@@ -320,9 +359,11 @@ pub fn execute(
     // to look at if the UI feels heavy after a broad search.
     top_k: usize,
     deep_min_sim: f32,
+    full_db: bool,
     mut on_verify_progress: impl FnMut(VerifyProgress),
 ) -> Result<(Vec<SearchResult>, Vec<FailedFile>)> {
     let t_total = Instant::now();
+    let limits = verify_limits(deep_min_sim, full_db);
 
     // Pause background maintenance (the colour-tag backfill) for the duration —
     // it saturates the same cores the sidecar needs and can stall a search by
@@ -399,14 +440,14 @@ pub fn execute(
         &query_desc.rose,
         &query_gram,
         &query_color,
-        stage1_floor(deep_min_sim),
+        limits.stage1_floor,
     );
     let stage1_ms = t_stage1.elapsed().as_secs_f64() * 1000.0;
     log::info!(
         "[search] near family: {} of {} indexed files cleared embed cosine {:.2}",
         stage1.len(),
         store.live_count(),
-        stage1_floor(deep_min_sim),
+        limits.stage1_floor,
     );
     // Top hit's full breakdown. rose/gram no longer select anything, so this
     // is the only place their disagreement with the embedding shows up — a
@@ -467,15 +508,15 @@ pub fn execute(
     // keeps exactly the highest-cosine members — see `VERIFY_MAX_CANDIDATES`.
     // Tier A is the fast tier (cosine at or above the fast floor); the rest, if
     // any, is the deep band `[deep_min_sim, NEAR_FAMILY_MIN_SIM)`.
-    let deep_on = deep_enabled(deep_min_sim);
+    let deep_on = limits.deep_on;
     let sims: Vec<f32> = candidates.iter().map(|c| c.m.embed_sim).collect();
     let tier_a_n = tier_a_count(&sims);
     let near_family_n = tier_a_n;
-    let verify_pool_n = near_family_n.min(VERIFY_MAX_CANDIDATES);
+    let verify_pool_n = near_family_n.min(limits.tier_a_max);
     let verify_paths: Vec<String> = candidates[..verify_pool_n].iter().map(|c| c.path.clone()).collect();
 
     let deep_available_n = candidates.len() - tier_a_n;
-    let deep_pool_n = if deep_on { deep_available_n.min(DEEP_VERIFY_MAX_CANDIDATES) } else { 0 };
+    let deep_pool_n = if deep_on { deep_available_n.min(limits.deep_max) } else { 0 };
     let deep_paths: Vec<String> =
         candidates[tier_a_n..tier_a_n + deep_pool_n].iter().map(|c| c.path.clone()).collect();
 
@@ -494,7 +535,7 @@ pub fn execute(
     let mut done_so_far = 0usize;
     on_verify_progress(VerifyProgress { done: 0, total, tier: "near", updated: &results });
 
-    let budget = Duration::from_millis(VERIFY_TIME_BUDGET_MS);
+    let budget = limits.tier_a_budget;
     let t_verify = Instant::now();
     let straight = verify_pass(&query_sidecar_path, &verify_paths, false, budget, &SEARCH_CANCEL, |done, _, _, chunk_out| {
         let updated = apply_chunk(&mut results, &path_index, &candidates, chunk_out, false);
@@ -547,6 +588,7 @@ pub fn execute(
     // Straight pass only over the Tier B band; just the rows that verify are emitted and kept.
     let t_deep = Instant::now();
     let mut deep_attempted_n = 0usize;
+    let mut deep_failed_n = 0usize;
     let mut deep_stopped = "none";
     if deep_on && deep_pool_n > 0 && !cancelled {
         let base = done_so_far;
@@ -554,7 +596,7 @@ pub fn execute(
             &query_sidecar_path,
             &deep_paths,
             false,
-            Duration::from_millis(DEEP_VERIFY_TIME_BUDGET_MS),
+            limits.deep_budget,
             &SEARCH_CANCEL,
             |done, _, _, chunk_out| {
                 let updated = apply_deep_chunk(&mut results, &deep_index, &candidates, chunk_out);
@@ -562,6 +604,7 @@ pub fn execute(
             },
         );
         deep_attempted_n = deep.attempted.len();
+        deep_failed_n = deep.failed_n;
         cancelled |= deep.cancelled;
         deep_stopped = if deep.cancelled {
             "cancelled"
@@ -623,7 +666,7 @@ pub fn execute(
          mirror_hits={mirror_hits} mirror_ms={mirror_ms:.2} deep_min_sim={deep_min_sim:.2} \
          deep_pool_n={deep_pool_n} deep_attempted_n={deep_attempted_n} deep_verified_n={deep_verified_n} \
          deep_ms={deep_ms:.2} deep_stopped={deep_stopped} search_cancelled={cancelled} \
-         assemble_ms={assemble_ms:.2} total_ms={:.2}",
+         assemble_ms={assemble_ms:.2} total_ms={:.2} full_db={full_db} deep_failed_n={deep_failed_n}",
         query_sidecar_path.rsplit(['/', '\\']).next().unwrap_or(&query_sidecar_path),
         scope_paths.len(),
         id_map.len(),
@@ -762,7 +805,7 @@ mod tests {
         // a real budget cutoff does, just via a different cause. Either way
         // `attempted` must stay empty for paths that were never resolved.
         let paths = vec!["a".to_string(), "b".to_string()];
-        let result = verify_pass("nonexistent-query.png", &paths, false, Duration::from_millis(0), &AtomicBool::new(false), |_, _, _, _| {});
+        let result = verify_pass("nonexistent-query.png", &paths, false, Some(Duration::from_millis(0)), &AtomicBool::new(false), |_, _, _, _| {});
         assert!(result.budget_exhausted, "zero-duration budget must trip immediately");
         assert!(result.attempted.is_empty());
     }
@@ -772,11 +815,48 @@ mod tests {
     fn verify_pass_returns_early_when_cancelled() {
         let paths = vec!["a".to_string(), "b".to_string()];
         let cancel = AtomicBool::new(true);
-        let result = verify_pass("nonexistent-query.png", &paths, false, Duration::from_secs(60), &cancel, |_, _, _, _| {});
+        let result = verify_pass("nonexistent-query.png", &paths, false, Some(Duration::from_secs(60)), &cancel, |_, _, _, _| {});
         assert!(result.cancelled);
         assert!(!result.budget_exhausted);
         assert!(result.attempted.is_empty());
         assert_eq!(result.done, 0);
+    }
+
+    // No deadline must not panic or trip the budget, and every path is either sent or counted as failed.
+    #[test]
+    fn verify_pass_without_a_deadline_reaches_every_chunk() {
+        let paths = vec!["a".to_string(), "b".to_string()];
+        let result = verify_pass("nonexistent-query.png", &paths, false, None, &AtomicBool::new(false), |_, _, _, _| {});
+        assert!(!result.budget_exhausted);
+        assert_eq!(result.done, paths.len());
+        // A live dev sidecar on the port answers instead of failing, so only the bookkeeping is asserted.
+        assert_eq!(result.any_chunk_failed, result.failed_n == paths.len());
+    }
+
+    // With Full DB off the limits are exactly the configured constants, and the deep tier follows the floor.
+    #[test]
+    fn verify_limits_without_full_db_match_config() {
+        for floor in [0.70, 0.40] {
+            let l = verify_limits(floor, false);
+            assert_eq!(l.stage1_floor, stage1_floor(floor));
+            assert_eq!(l.tier_a_max, VERIFY_MAX_CANDIDATES);
+            assert_eq!(l.tier_a_budget, Some(Duration::from_millis(VERIFY_TIME_BUDGET_MS)));
+            assert_eq!(l.deep_max, DEEP_VERIFY_MAX_CANDIDATES);
+            assert_eq!(l.deep_budget, Some(Duration::from_millis(DEEP_VERIFY_TIME_BUDGET_MS)));
+            assert_eq!(l.deep_on, deep_enabled(floor));
+        }
+    }
+
+    // Full DB lifts every bound and turns the deep tier on, even at a floor that alone means deep off.
+    #[test]
+    fn verify_limits_with_full_db_are_unbounded() {
+        let l = verify_limits(NEAR_FAMILY_MIN_SIM, true);
+        assert_eq!(l.stage1_floor, f32::NEG_INFINITY);
+        assert_eq!(l.tier_a_max, usize::MAX);
+        assert_eq!(l.tier_a_budget, None);
+        assert_eq!(l.deep_max, usize::MAX);
+        assert_eq!(l.deep_budget, None);
+        assert!(l.deep_on);
     }
 
     // Candidates sorted by cosine split at the fast floor: the band below it is Tier B.

@@ -28,7 +28,8 @@ export class SearchService {
   // @param scopePaths Watched-folder paths to restrict the search to.  Empty
   //                    array means "search every folder in the Library".
   // @param deepMinSim Cosine floor the background deep tier verifies down to.
-  searchStream(imagePath: string, scopePaths: string[], topK: number, deepMinSim?: number): Observable<SearchEvent> {
+  // @param fullDb     Verify every file in scope with no floor, cap or budget.
+  searchStream(imagePath: string, scopePaths: string[], topK: number, deepMinSim?: number, fullDb = false): Observable<SearchEvent> {
     return new Observable(observer => {
       const subs = [
         this.zoneWrapper.listen<responseSearchProgress>(TAURI_EVENTS.SEARCH_PROGRESS).subscribe(res => {
@@ -49,7 +50,7 @@ export class SearchService {
       // events above, not a `search_start_response` — fire-and-forget.
       this.zoneWrapper.invokeFireAndForget(
         TAURI_COMMANDS.SEARCH_START,
-        { imagePath, scopePaths, topK, deepMinSim },
+        { imagePath, scopePaths, topK, deepMinSim, fullDb },
         message => observer.next({ type: 'error', data: { message } }),
       );
 

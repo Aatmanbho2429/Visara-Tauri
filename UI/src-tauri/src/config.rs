@@ -56,6 +56,8 @@ pub const DEEP_VERIFY_MAX_CANDIDATES: usize = 20_000;
 // Wall-clock stop for the deep tier: 30 minutes, then whatever verified is kept.
 pub const DEEP_VERIFY_TIME_BUDGET_MS: u64 = 1_800_000;
 
+// Full DB search ignores every floor, cap and budget above; only Stop ends it.
+
 // Logs a cosine-distribution histogram on every search (see
 // `VectorStore::cosine_histogram` and the calibration procedure in
 // SEARCH-LATENCY-PLAN.md Phase 3). It's a second full-population scan of the

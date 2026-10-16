@@ -81,6 +81,15 @@ pub fn search_cancel(app: tauri::AppHandle, request_id: Option<String>) {
     let _ = app.emit("search_cancel_response", result);
 }
 
+// Remaining seconds at the rate seen so far; -1 (the UI's "unknown") until a chunk has completed.
+fn eta_seconds(elapsed: Option<Duration>, done: usize, total: usize) -> i64 {
+    match elapsed {
+        Some(e) if done > 0 && total > done => (e.as_secs_f64() / done as f64 * (total - done) as f64).round() as i64,
+        Some(_) if done > 0 => 0,
+        _ => -1,
+    }
+}
+
 fn emit_search_error(app: &tauri::AppHandle, message: impl Into<String>) {
     let payload: ApiResponse<()> = ApiResponse::err(409, message);
     let _ = app.emit("search_error", payload);
@@ -89,6 +98,7 @@ fn emit_search_error(app: &tauri::AppHandle, message: impl Into<String>) {
 // `scope_paths` empty or omitted → search every watched folder in the Library.
 // Otherwise the search is restricted to the provided folders.
 // `deep_min_sim` is the deep tier's cosine floor (clamped; absent means the default).
+// `full_db` verifies every file in scope with no floor, cap or budget (absent means off).
 #[tauri::command]
 pub async fn search_start(
     app:          tauri::AppHandle,
@@ -96,8 +106,10 @@ pub async fn search_start(
     scope_paths:  Option<Vec<String>>,
     top_k:        usize,
     deep_min_sim: Option<f32>,
+    full_db:      Option<bool>,
 ) {
     let deep_min_sim = search::resolve_deep_min_sim(deep_min_sim);
+    let full_db = full_db.unwrap_or(false);
 
     // A new search replaces a running one: stale the old worker's events, cancel it, and wait for it to finish.
     let my_generation = SEARCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
@@ -151,8 +163,12 @@ pub async fn search_start(
         .to_string();
 
     let app_clone = app.clone();
-    // Deep-tier label shows the real floor, e.g. "Deep search · down to 40%".
-    let deep_label = format!("Deep search · down to {}%", (deep_min_sim * 100.0).round() as i32);
+    // Deep-tier label shows the real floor, e.g. "Deep search · down to 40%", or names the Full DB pass.
+    let deep_label = if full_db {
+        "Full database search".to_string()
+    } else {
+        format!("Deep search · down to {}%", (deep_min_sim * 100.0).round() as i32)
+    };
     // The initial "Searching" snapshot below (after spawn_blocking) also
     // needs `query_name`, so the worker closure gets its own clone rather
     // than moving the original in.
@@ -187,6 +203,8 @@ pub async fn search_start(
         let is_current = move || SEARCH_GENERATION.load(Ordering::SeqCst) == my_generation;
         // `total` grows when the mirrored pass triggers, so the emitted percent never steps backwards.
         let mut last_percent = 0.0f32;
+        // Set at the first tick with work to do; the ETA extrapolates from the rate since then.
+        let mut verify_started: Option<std::time::Instant> = None;
         let on_verify_progress = |progress: search::VerifyProgress| {
             if !is_current() {
                 return;
@@ -198,6 +216,10 @@ pub async fn search_start(
             };
             let percent = raw.max(last_percent);
             last_percent = percent;
+            if progress.total > 0 && verify_started.is_none() {
+                verify_started = Some(std::time::Instant::now());
+            }
+            let eta_sec = eta_seconds(verify_started.map(|t| t.elapsed()), progress.done, progress.total);
             let phase = match progress.tier {
                 "mirrored" => "Checking mirrored orientation".to_string(),
                 "deep"     => deep_label.clone(),
@@ -211,7 +233,7 @@ pub async fn search_start(
                     total:   progress.total,
                     current: query_name_for_worker.clone(),
                     percent,
-                    eta_sec: -1,
+                    eta_sec,
                     errors:  0,
                 },
             });
@@ -228,7 +250,7 @@ pub async fn search_start(
             }
         };
 
-        let outcome = search::execute(&image, &scope, top_k, deep_min_sim, on_verify_progress);
+        let outcome = search::execute(&image, &scope, top_k, deep_min_sim, full_db, on_verify_progress);
         if is_current() {
             match outcome {
                 Ok((results, failed_files)) => {
@@ -275,5 +297,19 @@ pub async fn search_start(
         if !search_state().lock().unwrap().running || SEARCH_GENERATION.load(Ordering::SeqCst) != my_generation {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Unknown before the first chunk, extrapolated after it, zero once everything is done.
+    #[test]
+    fn eta_extrapolates_from_the_rate_so_far() {
+        assert_eq!(eta_seconds(None, 0, 100), -1);
+        assert_eq!(eta_seconds(Some(Duration::from_secs(5)), 0, 100), -1);
+        assert_eq!(eta_seconds(Some(Duration::from_secs(10)), 100, 400), 30);
+        assert_eq!(eta_seconds(Some(Duration::from_secs(10)), 400, 400), 0);
     }
 }

@@ -36,8 +36,10 @@ export class SearchStateService {
 
   // Cosine floor the deep tier verifies down to; back to the default on `reset()`.
   deepMinSim = DEEP_MIN_SIM_DEFAULT;
+  // Full DB: verify every file in scope, ignoring `deepMinSim`; off again on `reset()`.
+  fullDb = false;
 
-  results:      SearchResultVM[] = [];
+  results:     SearchResultVM[] = [];
   failedFiles:  FailedFile[]     = [];
   searchError   = '';
   showScrollTop = false;
@@ -58,13 +60,20 @@ export class SearchStateService {
     this.imagePreview = this.zoneWrapper.toAssetUrl(imagePath);
   }
 
+  // Picking a percentage also leaves Full DB.
   setDeepMinSim(value: number): void {
     this.deepMinSim = value;
+    this.fullDb     = false;
+  }
+
+  setFullDb(on: boolean): void {
+    this.fullDb = on;
   }
 
   reset(): void {
     this.searchState   = 'idle';
     this.deepMinSim    = DEEP_MIN_SIM_DEFAULT;
+    this.fullDb        = false;
     this.imageName     = '';
     this.imagePath     = '';
     this.imagePreview  = '';

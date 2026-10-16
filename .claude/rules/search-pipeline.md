@@ -23,6 +23,10 @@ paths:
    SIFT-verified after the fast tier. Only deep-tier rows that verify are returned; it is capped by
    `DEEP_VERIFY_MAX_CANDIDATES` / `DEEP_VERIFY_TIME_BUDGET_MS` and stops on `search_cancel`.
 
+6. **Full DB**: the request's `fullDb` drops the stage-1 floor,
+   both candidate caps and both time budgets (`VerifyLimits`), so every file in scope is verified;
+   only `search_cancel` bounds it. Tier A and the verified-only deep rows behave as in step 5.
+
 ## Watch the floor
 
 `NEAR_FAMILY_MIN_SIM` (0.70) is the only bound on how much work a search does, and it is not

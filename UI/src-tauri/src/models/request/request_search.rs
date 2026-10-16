@@ -11,4 +11,6 @@ pub struct RequestStartSearch {
     pub top_k: usize,
     // Deep tier's cosine floor; clamped by `search_start`, absent means the default.
     pub deep_min_sim: Option<f32>,
+    // Verify every file in scope with no floor, cap or budget; absent means off.
+    pub full_db: Option<bool>,
 }

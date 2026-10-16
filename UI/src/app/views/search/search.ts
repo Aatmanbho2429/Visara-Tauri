@@ -295,6 +295,21 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
     this.cdr.detectChanges();
   }
 
+  selectFullDb(): void {
+    this.state.setFullDb(true);
+    this.deepOpen = false;
+    this.cdr.detectChanges();
+  }
+
+  // Remaining time for the verify strip, readable at Full DB scale ("45s", "12 min", "1 h 20 min").
+  get etaLabel(): string {
+    const s = this.state.progress.etaSec;
+    if (s < 90) return `${s}s`;
+    const min = Math.round(s / 60);
+    if (min < 90) return `${min} min`;
+    return `${Math.floor(min / 60)} h ${min % 60} min`;
+  }
+
   // Ends the deep search; verified rows stay and the final `search_complete` closes the strip.
   stopSearch(): void {
     if (this.stopping) return;
@@ -410,7 +425,7 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
     // `topK` no longer trims anything server-side (see `services::search`);
     // it is logged there as "what the client asked for". Sending the page size
     // keeps that log honest now that the picker is gone.
-    this.searchSub = this.searchSvc.searchStream(this.state.imagePath, this.state.scopePaths, this.SIMILAR_PAGE, this.state.deepMinSim).subscribe({
+    this.searchSub = this.searchSvc.searchStream(this.state.imagePath, this.state.scopePaths, this.SIMILAR_PAGE, this.state.deepMinSim, this.state.fullDb).subscribe({
       next: event => {
         if (event.type === 'progress') {
           if (event.data?.progress) this.state.progress = event.data.progress;

@@ -182,6 +182,9 @@
     "verifyDownTo":    "Verify down to",
     "deepFast":        "(fast)",
     "deepDeep":        "(deep)",
+    "fullDb":          "Full DB",
+    "fullDbTag":       "(slowest)",
+    "fullDbShort":     "Full DB",
     "stop":            "Stop",
     "stopping":        "Stopping…"
   },
