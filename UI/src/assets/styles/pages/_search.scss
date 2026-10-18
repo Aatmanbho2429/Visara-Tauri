@@ -399,7 +399,7 @@
 // Compact verify-in-progress strip shown above the grid once results are
 // already visible (see `isVerifying` in search.ts) — the same fill/track
 // language as `.scan-progress` above, just slimmer since it now shares the
-// screen with the grid instead of owning it. SEARCH-LATENCY-PLAN.md Phase 4.
+// screen with the grid instead of owning it.
 .verify-strip {
   display: flex; align-items: center; gap: $space-3;
   padding: $space-2 $space-8;
@@ -749,8 +749,7 @@
 
   // "Verification hasn't reached this yet" — bottom-left, its own hue
   // (slate, not amber/cyan) so it never reads as either an actual match or
-  // a rejection while a chunk is still in flight for this candidate. See
-  // SEARCH-LATENCY-PLAN.md Phase 1b.
+  // a rejection while a chunk is still in flight for this candidate.
   &__unchecked {
     position: absolute;
     bottom: $space-2;

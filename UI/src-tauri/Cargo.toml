@@ -103,10 +103,10 @@ opt-level     = "s"
 panic         = "abort"
 strip         = true
 
-# Measurement-only profile (SEARCH-LATENCY-PLAN.md Phase 0) — `release`
+# Measurement-only profile — `release`
 # optimizes for size, which suppresses vectorization in the near_family
 # numeric loop, so its timings can't be trusted for the Rust hot-path
-# question Phase 0 exists to answer. Build with `--profile release-perf` to
+# question it exists to answer. Build with `--profile release-perf` to
 # compare against plain `release`; not the shipping profile.
 [profile.release-perf]
 inherits  = "release"

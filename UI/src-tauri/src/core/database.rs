@@ -370,7 +370,7 @@ pub fn cleanup_missing_in_folder(con: &Connection, folder: &str) -> Result<Vec<i
 // table scan; a `>=`/`<` range is index-usable and equivalent for an
 // ASCII/case-consistent prefix, without touching the global
 // `PRAGMA case_sensitive_like` (which would change every other `LIKE` in the
-// app). See SEARCH-LATENCY-PLAN.md Phase 5c. Note this does make the match
+// app). Note this does make the match
 // case-sensitive where the old `LIKE` was not — acceptable because `files.path`
 // is always written by a canonical directory scan, never typed by a user.
 pub fn folder_id_map(con: &Connection, folder: &str) -> Result<std::collections::HashMap<i64, String>> {
@@ -886,7 +886,7 @@ mod tests {
         assert_eq!(list_watched_folders(&con).unwrap().len(), 1);
     }
 
-    // SEARCH-LATENCY-PLAN.md Phase 5c: `folder_id_map` moved from
+    // `folder_id_map` moved from
     // `LIKE 'prefix%'` to a `>=`/`<` range so `idx_path` can be used. The
     // property that actually matters is that a sibling folder whose name
     // merely starts with the same characters ("folder" vs "folder2") must

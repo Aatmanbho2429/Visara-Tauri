@@ -190,7 +190,7 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   // Everything else: in the near family by texture similarity, but not
   // geometrically confirmed — either SIFT ran and refused (`rejected`) or
   // the verify budget hadn't reached it yet when the search finished
-  // (`unchecked`, see SEARCH-LATENCY-PLAN.md Phase 1b). Both render in the
+  // (`unchecked`). Both render in the
   // same "Similar" section; `verificationLabel()` is what tells them apart
   // on the card. The *full* set — used for the section count and for
   // deciding whether "Show more" still has anything left to give.
@@ -437,7 +437,7 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
             // The first partial carries the full "unchecked" ranking —
             // moving into 'results' here (rather than waiting for
             // search_complete) is what lets the grid paint before
-            // verification finishes. See SEARCH-LATENCY-PLAN.md Phase 4.
+            // verification finishes.
             this.state.searchState = 'results';
             this.similarExpanded = true;
             this.similarShown    = this.SIMILAR_PAGE;

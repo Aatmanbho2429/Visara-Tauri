@@ -10,14 +10,14 @@
 // mean) and a rejected tail; whatever sits beyond the verify budget
 // (`config::VERIFY_MAX_CANDIDATES` / `VERIFY_TIME_BUDGET_MS`) comes back
 // `verification: "unchecked"` rather than being silently dropped or read as
-// rejected — see SEARCH-LATENCY-PLAN.md Phase 1.
+// rejected.
 //
 // Results stream to the caller as they're known: an all-`"unchecked"` set the
 // moment stage 1 finishes, then per-chunk updates as verification proves or
-// rejects each candidate — see `VerifyProgress` and Phase 4 of the same plan.
+// rejects each candidate — see `VerifyProgress`.
 //
 // A deep tier then keeps verifying the band below that floor in the background, returning only rows
-// that verify — see docs/plans/deep-verify.md.
+// that verify.
 //
 // Multi-folder model unchanged: empty `scope` means every watched folder.
 
@@ -50,9 +50,8 @@ pub static SEARCH_CANCEL: AtomicBool = AtomicBool::new(false);
 // than a rank cut. What IS bounded is how much of that family gets
 // SIFT/RANSAC-verified in one search: `VERIFY_MAX_CANDIDATES` caps the count
 // and `VERIFY_TIME_BUDGET_MS` caps the wall clock, taken from the
-// highest-cosine prefix since `candidates` is already sorted that way. See
-// SEARCH-LATENCY-PLAN.md Phase 1 for why an unbounded verify pass is the
-// entire reason a search could take 79s.
+// highest-cosine prefix since `candidates` is already sorted that way. An
+// unbounded verify pass is the entire reason a search could take 79s.
 //
 // The old fixed top-1500 rank cut this replaced had the property that a real
 // match could be excluded purely because a library held more than 1500 tiles
@@ -60,7 +59,7 @@ pub static SEARCH_CANCEL: AtomicBool = AtomicBool::new(false);
 // user. `near_family_n` in the timing log below is the number to watch if a
 // search ever feels slow; a large fraction of the library clearing the floor
 // means the floor, not the verify budget, is what needs recalibrating (see
-// `VectorStore::cosine_histogram` and Phase 3).
+// `VectorStore::cosine_histogram`).
 
 // Verify runs in chunks of this size rather than one request for the whole
 // shortlist, purely so `on_verify_progress` below has something to report
@@ -69,7 +68,7 @@ pub static SEARCH_CANCEL: AtomicBool = AtomicBool::new(false);
 // single request that only resolves at the very end left the UI's progress
 // bar sitting frozen at 0% for the whole wait, indistinguishable from hung.
 //
-// Raised from 20 to 100 (SEARCH-LATENCY-PLAN.md Phase 2b): the sidecar
+// Raised from 20 to 100: the sidecar
 // re-decodes and re-SIFTs the *query* once per HTTP request
 // (`pipeline.py::prepare_query`), so a 213-candidate family at chunk size 20
 // paid for that 11 times — 22 with a mirrored pass. `sidecar::verify_timeout`
@@ -82,7 +81,7 @@ const VERIFY_CHUNK: usize = 100;
 // matched region covers less than this fraction of the candidate's area.
 const PARTIAL_MAX_AREA_FRACTION: f32 = 0.85;
 
-// Cosine thresholds the calibration log (Phase 3) reports population counts
+// Cosine thresholds the calibration log reports population counts
 // at, in addition to `NEAR_FAMILY_MIN_SIM` itself. Diagnostic only — nothing
 // here changes what a search returns.
 const CALIBRATION_BUCKETS: [f32; 8] = [0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95];
@@ -424,12 +423,12 @@ pub fn execute(
     // ── Stage 1: rank every file in scope ──────────────────────────────
     // `store` and `stage1` both need to outlive this block (used again below
     // for `store.live_count()`/`cosine_histogram` and `stage1.first()`), but
-    // the read guard must NOT (SEARCH-LATENCY-PLAN.md Phase 1d) — holding it
+    // the read guard must NOT — holding it
     // across the whole, multi-second verify phase below blocks the indexer's
     // `store.save()` in `core::watcher` for that entire window. Scoping the
     // guard to just this block, rather than the rest of the function, is
     // what fixes that; `vector_store::resident()` only actually takes it on
-    // a cache miss, so most searches don't touch it at all — see Phase 5a.
+    // a cache miss, so most searches don't touch it at all — see `vector_store::resident`.
     let t_store_load = Instant::now();
     let store = vector_store::resident(VECTOR_STORE_PATH.as_path())?;
     let store_load_ms = t_store_load.elapsed().as_secs_f64() * 1000.0;
@@ -460,7 +459,7 @@ pub fn execute(
         );
     }
 
-    // Calibration instrumentation only (SEARCH-LATENCY-PLAN.md Phase 3) —
+    // Calibration instrumentation only —
     // does not change what's returned. `near_family` only reports entries
     // that already cleared `NEAR_FAMILY_MIN_SIM`; this separately scans the
     // whole population so the log shows what a *lower* floor would have
@@ -527,7 +526,7 @@ pub fn execute(
 
     // The initial set: every Tier A member, unverified. This is what lets the
     // UI paint a ranked grid before SIFT/RANSAC has looked at a single
-    // candidate — see SEARCH-LATENCY-PLAN.md Phase 4. Tier B rows join only once verified.
+    // candidate. Tier B rows join only once verified.
     let mut results: Vec<SearchResult> =
         candidates[..tier_a_n].iter().map(|c| build_result(c, None, "unchecked")).collect();
     // One counter for the whole search: `total` grows only when the mirrored pass triggers.
@@ -555,8 +554,7 @@ pub fn execute(
     // Only run when the first pass proved nothing AND actually got a clean
     // look at the whole pool — a chunk failure or an exhausted budget
     // already explains why nothing verified, and there is no spare budget
-    // for a second full traversal in either case (SEARCH-LATENCY-PLAN.md
-    // Phase 1c). That puts the entire mirrored cost on searches that
+    // for a second full traversal in either case. That puts the entire mirrored cost on searches that
     // currently return no family tier at all — the exact case it exists to
     // rescue — and leaves both successful and already-degraded searches
     // untouched.
@@ -637,7 +635,7 @@ pub fn execute(
     let t_assemble = Instant::now();
     let verified_n = results.iter().take_while(|r| r.verified).count();
 
-    // Calibration instrumentation (SEARCH-LATENCY-PLAN.md Phase 3, part 2):
+    // Calibration instrumentation:
     // the lowest cosine among genuinely verified results, across many real
     // queries, is the empirical floor the procedure asks for — cheap, since
     // it's just a min/max over what was already computed, not another scan.

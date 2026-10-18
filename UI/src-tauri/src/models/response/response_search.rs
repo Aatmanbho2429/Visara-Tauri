@@ -93,7 +93,7 @@ pub struct ResponseSearchComplete {
     pub failed_files: Vec<FailedFile>,
 }
 
-// Payload for the `search_partial` event (SEARCH-LATENCY-PLAN.md Phase 4) —
+// Payload for the `search_partial` event —
 // the stage-1 ranking first (all `verification: "unchecked"`), then one of
 // these per verify chunk as candidates are proven or rejected. Reuses
 // `SearchResult` rather than a parallel type; `results` is only the rows

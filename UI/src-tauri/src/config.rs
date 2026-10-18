@@ -40,7 +40,7 @@ pub const NEAR_FAMILY_MIN_SIM: f32 = 0.70;
 // budget is what the user actually feels. Both are deliberately generous
 // because unverified results are still shown (labelled "unchecked", not
 // dropped) — see `services::search::verify_pass`.
-// Stopgap: 2000 checks at 35-125 ms each needs ~70-250 s, so the clock must not cut in first (docs/plans/verify-recall.md).
+// Stopgap: 2000 checks at 35-125 ms each needs ~70-250 s, so the clock must not cut in first.
 pub const VERIFY_TIME_BUDGET_MS: u64 = 300_000;
 pub const VERIFY_MAX_CANDIDATES: usize = 2_000;
 
@@ -50,7 +50,7 @@ pub const DEEP_VERIFY_DEFAULT_MIN_SIM: f32 = 0.70;
 // Lowest `deepMinSim` a request may ask for; `search_start` clamps to it.
 pub const DEEP_VERIFY_MIN_SIM_FLOOR: f32 = 0.30;
 
-// Hard cap on how many deep-tier candidates one search verifies (docs/plans/deep-verify.md).
+// Hard cap on how many deep-tier candidates one search verifies.
 pub const DEEP_VERIFY_MAX_CANDIDATES: usize = 20_000;
 
 // Wall-clock stop for the deep tier: 30 minutes, then whatever verified is kept.
@@ -60,7 +60,7 @@ pub const DEEP_VERIFY_TIME_BUDGET_MS: u64 = 1_800_000;
 
 // Logs a cosine-distribution histogram on every search (see
 // `VectorStore::cosine_histogram` and the calibration procedure in
-// SEARCH-LATENCY-PLAN.md Phase 3). It's a second full-population scan of the
+// `/test-app`). It's a second full-population scan of the
 // embedding — roughly the same cost as `near_family`'s own embedding pass —
 // purely for diagnostics, so it isn't free at 50k+ files. Meant to be run
 // for the 10-20 calibration searches the procedure describes, then flipped

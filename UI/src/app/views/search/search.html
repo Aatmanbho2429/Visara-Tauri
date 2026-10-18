@@ -225,7 +225,7 @@
       <!-- Verification streams in behind the grid below (badges upgrade in
            place as SIFT/RANSAC proves or rejects each candidate) — this is
            what's still running once the ranked grid itself is already
-           visible. See SEARCH-LATENCY-PLAN.md Phase 4. -->
+           visible. -->
       @if (isVerifying) {
         <div class="verify-strip">
           <span class="verify-strip__phase">{{ stopping ? ('search.stopping' | translate) : state.progress.phase }}</span>

@@ -35,7 +35,7 @@ describe('Search', () => {
     expect(component).toBeTruthy();
   });
 
-  // SEARCH-LATENCY-PLAN.md Phase 4 acceptance: a `search_partial` update
+  // A `search_partial` update
   // must not lose the client-only fields attached to an already-rendered
   // card (thumbnail, image-error state, the "found inside" box) — only the
   // backend fields it actually carries should change.

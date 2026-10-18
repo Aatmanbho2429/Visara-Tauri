@@ -13,9 +13,8 @@
 // Progress is streamed to Angular via four Tauri events, each carrying the
 // ApiResponse envelope:
 //   search_progress  — snapshot while running
-//   search_partial   — ranked/verified/rejected rows as they become known
-//                       (SEARCH-LATENCY-PLAN.md Phase 4); the client merges
-//                       these by path rather than replacing its result set
+//   search_partial   — ranked/verified/rejected rows as they become known;
+//                       the client merges these by path rather than replacing its result set
 //   search_complete  — final, authoritative result set
 //   search_error     — fatal error that stopped the search
 // These are broadcast events tied to the single in-flight search rather than
@@ -194,7 +193,7 @@ pub async fn search_start(
         // label because the bar restarting at zero would otherwise look like
         // the search had glitched and started over.
         //
-        // Also emits `search_partial` (SEARCH-LATENCY-PLAN.md Phase 4)
+        // Also emits `search_partial`
         // whenever this tick carries updated rows — the very first call,
         // with the full "unchecked" ranking, and then once per verify chunk
         // as candidates are proven or rejected — so the grid can render
