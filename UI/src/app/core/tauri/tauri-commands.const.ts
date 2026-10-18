@@ -38,6 +38,8 @@ export const TAURI_COMMANDS = {
   LIBRARY_RESCAN_FOLDER: 'library_rescan_folder',
   LIBRARY_STATS: 'library_stats',
   LIBRARY_FOLDER_TREE: 'library_folder_tree',
+  LIBRARY_LIST_DIR: 'library_list_dir',
+  LIBRARY_LIST_NOT_LOADED: 'library_list_not_loaded',
   // ── Tags ───────────────────────────────────────────────────────
   TAGS_SET: 'tags_set',
   TAGS_REMOVE: 'tags_remove',

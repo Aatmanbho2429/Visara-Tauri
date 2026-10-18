@@ -1,0 +1,255 @@
+// ── Library files explorer ────────────────────────────────────────
+// Reuses the Browse grid look (.browse-grid, .tile-card, .dir-card, .crumbs).
+.library-files-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: $space-4;
+  overflow-y: auto;
+  padding: $space-8 $space-8 $space-8 calc(8rem + $space-6);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(217, 70, 239, 0.2) transparent;
+}
+
+.lf-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: $space-4;
+  flex-wrap: wrap;
+}
+
+.lf-title {
+  font-family: $font-primary;
+  font-size: $font-size-2xl;
+  font-weight: 600;
+  color: $surface-50;
+  margin: $space-2 0 0;
+}
+
+.lf-subtitle {
+  font-family: $font-primary;
+  font-size: $font-size-sm;
+  color: $surface-400;
+  margin: 0.3rem 0 0;
+}
+
+.lf-back, .lf-link {
+  appearance: none;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: $font-primary;
+  font-size: $font-size-xs;
+  font-weight: 500;
+  color: $primary-300;
+  padding: 0;
+
+  &:hover { color: $primary-200; }
+}
+
+.lf-link {
+  background: rgba(217, 70, 239, 0.1);
+  border: 1px solid rgba(217, 70, 239, 0.25);
+  border-radius: $border-radius-md;
+  padding: $space-2 $space-4;
+}
+
+.lf-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: $space-3 $space-4;
+  border-radius: $border-radius-md;
+  background: rgba(251, 146, 60, 0.1);
+  border: 1px solid rgba(251, 146, 60, 0.3);
+  color: $tertiary-300;
+  font-family: $font-primary;
+  font-size: $font-size-xs;
+}
+
+.lf-note {
+  margin: 0;
+  font-family: $font-primary;
+  font-size: $font-size-xs;
+  color: $surface-400;
+}
+
+// Status filter chips: separate pills with room between them.
+.lf-filters {
+  display: block;
+  margin: $space-2 0 $space-3;
+
+  .p-selectbutton {
+    display: flex;
+    flex-wrap: wrap;
+    gap: $space-3;
+    border-radius: 0;
+  }
+
+  .p-togglebutton {
+    padding: 0.2rem;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+    color: $surface-200;
+    font-family: $font-primary;
+    font-size: $font-size-xs;
+    font-weight: 500;
+
+    &:not(.p-togglebutton-checked):hover { border-color: rgba(217, 70, 239, 0.4); background: rgba(217, 70, 239, 0.08); }
+
+    &.p-togglebutton-checked {
+      background: linear-gradient(135deg, $primary-600, $primary-500);
+      border-color: transparent;
+      color: #fff;
+    }
+  }
+
+  .p-togglebutton-content {
+    gap: 0.6rem;
+    padding: 0.3rem 0.9rem;
+    border-radius: 999px;
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+.lf-filters__count {
+  margin-left: 0.6rem;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+
+// Red marker on a folder tile where some images are not loaded.
+.lf-dir {
+  position: relative;
+
+  &__dot {
+    position: absolute;
+    top: 0.7rem;
+    right: 0.7rem;
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 50%;
+    background: $color-invalid;
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.22);
+  }
+}
+
+.lf-dir-count {
+  font-family: $font-primary;
+  font-size: $font-size-xs;
+  color: $surface-400;
+  font-variant-numeric: tabular-nums;
+
+  &--warn { color: $tertiary-300; }
+}
+
+// Status badge in an image tile's top-right corner.
+.lf-tile {
+  &--dim .tile-card__img-wrap { opacity: 0.55; }
+}
+
+.lf-badge {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 2;
+  width: 1.9rem;
+  height: 1.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 1.1rem;
+  line-height: 1;
+  // Solid backing so the icon stays readable over any tile image.
+  background: rgba(24, 18, 30, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+
+  // Loaded and failed get a solid colour fill with a white icon; pending stays dark.
+  &--loaded  { color: #fff; background: #16a34a; border-color: rgba(255, 255, 255, 0.6); }
+  &--failed  { color: #fff; background: #dc2626; border-color: rgba(255, 255, 255, 0.6); }
+  &--pending { color: $surface-300; }
+}
+
+.lf-sentinel { height: 1px; }
+
+// Flat not-loaded list.
+.lf-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: $space-2;
+}
+
+.lf-row {
+  appearance: none;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: $space-3;
+  padding: $space-2 $space-3;
+  background: rgba(26, 18, 38, 0.5);
+  border: 1px solid rgba(217, 70, 239, 0.12);
+  border-radius: $border-radius-md;
+
+  &:hover { border-color: rgba(217, 70, 239, 0.35); }
+
+  &__thumb {
+    width: 3.2rem;
+    height: 3.2rem;
+    flex-shrink: 0;
+    border-radius: $border-radius-sm;
+    background: $surface-900;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    color: $surface-600;
+
+    img { width: 100%; height: 100%; object-fit: cover; }
+  }
+
+  &__main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  &__name, &__rel {
+    font-family: $font-primary;
+    font-size: $font-size-xs;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__name { color: $surface-100; font-weight: 500; }
+  &__rel  { color: $surface-400; }
+
+  &__reason {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: $font-primary;
+    font-size: $font-size-xs;
+    color: $color-invalid;
+  }
+}

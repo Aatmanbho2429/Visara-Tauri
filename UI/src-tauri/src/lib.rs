@@ -382,6 +382,8 @@ pub fn run() {
             library_commands::library_rescan_folder,
             library_commands::library_stats,
             library_commands::library_folder_tree,
+            library_commands::library_list_dir,
+            library_commands::library_list_not_loaded,
             // ── Tags ─────────────────────────────────────────────────
             tags_commands::tags_set,
             tags_commands::tags_remove,

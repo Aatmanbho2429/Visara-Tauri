@@ -6,7 +6,10 @@
 use crate::{
     core::{database, watcher},
     error::Result,
-    models::response::{ApiResponse, ResponseFolderTree, ResponseLibraryStats, ResponseListFolders},
+    models::response::{
+        ApiResponse, ResponseFolderTree, ResponseLibraryCrumb, ResponseLibraryDir, ResponseLibraryDirCounts,
+        ResponseLibraryNotLoaded, ResponseLibraryStats, ResponseListFolders,
+    },
 };
 use std::path::PathBuf;
 
@@ -184,6 +187,80 @@ pub fn folder_tree(path: String) -> ApiResponse<ResponseFolderTree> {
 fn folder_tree_inner(path: &str) -> Result<database::FolderTreeNode> {
     let con = database::open()?;
     database::folder_tree(&con, path)
+}
+
+// One directory of a watched folder as the Library files explorer shows it.
+pub fn list_dir(path: String, rel: String) -> ApiResponse<ResponseLibraryDir> {
+    match list_dir_inner(&path, &rel) {
+        Ok(Some(dir)) => ApiResponse::ok(dir),
+        Ok(None) => ApiResponse::err(403, "That folder is not in your Library."),
+        Err(e) => ApiResponse::err(500, format!("Could not read folder: {e}")),
+    }
+}
+
+// `None` when `path` is not a watched folder.
+fn list_dir_inner(path: &str, rel: &str) -> Result<Option<ResponseLibraryDir>> {
+    let con = database::open()?;
+    let (Some(folder_id), Some(folder_status)) =
+        (database::watched_folder_id(&con, path)?, database::watched_folder_status(&con, path)?)
+    else {
+        return Ok(None);
+    };
+
+    // Normalised so a stray leading/trailing slash can't miss the stored `rel_dir`.
+    let rel = rel.split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>().join("/");
+    let (folders, images) = database::client_dir_listing(&con, folder_id, &rel)?;
+
+    let count = |status: &str| images.iter().filter(|i| i.status == status).count();
+    let counts = ResponseLibraryDirCounts {
+        loaded:  count("loaded"),
+        failed:  count("failed"),
+        pending: count("pending"),
+        total:   images.len(),
+    };
+
+    // Root first, then one crumb per segment of `rel`.
+    let root_name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+        .to_string();
+    let mut breadcrumb = vec![ResponseLibraryCrumb { name: root_name, rel: String::new() }];
+    let mut acc = String::new();
+    for seg in rel.split('/') {
+        if seg.is_empty() { continue; }
+        if !acc.is_empty() { acc.push('/'); }
+        acc.push_str(seg);
+        breadcrumb.push(ResponseLibraryCrumb { name: seg.to_string(), rel: acc.clone() });
+    }
+
+    Ok(Some(ResponseLibraryDir {
+        root: path.to_string(),
+        rel,
+        breadcrumb,
+        folders,
+        images,
+        counts,
+        folder_status,
+    }))
+}
+
+// Every image of a watched folder that failed to load, at any depth.
+pub fn list_not_loaded(path: String) -> ApiResponse<ResponseLibraryNotLoaded> {
+    match list_not_loaded_inner(&path) {
+        Ok(Some(list)) => ApiResponse::ok(list),
+        Ok(None) => ApiResponse::err(403, "That folder is not in your Library."),
+        Err(e) => ApiResponse::err(500, format!("Could not read failed files: {e}")),
+    }
+}
+
+fn list_not_loaded_inner(path: &str) -> Result<Option<ResponseLibraryNotLoaded>> {
+    let con = database::open()?;
+    let Some(folder_id) = database::watched_folder_id(&con, path)? else {
+        return Ok(None);
+    };
+    let images = database::client_not_loaded(&con, folder_id)?;
+    Ok(Some(ResponseLibraryNotLoaded { root: path.to_string(), images }))
 }
 
 // Force a re-scan in the background.

@@ -61,6 +61,22 @@ pub fn open() -> Result<Connection> {
         -- (category, value) is safe — those columns exist in both schemas.
         CREATE INDEX IF NOT EXISTS idx_file_tags_cat_val ON file_tags(category, value);
 
+        CREATE TABLE IF NOT EXISTS client_files (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            folder_id       INTEGER NOT NULL REFERENCES watched_folders(id) ON DELETE CASCADE,
+            path            TEXT    UNIQUE NOT NULL,
+            rel_dir         TEXT    NOT NULL,   -- parent dir relative to the watched root, '/'-joined, '' = root
+            name            TEXT    NOT NULL,   -- file name, for display and sorting
+            size            INTEGER NOT NULL DEFAULT 0,
+            mtime           REAL    NOT NULL DEFAULT 0,
+            file_id         INTEGER REFERENCES files(id) ON DELETE SET NULL,
+            error_code      TEXT,               -- stable code, translated in the UI
+            error_reason    TEXT,               -- raw detail, shown in the tooltip
+            last_attempt_at REAL    NOT NULL DEFAULT 0,
+            first_seen_at   REAL    NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_client_files_folder_dir ON client_files(folder_id, rel_dir);
+        CREATE INDEX IF NOT EXISTS idx_client_files_file_id    ON client_files(file_id);
     ")?;
 
     // Idempotent column additions for databases created before these columns existed.
@@ -162,6 +178,8 @@ pub struct WatchedFolder {
     pub added_at:      f64,
     pub last_event_at: f64,
     pub image_count:   usize,
+    pub loaded_count:  usize,
+    pub total_count:   usize,
 }
 
 pub fn list_watched_folders(con: &Connection) -> Result<Vec<WatchedFolder>> {
@@ -181,10 +199,12 @@ pub fn list_watched_folders(con: &Connection) -> Result<Vec<WatchedFolder>> {
         .filter_map(|r| r.ok())
         .collect::<Vec<_>>();
 
+    let counts = client_file_counts(con).unwrap_or_default();
     let mut out = Vec::with_capacity(rows.len());
     for (id, path, status, added_at, last_event_at) in rows {
         let image_count = folder_file_count(con, &path).unwrap_or(0);
-        out.push(WatchedFolder { id, path, status, added_at, last_event_at, image_count });
+        let (loaded_count, total_count) = counts.get(&id).copied().unwrap_or((0, 0));
+        out.push(WatchedFolder { id, path, status, added_at, last_event_at, image_count, loaded_count, total_count });
     }
     Ok(out)
 }
@@ -452,53 +472,84 @@ pub fn folder_file_count(con: &Connection, folder: &str) -> Result<usize> {
 // ── Subfolder tree ─────────────────────────────────────────────────────────
 
 // One node in a watched folder's subfolder tree.  `direct` = images stored
-// directly in this folder; `total` = images in this folder and all descendants.
+// directly in this folder; `total` = images in this folder and all descendants;
+// the `*_loaded` pair counts only those that made it into the index.
 // camelCase for the same reason as WatchedFolder above.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderTreeNode {
-    pub name:     String,
-    pub rel:      String,
-    pub direct:   usize,
-    pub total:    usize,
-    pub children: Vec<FolderTreeNode>,
+    pub name:         String,
+    pub rel:          String,
+    pub direct:       usize,
+    pub direct_loaded: usize,
+    pub total:        usize,
+    pub total_loaded: usize,
+    pub children:     Vec<FolderTreeNode>,
 }
 
 // Build the nested subfolder tree (with per-folder image counts) for a watched
-// root, derived entirely from the indexed file paths already in `files`.
+// root from `client_files`, so unloaded images count too; falls back to the
+// indexed `files` paths for a folder that has no `client_files` rows yet.
 pub fn folder_tree(con: &Connection, root: &str) -> Result<FolderTreeNode> {
-    let prefix = normalise_folder_prefix(root);
+    // rel_dir → (images directly in it, of which loaded).
+    let mut per_dir: HashMap<String, (usize, usize)> = HashMap::new();
 
-    let mut stmt = con.prepare_cached("SELECT path FROM files WHERE path LIKE ?1")?;
-    let paths: Vec<String> = stmt
-        .query_map(params![format!("{prefix}%")], |r| r.get::<_, String>(0))?
-        .filter_map(|r| r.ok())
-        .collect();
+    if let Some(folder_id) = watched_folder_id(con, root)? {
+        let mut stmt = con.prepare_cached(
+            "SELECT rel_dir, COUNT(*), COALESCE(SUM(file_id IS NOT NULL), 0) \
+               FROM client_files WHERE folder_id = ?1 GROUP BY rel_dir",
+        )?;
+        let rows = stmt.query_map(params![folder_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize, r.get::<_, i64>(2)? as usize))
+        })?;
+        for row in rows.filter_map(|r| r.ok()) {
+            per_dir.insert(row.0, (row.1, row.2));
+        }
+    }
 
-    let sep = std::path::MAIN_SEPARATOR;
-    let mut direct: HashMap<String, usize> = HashMap::new();
-    let mut total:  HashMap<String, usize> = HashMap::new();
+    if per_dir.is_empty() {
+        let prefix = normalise_folder_prefix(root);
+        let mut stmt = con.prepare_cached("SELECT path FROM files WHERE path LIKE ?1")?;
+        let paths: Vec<String> = stmt
+            .query_map(params![format!("{prefix}%")], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
 
-    for p in &paths {
-        // Path relative to the watched root (root prefix stripped).
-        let rel = match p.get(prefix.len()..) {
-            Some(r) => r,
-            None    => continue,
-        };
-        let segs: Vec<&str> = rel.split(sep).filter(|s| !s.is_empty()).collect();
-        if segs.is_empty() { continue; }
+        let sep = std::path::MAIN_SEPARATOR;
+        for p in &paths {
+            // Path relative to the watched root (root prefix stripped).
+            let rel = match p.get(prefix.len()..) {
+                Some(r) => r,
+                None    => continue,
+            };
+            let segs: Vec<&str> = rel.split(sep).filter(|s| !s.is_empty()).collect();
+            if segs.is_empty() { continue; }
 
-        // All but the last segment are directories; the last is the file name.
-        let dir_segs = &segs[..segs.len() - 1];
-        *direct.entry(dir_segs.join("/")).or_insert(0) += 1;
+            // All but the last segment are directories; the last is the file name.
+            let entry = per_dir.entry(segs[..segs.len() - 1].join("/")).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += 1;
+        }
+    }
+
+    // direct / total (this directory plus every descendant), each as (all, loaded).
+    let mut direct: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut total:  HashMap<String, (usize, usize)> = HashMap::new();
+    for (dir, (n, loaded)) in &per_dir {
+        direct.insert(dir.clone(), (*n, *loaded));
 
         // total: the root and every ancestor directory along the chain.
-        *total.entry(String::new()).or_insert(0) += 1;
+        let mut add = |key: &str| {
+            let e = total.entry(key.to_string()).or_insert((0, 0));
+            e.0 += n;
+            e.1 += loaded;
+        };
+        add("");
         let mut acc = String::new();
-        for seg in dir_segs {
-            if acc.is_empty() { acc = (*seg).to_string(); }
+        for seg in dir.split('/').filter(|s| !s.is_empty()) {
+            if acc.is_empty() { acc = seg.to_string(); }
             else              { acc = format!("{acc}/{seg}"); }
-            *total.entry(acc.clone()).or_insert(0) += 1;
+            add(&acc);
         }
     }
 
@@ -526,8 +577,8 @@ fn build_tree_node(
     key:          &str,
     root_name:    &str,
     children_map: &HashMap<String, Vec<String>>,
-    direct:       &HashMap<String, usize>,
-    total:        &HashMap<String, usize>,
+    direct:       &HashMap<String, (usize, usize)>,
+    total:        &HashMap<String, (usize, usize)>,
 ) -> FolderTreeNode {
     let name = if key.is_empty() {
         root_name.to_string()
@@ -547,13 +598,303 @@ fn build_tree_node(
     // Most-populated subfolders first, then alphabetical.
     children.sort_by(|a, b| b.total.cmp(&a.total).then_with(|| a.name.cmp(&b.name)));
 
+    let (d, d_loaded) = direct.get(key).copied().unwrap_or((0, 0));
+    let (t, t_loaded) = total.get(key).copied().unwrap_or((0, 0));
     FolderTreeNode {
         name,
-        rel:    key.to_string(),
-        direct: *direct.get(key).unwrap_or(&0),
-        total:  *total.get(key).unwrap_or(&0),
+        rel:           key.to_string(),
+        direct:        d,
+        direct_loaded: d_loaded,
+        total:         t,
+        total_loaded:  t_loaded,
         children,
     }
+}
+
+// ── Client files (what is on disk vs what is indexed) ───────────────────────
+
+// One image found on disk by `scan_images`, as reconciled into `client_files`.
+#[derive(Debug, Clone)]
+pub struct DiskEntry {
+    pub path:  String,
+    pub size:  i64,
+    pub mtime: f64,
+}
+
+// One `client_files` row as shown by the explorer; `status` is derived from
+// `file_id` / `error_code` (loaded | failed | pending), never stored.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientFileRow {
+    pub name:         String,
+    pub path:         String,
+    pub rel:          String,
+    pub status:       String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code:   Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_reason: Option<String>,
+}
+
+// An immediate child directory in the explorer, with recursive counts.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntry {
+    pub name:   String,
+    pub rel:    String,
+    pub loaded: usize,
+    pub total:  usize,
+}
+
+// Row id of a watched folder, or `None` when it is not (or no longer) watched.
+pub fn watched_folder_id(con: &Connection, path: &str) -> Result<Option<i64>> {
+    let mut stmt = con.prepare_cached("SELECT id FROM watched_folders WHERE path = ?1")?;
+    match stmt.query_row(params![path], |r| r.get::<_, i64>(0)) {
+        Ok(id) => Ok(Some(id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+// Current `status` of a watched folder, or `None` when it is not watched.
+pub fn watched_folder_status(con: &Connection, path: &str) -> Result<Option<String>> {
+    let mut stmt = con.prepare_cached("SELECT status FROM watched_folders WHERE path = ?1")?;
+    match stmt.query_row(params![path], |r| r.get::<_, String>(0)) {
+        Ok(s) => Ok(Some(s)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+// Split a file path into (`rel_dir`, `name`) relative to the watched root.
+fn split_rel(root: &str, path: &str) -> (String, String) {
+    let p = Path::new(path);
+    let rel = p.strip_prefix(root).unwrap_or(p);
+    let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    let rel_dir = rel
+        .parent()
+        .map(|d| {
+            d.components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_default();
+    (rel_dir, name)
+}
+
+// Mirror the scan result into `client_files` for one watched folder: insert new
+// paths, drop vanished ones, and reset the error on a file whose size/mtime changed.
+pub fn reconcile_client_files(con: &Connection, folder_id: i64, root: &str, entries: &[DiskEntry]) -> Result<()> {
+    let now = now_secs();
+    let tx = con.unchecked_transaction()?;
+
+    let mut existing: HashMap<String, (i64, i64, f64)> = HashMap::new();
+    {
+        let mut stmt = tx.prepare("SELECT id, path, size, mtime FROM client_files WHERE folder_id = ?1")?;
+        let rows = stmt.query_map(params![folder_id], |r| {
+            Ok((r.get::<_, String>(1)?, (r.get::<_, i64>(0)?, r.get::<_, i64>(2)?, r.get::<_, f64>(3)?)))
+        })?;
+        for (path, v) in rows.filter_map(|r| r.ok()) {
+            existing.insert(path, v);
+        }
+    }
+
+    {
+        let mut insert = tx.prepare(
+            "INSERT OR IGNORE INTO client_files (folder_id, path, rel_dir, name, size, mtime, first_seen_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )?;
+        let mut update = tx.prepare(
+            "UPDATE client_files SET size = ?2, mtime = ?3, error_code = NULL, error_reason = NULL WHERE id = ?1",
+        )?;
+        let mut on_disk: HashSet<&str> = HashSet::with_capacity(entries.len());
+        for e in entries {
+            on_disk.insert(e.path.as_str());
+            match existing.get(&e.path) {
+                None => {
+                    let (rel_dir, name) = split_rel(root, &e.path);
+                    insert.execute(params![folder_id, e.path, rel_dir, name, e.size, e.mtime, now])?;
+                }
+                Some((id, size, mtime)) => {
+                    if *size != e.size || (mtime - e.mtime).abs() >= 0.001 {
+                        update.execute(params![id, e.size, e.mtime])?;
+                    }
+                }
+            }
+        }
+
+        let mut delete = tx.prepare("DELETE FROM client_files WHERE id = ?1")?;
+        for (path, (id, _, _)) in &existing {
+            if !on_disk.contains(path.as_str()) {
+                delete.execute(params![id])?;
+            }
+        }
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
+// Point every row of a folder at its current `files` row (matched by path, since
+// `files.id` changes on re-describe) and clear the error on rows that loaded.
+pub fn relink_client_files(con: &Connection, folder_id: i64) -> Result<()> {
+    let tx = con.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE client_files SET file_id = (SELECT f.id FROM files f WHERE f.path = client_files.path) \
+          WHERE folder_id = ?1 \
+            AND file_id IS NOT (SELECT f.id FROM files f WHERE f.path = client_files.path)",
+        params![folder_id],
+    )?;
+    tx.execute(
+        "UPDATE client_files SET error_code = NULL, error_reason = NULL \
+          WHERE folder_id = ?1 AND file_id IS NOT NULL AND error_code IS NOT NULL",
+        params![folder_id],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+// Same as `relink_client_files` but for just the given paths — cheap enough to run after every chunk.
+pub fn relink_client_file_paths(con: &Connection, paths: &[String]) -> Result<()> {
+    let mut link = con.prepare_cached(
+        "UPDATE client_files SET file_id = (SELECT f.id FROM files f WHERE f.path = client_files.path), \
+                error_code = NULL, error_reason = NULL \
+          WHERE path = ?1 AND EXISTS (SELECT 1 FROM files f WHERE f.path = client_files.path)",
+    )?;
+    for p in paths {
+        link.execute(params![p])?;
+    }
+    Ok(())
+}
+
+// Record why files failed this run: `(path, error_code, error_reason)`, only for rows still unlinked.
+pub fn record_client_file_errors(con: &Connection, errors: &[(String, String, String)]) -> Result<()> {
+    if errors.is_empty() {
+        return Ok(());
+    }
+    let now = now_secs();
+    let tx = con.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "UPDATE client_files SET error_code = ?2, error_reason = ?3, last_attempt_at = ?4 \
+              WHERE path = ?1 AND file_id IS NULL",
+        )?;
+        for (path, code, reason) in errors {
+            stmt.execute(params![path, code, reason, now])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+// `folder_id → (loaded, total)` for every watched folder, in one GROUP BY.
+pub fn client_file_counts(con: &Connection) -> Result<HashMap<i64, (usize, usize)>> {
+    let mut stmt = con.prepare_cached(
+        "SELECT folder_id, COALESCE(SUM(file_id IS NOT NULL), 0), COUNT(*) FROM client_files GROUP BY folder_id",
+    )?;
+    let map = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, (r.get::<_, i64>(1)? as usize, r.get::<_, i64>(2)? as usize)))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(map)
+}
+
+// `(loaded, total)` for one watched folder path; `(0, 0)` when it has no rows.
+pub fn folder_client_counts(con: &Connection, path: &str) -> Result<(usize, usize)> {
+    let Some(folder_id) = watched_folder_id(con, path)? else {
+        return Ok((0, 0));
+    };
+    Ok(client_file_counts(con)?.get(&folder_id).copied().unwrap_or((0, 0)))
+}
+
+// Derive the wire status from the two columns that define it.
+fn client_status(file_id: Option<i64>, error_code: &Option<String>) -> &'static str {
+    if file_id.is_some() { "loaded" }
+    else if error_code.is_some() { "failed" }
+    else { "pending" }
+}
+
+fn client_file_row(r: &rusqlite::Row) -> rusqlite::Result<ClientFileRow> {
+    let file_id: Option<i64> = r.get(3)?;
+    let error_code: Option<String> = r.get(4)?;
+    Ok(ClientFileRow {
+        name:         r.get(0)?,
+        path:         r.get(1)?,
+        rel:          r.get(2)?,
+        status:       client_status(file_id, &error_code).to_string(),
+        error_code,
+        error_reason: r.get(5)?,
+    })
+}
+
+// One directory of the explorer: its immediate subfolders (recursive counts) and the images directly in it.
+pub fn client_dir_listing(con: &Connection, folder_id: i64, rel_dir: &str) -> Result<(Vec<DirEntry>, Vec<ClientFileRow>)> {
+    let mut stmt = con.prepare_cached(
+        "SELECT name, path, rel_dir, file_id, error_code, error_reason \
+           FROM client_files WHERE folder_id = ?1 AND rel_dir = ?2 ORDER BY name COLLATE NOCASE",
+    )?;
+    let images = stmt
+        .query_map(params![folder_id, rel_dir], client_file_row)?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // Every descendant directory of `rel_dir`, via a `>=`/`<` range rather than `LIKE`.
+    let prefix = if rel_dir.is_empty() { String::new() } else { format!("{rel_dir}/") };
+    let groups: Vec<(String, usize, usize)> = if prefix.is_empty() {
+        let mut stmt = con.prepare_cached(
+            "SELECT rel_dir, COALESCE(SUM(file_id IS NOT NULL), 0), COUNT(*) \
+               FROM client_files WHERE folder_id = ?1 AND rel_dir != '' GROUP BY rel_dir",
+        )?;
+        let rows = stmt.query_map(params![folder_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize, r.get::<_, i64>(2)? as usize))
+        })?;
+        rows.filter_map(|r| r.ok()).collect()
+    } else {
+        let upper = prefix_upper_bound(&prefix);
+        let mut stmt = con.prepare_cached(
+            "SELECT rel_dir, COALESCE(SUM(file_id IS NOT NULL), 0), COUNT(*) \
+               FROM client_files WHERE folder_id = ?1 AND rel_dir >= ?2 AND rel_dir < ?3 GROUP BY rel_dir",
+        )?;
+        let rows = stmt.query_map(params![folder_id, prefix, upper], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize, r.get::<_, i64>(2)? as usize))
+        })?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    // Fold each descendant directory into the immediate child it sits under.
+    let mut children: HashMap<String, (usize, usize)> = HashMap::new();
+    for (dir, loaded, total) in groups {
+        let rest = dir.get(prefix.len()..).unwrap_or("");
+        let child = rest.split('/').next().unwrap_or("");
+        if child.is_empty() { continue; }
+        let e = children.entry(child.to_string()).or_insert((0, 0));
+        e.0 += loaded;
+        e.1 += total;
+    }
+    let mut dirs: Vec<DirEntry> = children
+        .into_iter()
+        .map(|(name, (loaded, total))| DirEntry { rel: format!("{prefix}{name}"), name, loaded, total })
+        .collect();
+    dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    Ok((dirs, images))
+}
+
+// Every image of a folder that was tried and failed, at any depth.
+pub fn client_not_loaded(con: &Connection, folder_id: i64) -> Result<Vec<ClientFileRow>> {
+    let mut stmt = con.prepare_cached(
+        "SELECT name, path, rel_dir, file_id, error_code, error_reason \
+           FROM client_files WHERE folder_id = ?1 AND file_id IS NULL AND error_code IS NOT NULL \
+          ORDER BY rel_dir, name",
+    )?;
+    let rows = stmt
+        .query_map(params![folder_id], client_file_row)?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
 }
 
 // ── Tags ──────────────────────────────────────────────────────────────────
@@ -753,9 +1094,34 @@ mod tests {
         con.execute_batch(
             "CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, faiss_id INTEGER UNIQUE NOT NULL, mtime REAL NOT NULL DEFAULT 0);
              CREATE TABLE watched_folders (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, status TEXT NOT NULL DEFAULT 'watching', added_at REAL NOT NULL, last_event_at REAL NOT NULL DEFAULT 0);
-             CREATE TABLE file_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, category TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', created_at REAL NOT NULL DEFAULT 0, UNIQUE(file_id,category,value));",
+             CREATE TABLE file_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, category TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', created_at REAL NOT NULL DEFAULT 0, UNIQUE(file_id,category,value));
+             CREATE TABLE client_files (id INTEGER PRIMARY KEY AUTOINCREMENT, folder_id INTEGER NOT NULL REFERENCES watched_folders(id) ON DELETE CASCADE, path TEXT UNIQUE NOT NULL, rel_dir TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, mtime REAL NOT NULL DEFAULT 0, file_id INTEGER REFERENCES files(id) ON DELETE SET NULL, error_code TEXT, error_reason TEXT, last_attempt_at REAL NOT NULL DEFAULT 0, first_seen_at REAL NOT NULL DEFAULT 0);",
         ).unwrap();
         con
+    }
+
+    fn disk(path: &str, size: i64, mtime: f64) -> DiskEntry {
+        DiskEntry { path: path.to_string(), size, mtime }
+    }
+
+    // Row (file_id, error_code) for a client_files path.
+    fn cf_state(con: &Connection, path: &str) -> (Option<i64>, Option<String>) {
+        con.query_row(
+            "SELECT file_id, error_code FROM client_files WHERE path = ?1",
+            params![path],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap()
+    }
+
+    fn cf_paths(con: &Connection) -> Vec<String> {
+        let mut stmt = con.prepare("SELECT path FROM client_files ORDER BY path").unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0)).unwrap().filter_map(|r| r.ok()).collect()
+    }
+
+    // A watched folder at `/lib` plus its id.
+    fn watched(con: &Connection) -> i64 {
+        insert_watched_folder(con, "/lib").unwrap();
+        watched_folder_id(con, "/lib").unwrap().unwrap()
     }
     fn seed_files(con: &Connection, paths: &[&str]) {
         for (i, p) in paths.iter().enumerate() {
@@ -908,6 +1274,166 @@ mod tests {
         assert!(paths.contains("/lib/folder/sub/b.jpg"));
         assert!(!paths.contains("/lib/folder2/c.jpg"));
         assert!(!paths.contains("/lib/other/d.jpg"));
+    }
+
+    #[test]
+    fn reconcile_inserts_deletes_and_resets_error_on_change() {
+        let con = mem();
+        let fid = watched(&con);
+        reconcile_client_files(&con, fid, "/lib", &[
+            disk("/lib/a.jpg", 10, 1.0),
+            disk("/lib/sub/b.jpg", 20, 2.0),
+        ]).unwrap();
+        assert_eq!(cf_paths(&con), vec!["/lib/a.jpg", "/lib/sub/b.jpg"]);
+        let (rel, name): (String, String) = con.query_row(
+            "SELECT rel_dir, name FROM client_files WHERE path = '/lib/sub/b.jpg'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((rel.as_str(), name.as_str()), ("sub", "b.jpg"));
+
+        record_client_file_errors(&con, &[
+            ("/lib/a.jpg".into(), "decode_failed".into(), "decode-failed".into()),
+            ("/lib/sub/b.jpg".into(), "decode_failed".into(), "decode-failed".into()),
+        ]).unwrap();
+        assert_eq!(cf_state(&con, "/lib/a.jpg").1.as_deref(), Some("decode_failed"));
+
+        // a.jpg is edited (mtime changed) and b.jpg vanished, c.jpg is new.
+        reconcile_client_files(&con, fid, "/lib", &[
+            disk("/lib/a.jpg", 10, 5.0),
+            disk("/lib/c.jpg", 30, 3.0),
+        ]).unwrap();
+        assert_eq!(cf_paths(&con), vec!["/lib/a.jpg", "/lib/c.jpg"]);
+        assert_eq!(cf_state(&con, "/lib/a.jpg"), (None, None), "edited file goes back to pending");
+        // An untouched file keeps its error across a reconcile.
+        record_client_file_errors(&con, &[("/lib/c.jpg".into(), "hash_failed".into(), "x".into())]).unwrap();
+        reconcile_client_files(&con, fid, "/lib", &[disk("/lib/a.jpg", 10, 5.0), disk("/lib/c.jpg", 30, 3.0)]).unwrap();
+        assert_eq!(cf_state(&con, "/lib/c.jpg").1.as_deref(), Some("hash_failed"));
+    }
+
+    #[test]
+    fn relink_sets_file_id_by_path_and_clears_errors() {
+        let con = mem();
+        let fid = watched(&con);
+        reconcile_client_files(&con, fid, "/lib", &[disk("/lib/a.jpg", 1, 1.0), disk("/lib/b.jpg", 1, 1.0)]).unwrap();
+        record_client_file_errors(&con, &[("/lib/a.jpg".into(), "decode_failed".into(), "r".into())]).unwrap();
+        seed_files(&con, &["/lib/a.jpg"]);
+
+        relink_client_files(&con, fid).unwrap();
+        let (file_id, err) = cf_state(&con, "/lib/a.jpg");
+        assert!(file_id.is_some());
+        assert_eq!(err, None, "a row that loaded must not keep its old error");
+        assert_eq!(cf_state(&con, "/lib/b.jpg"), (None, None));
+        assert_eq!(client_file_counts(&con).unwrap().get(&fid), Some(&(1, 2)));
+
+        // Errors are only recorded for rows that are still unlinked.
+        record_client_file_errors(&con, &[("/lib/a.jpg".into(), "decode_failed".into(), "r".into())]).unwrap();
+        assert_eq!(cf_state(&con, "/lib/a.jpg").1, None);
+    }
+
+    #[test]
+    fn relink_follows_insert_or_replace_to_the_new_files_id() {
+        let con = mem();
+        let fid = watched(&con);
+        reconcile_client_files(&con, fid, "/lib", &[disk("/lib/a.jpg", 1, 1.0)]).unwrap();
+        insert_file(&con, "/lib/a.jpg", "h1", 0, 1.0).unwrap();
+        relink_client_files(&con, fid).unwrap();
+        let first = cf_state(&con, "/lib/a.jpg").0.unwrap();
+
+        // Re-describing replaces the files row, which gets a new id.
+        insert_file(&con, "/lib/a.jpg", "h2", 1, 2.0).unwrap();
+        assert_eq!(cf_state(&con, "/lib/a.jpg").0, None, "old id is gone, ON DELETE SET NULL");
+        relink_client_files(&con, fid).unwrap();
+        let second = cf_state(&con, "/lib/a.jpg").0.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(client_file_counts(&con).unwrap().get(&fid), Some(&(1, 1)));
+    }
+
+    #[test]
+    fn chunk_relink_links_only_the_given_paths() {
+        let con = mem();
+        let fid = watched(&con);
+        reconcile_client_files(&con, fid, "/lib", &[disk("/lib/a.jpg", 1, 1.0), disk("/lib/b.jpg", 1, 1.0)]).unwrap();
+        seed_files(&con, &["/lib/a.jpg", "/lib/b.jpg"]);
+        relink_client_file_paths(&con, &["/lib/a.jpg".to_string()]).unwrap();
+        assert!(cf_state(&con, "/lib/a.jpg").0.is_some());
+        assert!(cf_state(&con, "/lib/b.jpg").0.is_none());
+    }
+
+    #[test]
+    fn removing_a_watched_folder_cascades_its_client_files() {
+        let con = mem();
+        let fid = watched(&con);
+        reconcile_client_files(&con, fid, "/lib", &[disk("/lib/a.jpg", 1, 1.0)]).unwrap();
+        delete_watched_folder(&con, "/lib").unwrap();
+        assert!(cf_paths(&con).is_empty());
+    }
+
+    #[test]
+    fn deleting_a_files_row_makes_the_client_file_pending() {
+        let con = mem();
+        let fid = watched(&con);
+        reconcile_client_files(&con, fid, "/lib", &[disk("/lib/a.jpg", 1, 1.0)]).unwrap();
+        seed_files(&con, &["/lib/a.jpg"]);
+        relink_client_files(&con, fid).unwrap();
+        assert!(cf_state(&con, "/lib/a.jpg").0.is_some());
+
+        delete_file(&con, "/lib/a.jpg").unwrap();
+        assert_eq!(cf_state(&con, "/lib/a.jpg"), (None, None));
+        let (_, images) = client_dir_listing(&con, fid, "").unwrap();
+        assert_eq!(images[0].status, "pending");
+    }
+
+    #[test]
+    fn dir_listing_child_counts_are_recursive_and_do_not_leak_to_prefix_siblings() {
+        let con = mem();
+        let fid = watched(&con);
+        reconcile_client_files(&con, fid, "/lib", &[
+            disk("/lib/top.jpg", 1, 1.0),
+            disk("/lib/folder/a.jpg", 1, 1.0),
+            disk("/lib/folder/sub/b.jpg", 1, 1.0),
+            disk("/lib/folder/sub/deep/c.jpg", 1, 1.0),
+            disk("/lib/folder2/d.jpg", 1, 1.0),
+        ]).unwrap();
+        seed_files(&con, &["/lib/folder/a.jpg", "/lib/folder/sub/b.jpg"]);
+        relink_client_files(&con, fid).unwrap();
+        record_client_file_errors(&con, &[("/lib/folder/sub/deep/c.jpg".into(), "decode_failed".into(), "r".into())]).unwrap();
+
+        // Root: top.jpg directly, with folder (3 images) and folder2 (1 image) as children.
+        let (dirs, images) = client_dir_listing(&con, fid, "").unwrap();
+        assert_eq!(images.len(), 1);
+        let find = |n: &str| dirs.iter().find(|d| d.name == n).unwrap().clone();
+        assert_eq!((find("folder").loaded, find("folder").total), (2, 3));
+        assert_eq!((find("folder2").loaded, find("folder2").total), (0, 1));
+
+        // Inside "folder": only sub as a child, folder2's file must not leak in.
+        let (dirs, images) = client_dir_listing(&con, fid, "folder").unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(dirs.len(), 1);
+        assert_eq!((dirs[0].rel.as_str(), dirs[0].loaded, dirs[0].total), ("folder/sub", 1, 2));
+
+        let failed = client_not_loaded(&con, fid).unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!((failed[0].rel.as_str(), failed[0].status.as_str()), ("folder/sub/deep", "failed"));
+    }
+
+    #[test]
+    fn folder_tree_counts_unloaded_files_and_falls_back_without_client_files() {
+        let con = mem();
+        let fid = watched(&con);
+        // No client_files rows yet: falls back to the indexed files, loaded == total.
+        seed_files(&con, &["/lib/a.jpg", "/lib/sub/b.jpg"]);
+        let tree = folder_tree(&con, "/lib").unwrap();
+        assert_eq!((tree.total, tree.total_loaded), (2, 2));
+
+        // With client_files the tree includes images that never loaded.
+        reconcile_client_files(&con, fid, "/lib", &[
+            disk("/lib/a.jpg", 1, 1.0),
+            disk("/lib/sub/b.jpg", 1, 1.0),
+            disk("/lib/sub/c.jpg", 1, 1.0),
+        ]).unwrap();
+        relink_client_files(&con, fid).unwrap();
+        let tree = folder_tree(&con, "/lib").unwrap();
+        assert_eq!((tree.total, tree.total_loaded, tree.direct, tree.direct_loaded), (3, 2, 1, 1));
+        let sub = tree.children.iter().find(|c| c.name == "sub").unwrap();
+        assert_eq!((sub.total, sub.total_loaded, sub.rel.as_str()), (2, 1, "sub"));
     }
 
     #[test]

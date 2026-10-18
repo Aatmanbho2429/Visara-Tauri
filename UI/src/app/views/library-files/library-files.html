@@ -1,0 +1,151 @@
+<div class="library-files-page">
+
+  <header class="lf-header">
+    <div>
+      <button class="lf-back" (click)="backToLibrary()">
+        <i class="pi pi-arrow-left"></i> {{ 'libraryFiles.back' | translate }}
+      </button>
+      <h1 class="lf-title">{{ 'libraryFiles.title' | translate }}</h1>
+      <p class="lf-subtitle" [title]="root">{{ rootName }}</p>
+    </div>
+    @if (mode === 'notLoaded') {
+      <button class="lf-link" (click)="openDir('')">
+        <i class="pi pi-images"></i> {{ 'libraryFiles.allFiles' | translate }}
+      </button>
+    } @else {
+      <button class="lf-link" (click)="showNotLoaded()">
+        <i class="pi pi-exclamation-triangle"></i> {{ 'libraryFiles.showNotLoaded' | translate }}
+      </button>
+    }
+  </header>
+
+  @if (folderStatus === 'missing') {
+    <div class="lf-banner">
+      <i class="pi pi-exclamation-triangle"></i>
+      {{ 'libraryFiles.missingBanner' | translate }}
+    </div>
+  }
+
+  @if (mode === 'dir') {
+    <nav class="crumbs">
+      @for (c of breadcrumb; track c.rel; let first = $first) {
+        @if (!first) { <i class="pi pi-angle-right crumbs__sep"></i> }
+        <button class="crumbs__item" (click)="openDir(c.rel)">
+          @if (first) { <i class="pi pi-home"></i> }
+          {{ c.name }}
+        </button>
+      }
+    </nav>
+
+    @if (images.length > 0) {
+      <p-selectbutton
+        class="lf-filters"
+        [options]="filterOptions"
+        [(ngModel)]="filter"
+        optionLabel="label"
+        optionValue="value"
+        [allowEmpty]="false"
+        (onChange)="onFilterChange()">
+        <ng-template #item let-item>
+          {{ item.label }} <span class="lf-filters__count">{{ item.count | number }}</span>
+        </ng-template>
+      </p-selectbutton>
+    }
+  } @else {
+    <p class="lf-note">{{ 'libraryFiles.notLoadedNote' | translate }}</p>
+  }
+
+  @if (loading) {
+    <div class="browse-loading"><div class="browse-loading__ring"></div></div>
+  }
+
+  @if (!loading && mode === 'dir') {
+    <div class="browse-grid">
+      @for (d of folders; track d.rel) {
+        <button class="dir-card lf-dir" (click)="openDir(d.rel)" [title]="d.name">
+          @if (d.loaded < d.total) {
+            <span class="lf-dir__dot" [pTooltip]="'libraryFiles.someNotLoaded' | translate" tooltipPosition="left"></span>
+          }
+          <i class="pi pi-folder dir-card__icon"></i>
+          <span class="dir-card__name">{{ d.name }}</span>
+          <span class="lf-dir-count" [class.lf-dir-count--warn]="d.loaded < d.total">
+            {{ d.loaded | number }} / {{ d.total | number }}
+          </span>
+        </button>
+      }
+
+      @for (img of shown; track img.path) {
+        <div class="tile-card lf-tile" [class.lf-tile--dim]="img.status !== 'loaded'" (click)="openFile(img.path)">
+          <span class="lf-badge lf-badge--{{ img.status }}" [pTooltip]="tip(img)" tooltipPosition="left">
+            <i class="pi" [ngClass]="icon(img.status)"></i>
+          </span>
+          <div class="tile-card__img-wrap">
+            @if (thumbOf(img.path) && !hasThumbError(img.path)) {
+              <img [src]="thumbOf(img.path)" [alt]="img.name" class="tile-card__img"
+                   loading="lazy" (error)="onThumbError(img.path)" />
+            } @else if (hasThumbError(img.path)) {
+              <div class="tile-card__fallback"><i class="pi pi-image"></i></div>
+            } @else {
+              <div class="tile-card__loading"></div>
+            }
+          </div>
+          <div class="tile-card__foot">
+            <span class="tile-card__name" [title]="img.path">{{ img.name }}</span>
+          </div>
+        </div>
+      }
+    </div>
+
+    @if (hasMore) {
+      <div #sentinel class="lf-sentinel"></div>
+    }
+
+    @if (images.length === 0 && folders.length === 0) {
+      <div class="browse-empty">
+        <i class="pi pi-inbox"></i>
+        <p>{{ 'libraryFiles.empty' | translate }}</p>
+      </div>
+    } @else if (images.length > 0 && shown.length === 0) {
+      <div class="browse-empty">
+        <i class="pi pi-filter"></i>
+        <p>{{ 'libraryFiles.noMatch' | translate }}</p>
+      </div>
+    }
+  }
+
+  @if (!loading && mode === 'notLoaded') {
+    @if (notLoaded.length === 0) {
+      <div class="browse-empty">
+        <i class="pi pi-check-circle"></i>
+        <p>{{ 'libraryFiles.noneFailed' | translate }}</p>
+      </div>
+    } @else {
+      <ul class="lf-list">
+        @for (img of shown; track img.path) {
+          <li>
+            <button class="lf-row" (click)="openDir(img.rel)">
+              <span class="lf-row__thumb">
+                @if (thumbOf(img.path) && !hasThumbError(img.path)) {
+                  <img [src]="thumbOf(img.path)" [alt]="img.name" loading="lazy" (error)="onThumbError(img.path)" />
+                } @else {
+                  <i class="pi pi-image"></i>
+                }
+              </span>
+              <span class="lf-row__main">
+                <span class="lf-row__name" [title]="img.path">{{ img.name }}</span>
+                <span class="lf-row__rel">{{ img.rel || rootName }}</span>
+              </span>
+              <span class="lf-row__reason" [pTooltip]="img.errorReason ?? ''" tooltipPosition="left">
+                <i class="pi pi-times-circle"></i> {{ errorLabel(img.errorCode) }}
+              </span>
+            </button>
+          </li>
+        }
+      </ul>
+      @if (hasMore) {
+        <div #sentinel class="lf-sentinel"></div>
+      }
+    }
+  }
+
+</div>

@@ -49,3 +49,15 @@ pub fn library_folder_tree(app: tauri::AppHandle, path: String, request_id: Opti
     let result = library::folder_tree(path).with_request_id(request_id);
     let _ = app.emit("library_folder_tree_response", result);
 }
+
+#[tauri::command]
+pub fn library_list_dir(app: tauri::AppHandle, path: String, rel: String, request_id: Option<String>) {
+    let result = library::list_dir(path, rel).with_request_id(request_id);
+    let _ = app.emit("library_list_dir_response", result);
+}
+
+#[tauri::command]
+pub fn library_list_not_loaded(app: tauri::AppHandle, path: String, request_id: Option<String>) {
+    let result = library::list_not_loaded(path).with_request_id(request_id);
+    let _ = app.emit("library_list_not_loaded_response", result);
+}

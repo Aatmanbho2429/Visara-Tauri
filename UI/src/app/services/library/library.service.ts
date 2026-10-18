@@ -3,8 +3,10 @@ import { Observable } from 'rxjs';
 import { TAURI_COMMANDS } from '../../core/tauri/tauri-commands.const';
 import { TAURI_EVENTS } from '../../core/tauri/tauri-events.const';
 import { ZoneWrapperService } from '../../core/zone-wrapper/zone-wrapper.service';
-import { requestRemoveFolder, requestSetPaused } from '../../models/request/requestLibrary';
-import { responseFolderTree, responseLibraryStats, responseListFolders } from '../../models/response/responseLibrary';
+import { requestListDir, requestRemoveFolder, requestSetPaused } from '../../models/request/requestLibrary';
+import {
+  responseFolderTree, responseLibraryDir, responseLibraryNotLoaded, responseLibraryStats, responseListFolders,
+} from '../../models/response/responseLibrary';
 import {
   responseLibrarySyncComplete, responseLibrarySyncError,
   responseLibrarySyncProgress, responseLibrarySyncStarted,
@@ -55,6 +57,25 @@ export class LibraryService {
   // Nested subfolder tree (with image counts) for one watched folder.
   folderTree(path: string): Observable<responseFolderTree> {
     return this.zoneWrapper.invoke<responseFolderTree>(TAURI_COMMANDS.LIBRARY_FOLDER_TREE, { path });
+  }
+
+  // One directory of a watched folder: subfolders with loaded/total, and each image's load status.
+  listDir(path: string, rel: string): Observable<responseLibraryDir> {
+    return this.zoneWrapper.invoke<responseLibraryDir>(TAURI_COMMANDS.LIBRARY_LIST_DIR, { path, rel } as requestListDir);
+  }
+
+  // Same call, without the global loading spinner — for refreshes driven by sync events.
+  listDirSilent(path: string, rel: string): Observable<responseLibraryDir> {
+    return this.zoneWrapper.invokeSilent<responseLibraryDir>(TAURI_COMMANDS.LIBRARY_LIST_DIR, { path, rel } as requestListDir);
+  }
+
+  // Every image of a watched folder that failed to load, at any depth.
+  listNotLoaded(path: string): Observable<responseLibraryNotLoaded> {
+    return this.zoneWrapper.invoke<responseLibraryNotLoaded>(TAURI_COMMANDS.LIBRARY_LIST_NOT_LOADED, { path });
+  }
+
+  listNotLoadedSilent(path: string): Observable<responseLibraryNotLoaded> {
+    return this.zoneWrapper.invokeSilent<responseLibraryNotLoaded>(TAURI_COMMANDS.LIBRARY_LIST_NOT_LOADED, { path });
   }
 
   // Subscribe to live per-folder sync events emitted by the background

@@ -419,7 +419,7 @@ fn owning_root(event_path: &PathBuf, roots: &HashSet<PathBuf>) -> Option<PathBuf
 // emits live lifecycle events to the UI:
 //   library_sync_started  { path }
 //   library_sync_progress { path, progress: ProgressSnapshot }
-//   library_sync_complete  { path, errors, image_count }
+//   library_sync_complete  { path, errors, failed, image_count, loaded_count, total_count }
 //   library_sync_error     { path, message }
 fn sync_one(folder: &PathBuf) {
     let folder_str = folder.to_string_lossy().to_string();
@@ -576,6 +576,11 @@ fn sync_one(folder: &PathBuf) {
                 .and_then(|con| database::folder_file_count(&con, &folder_str).ok())
                 .unwrap_or(0);
 
+            let (loaded_count, total_count) = database::open()
+                .ok()
+                .and_then(|con| database::folder_client_counts(&con, &folder_str).ok())
+                .unwrap_or((0, 0));
+
             if let Ok(con) = database::open() {
                 let _ = database::set_watched_folder_status(&con, &folder_str, "watching");
             }
@@ -603,6 +608,8 @@ fn sync_one(folder: &PathBuf) {
                 errors: errors.len(),
                 failed,
                 image_count,
+                loaded_count,
+                total_count,
             }));
 
             // Auto-compute colour tags for any images that don't have one yet

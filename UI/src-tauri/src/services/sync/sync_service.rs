@@ -18,14 +18,108 @@ use std::{
 // Files processed together per sidecar `/describe` call and DB transaction.
 const INDEX_FILE_CHUNK: usize = 64;
 
+// Stable `client_files.error_code` values; the UI translates each one.
+const ERR_HASH_FAILED: &str = "hash_failed";
+const ERR_DECODE_FAILED: &str = "decode_failed";
+const ERR_DESCRIBE_FAILED: &str = "describe_failed";
+const ERR_DB_FAILED: &str = "db_failed";
+const ERR_INDEX_FAILED: &str = "index_failed";
+
+// A per-file failure with its stable code; converts to the wire `FileError` for the toast.
+struct SyncFileError {
+    file:   String,
+    code:   &'static str,
+    reason: String,
+}
+
+impl SyncFileError {
+    fn new(file: String, code: &'static str, reason: impl Into<String>) -> Self {
+        Self { file, code, reason: reason.into() }
+    }
+
+    fn to_file_error(&self) -> FileError {
+        let reason = match self.code {
+            ERR_DECODE_FAILED | ERR_DESCRIBE_FAILED => format!("Sidecar could not describe this image: {}", self.reason),
+            _ => self.reason.clone(),
+        };
+        FileError { file: self.file.clone(), reason }
+    }
+}
+
+// Map a sidecar describe failure to its `client_files` code.
+fn describe_error_code(reason: &str) -> &'static str {
+    if reason == sidecar::INCOMPLETE_DESCRIPTOR { ERR_DESCRIBE_FAILED } else { ERR_DECODE_FAILED }
+}
+
 pub fn sync_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec<FileError>> {
     if !sidecar::is_ready() {
         return Err(PictoriaError::ModelNotReady);
     }
 
-    let t_total = Instant::now();
     let folder_str = folder_path.to_string_lossy().to_string();
-    let mut errors: Vec<FileError> = Vec::new();
+    let mut errors: Vec<SyncFileError> = Vec::new();
+
+    let result = sync_folder_inner(store, folder_path, &folder_str, &mut errors);
+
+    // Chunks that committed before an Err still loaded, so relink on every exit path.
+    finalize_client_files(&folder_str, &errors);
+
+    result?;
+    Ok(errors.iter().map(SyncFileError::to_file_error).collect())
+}
+
+// Hook B: link `client_files` rows to their `files` rows and record this run's
+// failures; a problem here is logged and never fails the sync.
+fn finalize_client_files(folder_str: &str, errors: &[SyncFileError]) {
+    let run = || -> Result<()> {
+        let con = database::open()?;
+        let Some(folder_id) = database::watched_folder_id(&con, folder_str)? else {
+            return Ok(());
+        };
+        database::relink_client_files(&con, folder_id)?;
+        let rows: Vec<(String, String, String)> = errors
+            .iter()
+            .map(|e| (e.file.clone(), e.code.to_string(), e.reason.clone()))
+            .collect();
+        database::record_client_file_errors(&con, &rows)
+    };
+    if let Err(e) = run() {
+        log::warn!("[sync] client_files update failed for {folder_str}: {e}");
+    }
+}
+
+// Hook A: mirror the scanned image list into `client_files`; same failure policy as hook B.
+fn reconcile_client_files(con: &rusqlite::Connection, folder_str: &str, current_files: &[PathBuf]) -> Option<i64> {
+    let folder_id = match database::watched_folder_id(con, folder_str) {
+        Ok(Some(id)) => id,
+        Ok(None) => return None,
+        Err(e) => {
+            log::warn!("[sync] client_files lookup failed for {folder_str}: {e}");
+            return None;
+        }
+    };
+    let entries: Vec<database::DiskEntry> = current_files
+        .par_iter()
+        .map(|p| database::DiskEntry {
+            path:  p.to_string_lossy().to_string(),
+            size:  std::fs::metadata(p).map(|m| m.len() as i64).unwrap_or(0),
+            mtime: file_mtime(p),
+        })
+        .collect();
+    if let Err(e) = database::reconcile_client_files(con, folder_id, folder_str, &entries) {
+        log::warn!("[sync] client_files reconcile failed for {folder_str}: {e}");
+    }
+    Some(folder_id)
+}
+
+fn sync_folder_inner(
+    store: &mut VectorStore,
+    folder_path: &Path,
+    folder_str: &str,
+    errors: &mut Vec<SyncFileError>,
+) -> Result<()> {
+    let t_total = Instant::now();
+    let folder_str = folder_str.to_string();
 
     let con = database::open()?;
 
@@ -41,6 +135,8 @@ pub fn sync_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec<Fi
         "[timing] scan_images folder={folder_str} files={total} scan_ms={:.2}",
         t_scan.elapsed().as_secs_f64() * 1000.0
     );
+
+    reconcile_client_files(&con, &folder_str, &current_files);
 
     progress::set_progress(Some("Scanning files"), Some(0), Some(total), Some(""), Some(0));
 
@@ -75,7 +171,7 @@ pub fn sync_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec<Fi
         progress::set_progress(Some("Scanning files"), Some(i + 1), None, Some(&path_str), None);
 
         if let Some(reason) = err_opt {
-            errors.push(FileError { file: path_str, reason: format!("Hash failed: {reason}") });
+            errors.push(SyncFileError::new(path_str, ERR_HASH_FAILED, format!("Hash failed: {reason}")));
             progress::increment_errors();
             continue;
         }
@@ -89,7 +185,7 @@ pub fn sync_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec<Fi
         let (existing_path, existing_id) = match database::find_by_hash(&con, &hash) {
             Ok(v) => v,
             Err(e) => {
-                errors.push(FileError { file: path_str, reason: format!("DB lookup failed: {e}") });
+                errors.push(SyncFileError::new(path_str, ERR_DB_FAILED, format!("DB lookup failed: {e}")));
                 progress::increment_errors();
                 continue;
             }
@@ -125,7 +221,7 @@ pub fn sync_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec<Fi
 
     let total_describe = needs_describe.len();
     if total_describe > 0 {
-        index_chunks(store, &con, &needs_describe, &mut errors)?;
+        index_chunks(store, &con, &needs_describe, errors)?;
     }
 
     // Files whose hash is no longer present under this folder at all.
@@ -149,7 +245,7 @@ pub fn sync_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec<Fi
         errors.len(),
         t_total.elapsed().as_secs_f64() * 1000.0,
     );
-    Ok(errors)
+    Ok(())
 }
 
 // Describe and persist one batch of new/changed files: colour histograms
@@ -160,7 +256,7 @@ fn index_chunks(
     store: &mut VectorStore,
     con: &rusqlite::Connection,
     needs_describe: &[(PathBuf, String, f64)],
-    errors: &mut Vec<FileError>,
+    errors: &mut Vec<SyncFileError>,
 ) -> Result<()> {
     let ext_counts: HashMap<String, usize> = {
         let mut m = HashMap::new();
@@ -184,16 +280,20 @@ fn index_chunks(
         let t_describe = Instant::now();
         let described = sidecar::describe(&paths, sidecar::Priority::Index)?;
         let describe_ms = t_describe.elapsed().as_secs_f64() * 1000.0;
-        let by_path: HashMap<String, Option<sidecar::Descriptor>> = described.into_iter().collect();
+        let by_path: HashMap<String, std::result::Result<sidecar::Descriptor, String>> = described.into_iter().collect();
 
         let t_persist = Instant::now();
         for (path, hash, mtime) in chunk.iter() {
             let path_str = path.to_string_lossy().to_string();
 
             let desc = match by_path.get(&path_str) {
-                Some(Some(d)) => d.clone(),
-                _ => {
-                    errors.push(FileError { file: path_str.clone(), reason: "Sidecar could not describe this image".into() });
+                Some(Ok(d)) => d.clone(),
+                other => {
+                    let reason = match other {
+                        Some(Err(msg)) => msg.clone(),
+                        _ => sidecar::INCOMPLETE_DESCRIPTOR.to_string(),
+                    };
+                    errors.push(SyncFileError::new(path_str.clone(), describe_error_code(&reason), reason));
                     progress::increment_errors();
                     continue;
                 }
@@ -204,13 +304,13 @@ fn index_chunks(
             let vector_id = match database::next_vector_id(con) {
                 Ok(id) => id,
                 Err(e) => {
-                    errors.push(FileError { file: path_str.clone(), reason: format!("ID allocation failed: {e}") });
+                    errors.push(SyncFileError::new(path_str.clone(), ERR_DB_FAILED, format!("ID allocation failed: {e}")));
                     progress::increment_errors();
                     continue;
                 }
             };
             if let Err(e) = database::insert_file(con, &path_str, hash, vector_id, *mtime) {
-                errors.push(FileError { file: path_str.clone(), reason: format!("DB insert failed: {e}") });
+                errors.push(SyncFileError::new(path_str.clone(), ERR_DB_FAILED, format!("DB insert failed: {e}")));
                 progress::increment_errors();
                 continue;
             }
@@ -228,9 +328,13 @@ fn index_chunks(
             }
 
             if let Err(e) = store.upsert(vector_id, &embed_flat, &desc.rose, &gram_flat, &desc.color) {
-                errors.push(FileError { file: path_str, reason: format!("Index upsert failed: {e}") });
+                errors.push(SyncFileError::new(path_str, ERR_INDEX_FAILED, format!("Index upsert failed: {e}")));
                 progress::increment_errors();
             }
+        }
+        // Flip this chunk's rows to loaded before the commit, so an open explorer sees ticks arrive.
+        if let Err(e) = database::relink_client_file_paths(con, &paths) {
+            log::warn!("[sync] client_files chunk relink failed: {e}");
         }
         let persist_ms = t_persist.elapsed().as_secs_f64() * 1000.0;
 
@@ -291,12 +395,12 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
 
         let paths: Vec<String> = chunk.iter().map(|(_, p)| p.to_string_lossy().to_string()).collect();
         let described = sidecar::describe(&paths, sidecar::Priority::Index)?;
-        let by_path: HashMap<String, Option<sidecar::Descriptor>> = described.into_iter().collect();
+        let by_path: HashMap<String, std::result::Result<sidecar::Descriptor, String>> = described.into_iter().collect();
 
         for (id, path) in chunk.iter() {
             let path_str = path.to_string_lossy().to_string();
             let desc = match by_path.get(&path_str) {
-                Some(Some(d)) => d.clone(),
+                Some(Ok(d)) => d.clone(),
                 _ => {
                     errors.push(FileError { file: path_str, reason: "Sidecar could not describe this image".into() });
                     progress::increment_errors();

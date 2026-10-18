@@ -299,6 +299,12 @@
     "deleteIndexTitle": "Stop watching AND delete the index for this folder",
     "total": "Total:",
     "imagesAcross": "images across",
+    "imagesLoaded": "images loaded",
+    "imagesLoadedAcross": "images loaded across",
+    "notLoaded": "not loaded",
+    "someNotLoaded": "Some images in this folder are not loaded",
+    "viewFiles": "View files",
+    "viewFilesTitle": "Browse every image in this folder and see which ones loaded",
     "status": {
       "watching": "Watching",
       "indexing": "Indexing",
@@ -329,6 +335,39 @@
     "filesCouldNotIndex": "{{count}} {{noun}} could not be indexed.",
     "folderSkipped": "{{name}}: {{count}} {{noun}} skipped.",
     "upToDate": "{{name}} is up to date."
+  },
+
+  "libraryFiles": {
+    "title": "Library files",
+    "back": "Back to Library",
+    "allFiles": "All files",
+    "showNotLoaded": "Show not loaded",
+    "missingBanner": "This folder isn't reachable right now. The list below is the last known state.",
+    "notLoadedNote": "Images that could not be loaded into the index. Click a row to open its folder.",
+    "noneFailed": "No failed images. Anything still missing is waiting to be indexed.",
+    "empty": "No images in this folder.",
+    "noMatch": "No images match this filter.",
+    "someNotLoaded": "Some images in this folder are not loaded",
+    "couldNotLoad": "Could not load files.",
+    "toastTitle": "Library files",
+    "filter": {
+      "all": "All",
+      "loaded": "Loaded",
+      "failed": "Not loaded",
+      "pending": "Pending"
+    },
+    "status": {
+      "loaded": "Loaded",
+      "failed": "Not loaded",
+      "pending": "Waiting to be indexed"
+    },
+    "error": {
+      "hash_failed": "Could not read this file",
+      "decode_failed": "Could not decode this image",
+      "describe_failed": "Could not analyse this image",
+      "db_failed": "Could not save this image to the index",
+      "index_failed": "Could not add this image to the search index"
+    }
   },
 
   "browse": {

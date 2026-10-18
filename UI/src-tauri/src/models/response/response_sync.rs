@@ -30,6 +30,8 @@ pub struct ResponseLibrarySyncComplete {
     pub errors: usize,
     pub failed: Vec<FileError>,
     pub image_count: usize,
+    pub loaded_count: usize,
+    pub total_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -499,6 +499,12 @@
   }
 
   &__loose {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -508,6 +514,19 @@
     padding: 0.3rem 0.6rem 0.5rem;
 
     i { color: $primary-400; font-size: 0.85em; }
+    &:hover { color: $primary-200; }
+  }
+
+  &__item { display: block; }
+
+  // Red marker on a row (or the loose-images line) where some images are not loaded.
+  &__dot {
+    flex-shrink: 0;
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    background: $color-invalid;
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.22);
   }
 
   &__list {
@@ -521,6 +540,12 @@
   }
 
   &__node {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
     display: flex;
     align-items: center;
     gap: 0.6rem;
@@ -559,7 +584,27 @@
     background: rgba(255, 255, 255, 0.05);
     padding: 0.1rem 0.5rem;
     border-radius: 999px;
+
+    // Some images in this folder are not loaded.
+    &--warn {
+      color: $tertiary-300;
+      background: rgba(251, 146, 60, 0.12);
+    }
   }
+}
+
+// "N not loaded" link in the card's meta line.
+.folder-card__not-loaded {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: $tertiary-300;
+  cursor: pointer;
+  text-decoration: underline;
+
+  &:hover { color: $tertiary-200; }
 }
 
 // ── Per-card buttons ─────────────────────────────────────────────

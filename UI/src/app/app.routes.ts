@@ -4,6 +4,7 @@ import { Master } from './views/master/master';
 import { Search } from './views/search/search';
 import { Profile } from './views/profile/profile';
 import { Library } from './views/library/library';
+import { LibraryFiles } from './views/library-files/library-files';
 import { Browse } from './views/browse/browse';
 import { authGuard } from './guards/auth.guard';
 import { loginGuard } from './guards/login.guard';
@@ -16,6 +17,7 @@ export const routes: Routes = [
         // Feature pages require an active subscription (trial/active).
         { path: 'search',         component: Search,  canActivate: [subscriptionGuard] },
         { path: 'library',        component: Library, canActivate: [subscriptionGuard] },
+        { path: 'library/files',  component: LibraryFiles, canActivate: [subscriptionGuard] },
         { path: 'browse',         component: Browse,  canActivate: [subscriptionGuard] },
         // Profile stays open so expired users can renew.
         { path: 'profile',        component: Profile },

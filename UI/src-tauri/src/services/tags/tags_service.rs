@@ -169,7 +169,7 @@ pub fn backfill_colors(folder: &str) -> usize {
         };
         for (path, desc) in described {
             let colors = match desc {
-                Some(d) if !d.dominant.is_empty() => d.dominant,
+                Ok(d) if !d.dominant.is_empty() => d.dominant,
                 _ => continue,
             };
             apply_color_tags(&con, &path, &colors);

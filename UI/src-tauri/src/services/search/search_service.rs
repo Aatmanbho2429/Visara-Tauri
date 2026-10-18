@@ -410,7 +410,7 @@ pub fn execute(
     let query_desc = described
         .into_iter()
         .next()
-        .and_then(|(_, d)| d)
+        .and_then(|(_, d)| d.ok())
         .ok_or_else(|| PictoriaError::Fatal("Could not describe the reference image.".into()))?;
     let query_embed: Vec<f32> = query_desc.embed.into_iter().flatten().collect();
     let query_gram: Vec<f32> = query_desc.gram.into_iter().flatten().collect();

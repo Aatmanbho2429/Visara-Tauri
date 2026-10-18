@@ -1,5 +1,6 @@
 import { Component, OnDestroy, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Router } from '@angular/router';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { MessageService } from 'primeng/api';
@@ -28,6 +29,7 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
   private libSvc   = inject(LibraryService);
   private messages = inject(MessageService);
   private t        = inject(TranslateService);
+  private router   = inject(Router);
 
   folders: WatchedFolder[] = [];
   loading                  = true;
@@ -84,13 +86,17 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
         this.patchFolder(path, { status: 'indexing' });
         this.cdr.detectChanges();
       },
-      complete: ({ path, errors, failed, imageCount }) => {
+      complete: ({ path, errors, failed, imageCount, loadedCount, totalCount }) => {
         delete this.syncProgress[path];
         this.patchFolder(path, {
           status:      'watching',
           imageCount,
+          loadedCount,
+          totalCount,
           lastEventAt: Date.now() / 1000,
         });
+        // An open subfolder panel would otherwise keep the pre-sync counts.
+        if (this.treeOpen[path]) this.loadTree(path);
         if (errors > 0) {
           const noun = this.t.instant(errors === 1 ? 'library.file' : 'library.files');
           this.syncError[path]  = this.t.instant('library.filesCouldNotIndex', { count: errors, noun });
@@ -143,22 +149,40 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
       return;
     }
     this.treeOpen[path] = true;
-    if (this.tree[path] === undefined) {
-      this.treeLoading[path] = true;
-      this.handle(
-        this.libSvc.folderTree(path),
-        data => {
-          this.treeLoading[path] = false;
-          this.tree[path] = data?.tree ?? null;
-        },
-        err => {
-          this.treeLoading[path] = false;
-          this.tree[path] = null;
-          this.toastError(err.message || this.t.instant('library.couldNotLoadSubfolders'));
-        },
-      );
-    }
+    if (this.tree[path] === undefined) this.loadTree(path);
     this.cdr.detectChanges();
+  }
+
+  // Fetch a folder's subfolder tree into the cache.
+  private loadTree(path: string): void {
+    this.treeLoading[path] = true;
+    this.handle(
+      this.libSvc.folderTree(path),
+      data => {
+        this.treeLoading[path] = false;
+        this.tree[path] = data?.tree ?? null;
+      },
+      err => {
+        this.treeLoading[path] = false;
+        this.tree[path] = null;
+        this.toastError(err.message || this.t.instant('library.couldNotLoadSubfolders'));
+      },
+    );
+  }
+
+  // Open the Library files explorer at a watched folder (and optional subfolder), or its failed-file list.
+  openFiles(path: string, rel = '', mode: 'dir' | 'notLoaded' = 'dir'): void {
+    this.router.navigate(['/master/library/files'], { queryParams: { root: path, rel, mode } });
+  }
+
+  // Images on disk that are not in the index (failed or still pending).
+  notLoadedCount(f: WatchedFolder): number {
+    return Math.max(0, f.totalCount - f.loadedCount);
+  }
+
+  // Tree row is short of its total when some of its images are not loaded.
+  isShort(loaded: number, total: number): boolean {
+    return loaded < total;
   }
 
   refresh(): void {
@@ -256,8 +280,13 @@ export class Library extends BaseComponent implements OnInit, OnDestroy {
 
   // ── View helpers ─────────────────────────────────────────────────
 
-  totalImages(): number {
-    return this.folders.reduce((sum, f) => sum + f.imageCount, 0);
+  // Footer figures: images loaded / images on disk, falling back to the indexed count for folders not yet re-synced.
+  totalLoaded(): number {
+    return this.folders.reduce((sum, f) => sum + (f.totalCount > 0 ? f.loadedCount : f.imageCount), 0);
+  }
+
+  totalOnDisk(): number {
+    return this.folders.reduce((sum, f) => sum + (f.totalCount > 0 ? f.totalCount : f.imageCount), 0);
   }
 
   // Returns a translation key; the template pipes it through `translate`.

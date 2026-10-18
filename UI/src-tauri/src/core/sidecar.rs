@@ -600,6 +600,9 @@ struct DescribeRespItem {
     // a version skew costs the colour *tag* only, not the whole descriptor.
     #[serde(default)]
     dominant: Vec<String>,
+    // Per-file failure code from the sidecar (e.g. "decode-failed"); absent on success.
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -607,9 +610,12 @@ struct DescribeResp {
     results: Vec<DescribeRespItem>,
 }
 
+// `describe` error text for a result that carried neither a descriptor nor a sidecar error.
+pub const INCOMPLETE_DESCRIPTOR: &str = "incomplete descriptor";
+
 // Describe one or more images. Entries the sidecar couldn't decode come back
-// as `None` rather than failing the whole batch.
-pub fn describe(paths: &[String], priority: Priority) -> Result<Vec<(String, Option<Descriptor>)>> {
+// as `Err(reason)` rather than failing the whole batch.
+pub fn describe(paths: &[String], priority: Priority) -> Result<Vec<(String, std::result::Result<Descriptor, String>)>> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
@@ -632,9 +638,9 @@ pub fn describe(paths: &[String], priority: Priority) -> Result<Vec<(String, Opt
             // unusable rows into the store instead of surfacing a failure.
             let desc = match (r.embed, r.rose, r.gram, r.color) {
                 (Some(embed), Some(rose), Some(gram), Some(color)) => {
-                    Some(Descriptor { embed, rose, gram, color, dominant: r.dominant })
+                    Ok(Descriptor { embed, rose, gram, color, dominant: r.dominant })
                 }
-                _ => None,
+                _ => Err(r.error.unwrap_or_else(|| INCOMPLETE_DESCRIPTOR.to_string())),
             };
             (r.path, desc)
         })

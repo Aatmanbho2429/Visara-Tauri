@@ -10,3 +10,8 @@ export interface requestSetPaused {
   path: string;
   paused: boolean;
 }
+
+export interface requestListDir {
+  path: string;
+  rel: string;
+}

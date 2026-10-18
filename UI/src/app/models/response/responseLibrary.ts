@@ -16,6 +16,9 @@ export interface WatchedFolder {
   addedAt: number;
   lastEventAt: number;
   imageCount: number;
+  // Images on disk that made it into the index / images on disk in total.
+  loadedCount: number;
+  totalCount: number;
 }
 
 export interface responseListFolders {
@@ -29,15 +32,65 @@ export interface responseLibraryStats {
 
 // One node in a watched folder's subfolder tree.
 // `direct` = images stored directly in this folder;
-// `total`  = images in this folder and all descendants.
+// `total`  = images in this folder and all descendants;
+// the `*Loaded` pair counts only those that were indexed.
 export interface FolderTreeNode {
   name: string;
   rel: string;
   direct: number;
+  directLoaded: number;
   total: number;
+  totalLoaded: number;
   children: FolderTreeNode[];
 }
 
 export interface responseFolderTree {
   tree: FolderTreeNode;
+}
+
+// Load state of one image on disk: indexed, tried and failed, or not tried yet.
+export type ClientFileStatus = 'loaded' | 'failed' | 'pending';
+
+export interface ClientFileRow {
+  name: string;
+  path: string;
+  // Parent directory relative to the watched root, '/'-joined; '' = root.
+  rel: string;
+  status: ClientFileStatus;
+  errorCode?: string;
+  errorReason?: string;
+}
+
+export interface LibraryDirEntry {
+  name: string;
+  rel: string;
+  loaded: number;
+  total: number;
+}
+
+export interface responseLibraryCrumb {
+  name: string;
+  rel: string;
+}
+
+export interface responseLibraryDirCounts {
+  loaded: number;
+  failed: number;
+  pending: number;
+  total: number;
+}
+
+export interface responseLibraryDir {
+  root: string;
+  rel: string;
+  breadcrumb: responseLibraryCrumb[];
+  folders: LibraryDirEntry[];
+  images: ClientFileRow[];
+  counts: responseLibraryDirCounts;
+  folderStatus: WatchedFolderStatus;
+}
+
+export interface responseLibraryNotLoaded {
+  root: string;
+  images: ClientFileRow[];
 }

@@ -48,7 +48,16 @@
             <div class="folder-card__path-wrap">
               <span class="folder-card__path" [title]="f.path">{{ f.path }}</span>
               <span class="folder-card__meta">
-                {{ f.imageCount }} {{ (f.imageCount === 1 ? 'library.image' : 'library.images') | translate }}
+                @if (f.totalCount > 0) {
+                  {{ f.loadedCount | number }} / {{ f.totalCount | number }} {{ 'library.imagesLoaded' | translate }}
+                } @else {
+                  {{ f.imageCount }} {{ (f.imageCount === 1 ? 'library.image' : 'library.images') | translate }}
+                }
+                @if (notLoadedCount(f) > 0 && !isSyncing(f.path)) {
+                  · <button class="folder-card__not-loaded" (click)="openFiles(f.path, '', 'notLoaded')">
+                    {{ notLoadedCount(f) | number }} {{ 'library.notLoaded' | translate }}
+                  </button>
+                }
                 @if (f.lastEventAt > 0) {
                   · {{ 'library.lastUpdate' | translate }} {{ agoLabel(f.lastEventAt) }}
                 }
@@ -140,17 +149,20 @@
                 <div class="folder-tree__state">{{ 'library.loadingSubfolders' | translate }}</div>
               } @else if (tree[f.path]) {
                 @if (tree[f.path]!.direct > 0) {
-                  <div class="folder-tree__loose">
+                  <button class="folder-tree__loose" (click)="openFiles(f.path, '')">
                     <i class="pi pi-image"></i>
-                    {{ tree[f.path]!.direct | number }} {{ (tree[f.path]!.direct === 1 ? 'library.image' : 'library.images') | translate }} {{ 'library.directlyInFolder' | translate }}
-                  </div>
+                    @if (isShort(tree[f.path]!.directLoaded, tree[f.path]!.direct)) {
+                      <span class="folder-tree__dot" [title]="'library.someNotLoaded' | translate"></span>
+                    }
+                    {{ tree[f.path]!.directLoaded | number }} / {{ tree[f.path]!.direct | number }} {{ (tree[f.path]!.direct === 1 ? 'library.image' : 'library.images') | translate }} {{ 'library.directlyInFolder' | translate }}
+                  </button>
                 }
                 @if (tree[f.path]!.children.length === 0) {
                   <div class="folder-tree__state">{{ 'library.noSubfolders' | translate }}</div>
                 } @else {
                   <ul class="folder-tree__list">
                     @for (child of tree[f.path]!.children; track child.rel) {
-                      <ng-container *ngTemplateOutlet="treeNode; context: { $implicit: child, depth: 0 }"></ng-container>
+                      <ng-container *ngTemplateOutlet="treeNode; context: { $implicit: child, depth: 0, root: f.path }"></ng-container>
                     }
                   </ul>
                 }
@@ -161,6 +173,14 @@
           }
 
           <div class="folder-card__actions">
+            <button
+              class="folder-btn"
+              (click)="openFiles(f.path)"
+              [title]="'library.viewFilesTitle' | translate">
+              <i class="pi pi-images"></i>
+              {{ 'library.viewFiles' | translate }}
+            </button>
+
             <button
               class="folder-btn"
               (click)="rescan(f)"
@@ -201,7 +221,7 @@
     </div>
 
     <div class="library-footer">
-      {{ 'library.total' | translate }} <strong>{{ totalImages() }}</strong> {{ 'library.imagesAcross' | translate }}
+      {{ 'library.total' | translate }} <strong>{{ totalLoaded() | number }} / {{ totalOnDisk() | number }}</strong> {{ 'library.imagesLoadedAcross' | translate }}
       <strong>{{ folders.length }}</strong> {{ (folders.length === 1 ? 'library.folder' : 'library.folders') | translate }}
     </div>
   }
@@ -209,13 +229,21 @@
 </div>
 
 <!-- Recursive subfolder row — indented by depth, rendered for the tree panel. -->
-<ng-template #treeNode let-node let-depth="depth">
-  <li class="folder-tree__node" [style.padding-left.rem]="0.8 + depth * 1.4">
-    <i class="pi pi-folder folder-tree__node-icon"></i>
-    <span class="folder-tree__node-name" [title]="node.name">{{ node.name }}</span>
-    <span class="folder-tree__node-count">{{ node.total | number }}</span>
+<ng-template #treeNode let-node let-depth="depth" let-root="root">
+  <li class="folder-tree__item">
+    <button class="folder-tree__node" [style.padding-left.rem]="0.8 + depth * 1.4"
+            (click)="openFiles(root, node.rel)">
+      <i class="pi pi-folder folder-tree__node-icon"></i>
+      <span class="folder-tree__node-name" [title]="node.name">{{ node.name }}</span>
+      @if (isShort(node.totalLoaded, node.total)) {
+        <span class="folder-tree__dot" [title]="'library.someNotLoaded' | translate"></span>
+      }
+      <span class="folder-tree__node-count" [class.folder-tree__node-count--warn]="isShort(node.totalLoaded, node.total)">
+        {{ node.totalLoaded | number }} / {{ node.total | number }}
+      </span>
+    </button>
   </li>
   @for (child of node.children; track child.rel) {
-    <ng-container *ngTemplateOutlet="treeNode; context: { $implicit: child, depth: depth + 1 }"></ng-container>
+    <ng-container *ngTemplateOutlet="treeNode; context: { $implicit: child, depth: depth + 1, root: root }"></ng-container>
   }
 </ng-template>

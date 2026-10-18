@@ -40,6 +40,8 @@ export interface responseLibrarySyncComplete {
   errors: number;
   failed: FileError[];
   imageCount: number;
+  loadedCount: number;
+  totalCount: number;
 }
 
 export interface responseLibrarySyncError {
