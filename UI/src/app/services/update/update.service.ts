@@ -5,7 +5,7 @@ import { TAURI_EVENTS } from '../../core/tauri/tauri-events.const';
 import { ZoneWrapperService } from '../../core/zone-wrapper/zone-wrapper.service';
 import { responseUpdateAvailable, responseUpdateProgress } from '../../models/response/responseMisc';
 
-// docs/plans/force-update.md §1.5 — every release is mandatory, but only in
+// Every release is mandatory, but only in
 // a real build. `npx tauri dev` must never present an unclosable overlay
 // just because the checked-out working copy has an older version number
 // than whatever is on GitHub. `isDevMode()` is false only for an optimized
@@ -60,10 +60,9 @@ export class UpdateService {
   readonly pct = signal<number | null>(0);
   readonly error = signal<string | null>(null);
 
-  // Force-update overlay (docs/plans/force-update.md) — an update existing
+  // Force-update overlay — an update existing
   // at all IS the mandatory signal in a real build; there is no separate
-  // "this release is optional" flag from the server. See Phase 4 in that
-  // plan if that ever needs to change.
+  // "this release is optional" flag from the server.
   readonly required = computed(() => this.info() !== null && FORCE_UPDATES);
 
   // Banner shows when an update is known, forcing is off (or this is a dev
@@ -140,7 +139,7 @@ export class UpdateService {
     this.dismissed.set(true);
   }
 
-  // docs/plans/force-update.md §2.3 — opens the GitHub releases page in the
+  // Opens the GitHub releases page in the
   // system browser as a manual-download fallback when the in-app installer
   // itself is broken (bad signature, missing artifact, etc). The URL is
   // hardcoded on the Rust side, never passed from here. `update_open_
@@ -152,7 +151,7 @@ export class UpdateService {
       .subscribe({ error: err => console.warn('[updater] could not open releases page:', err) });
   }
 
-  // §2.4 — the window's X hides Pictoria to the tray rather than quitting,
+  // The window's X hides Pictoria to the tray rather than quitting,
   // so a real exit needs its own command; this must never be
   // `window.close()`.
   quitApp(): void {

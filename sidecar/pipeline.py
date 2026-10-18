@@ -37,7 +37,7 @@ log = logging.getLogger("sidecar.pipeline")
 # drive a full pool against 4 physical cores. Confirmed by grep: nothing in
 # this codebase called `setNumThreads`/`OPENCV_NUM_THREADS` before this line.
 # One thread per call is correct here; the outer ThreadPoolExecutor is what
-# provides the actual parallelism. See SEARCH-LATENCY-PLAN.md Phase 2a.
+# provides the actual parallelism.
 cv2.setNumThreads(1)
 
 _DEVICE = "cpu"
@@ -189,7 +189,6 @@ def load_embed_model(key_b64: str):
         # multi-thread intra-op pool only contends with Rust's rayon pool
         # (`config::NUM_WORKERS = 8`) for no benefit — the same contention
         # `core/search_gate.rs` already exists to mitigate on the Rust side.
-        # See SEARCH-LATENCY-PLAN.md Phase 2a.
         opts.intra_op_num_threads = 8
         # CoreML where it exists (Neural Engine on Apple Silicon, Metal on
         # Intel), CPU everywhere else. Listing CPU explicitly as the tail
@@ -276,13 +275,12 @@ def load_model():
 
 
 def _new_sift():
-    # nfeatures lowered from 4000 (SEARCH-LATENCY-PLAN.md Phase 2c) —
+    # nfeatures lowered from 4000 —
     # BFMatcher.knnMatch is brute force, O(|des1|*|des2|*128), so keypoint
     # count enters the dominant per-candidate cost quadratically. This
     # changes match sensitivity and MUST be validated against the known-good
     # verification set (21 colourway pairs verify, `BRASIL GREY P4.jpg` stays
-    # rejected) before it ships — not yet done, see the plan's Phase 2
-    # acceptance criteria.
+    # rejected) before it ships — not yet done.
     return cv2.SIFT_create(nfeatures=1500, contrastThreshold=0.01, edgeThreshold=20)
 
 
@@ -834,7 +832,7 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
     if des1 is None or len(kp1) < 8:
         return {"matched": False, "reason": "decode-failed"}
 
-    # Lowered from 1600 (SEARCH-LATENCY-PLAN.md Phase 2c) — SIFT cost scales
+    # Lowered from 1600 — SIFT cost scales
     # with pixel count, and the query itself already decodes at 800
     # (`prepare_query`). Also not free: validate against the known-good set
     # before shipping, same caveat as `_new_sift`'s nfeatures change above.
@@ -888,7 +886,7 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
     # verify, the known false positive stays rejected, and the true matches
     # that were being lost come back.
     # A placement the geometry gate rejects (e.g. a panel cut off by the page edge) may hide a valid one
-    # elsewhere in the candidate, so peel its inliers off and refit — see docs/plans/verify-recall.md.
+    # elsewhere in the candidate, so peel its inliers off and refit.
     first = None  # (result, reason) of the first fit, reported when no placement passes
     for placement in range(_MAX_PLACEMENTS):
         M, mask = cv2.estimateAffinePartial2D(

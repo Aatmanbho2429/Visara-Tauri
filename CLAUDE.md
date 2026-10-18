@@ -111,34 +111,11 @@ carries the per-stage breakdown (`near_family_n`, `verified_n`, `describe_ms`, `
 near-family scan, or SIFT; `sync_folder TOTAL`/`chunk`/`scan_images` do the same for indexing.
 **Quote a real log line rather than an estimate when reporting a timing claim.**
 
-## Plan and reference documents
+## Reference documents
 
-Phased, checkbox-tracked plans that set their own working rules. Read the plan before working it,
-and trust its own checklist over any summary here.
-
-- `docs/plans/image-quota.md` — per-plan library-size metering; the active `Library_based_price`
-  work. Core anti-gaming rule: the real ledger has one birth event per image and is never
-  decremented.
-- `docs/plans/annual-monthly-billing.md` — annual (₹8,000 × 12) and quarterly (₹8,333 × 3) debited
-  monthly via Razorpay Subscriptions, sized to stay under RBI's ₹15,000 no-AFA e-mandate ceiling.
-  Approved, not started. Introduces the project's first webhook endpoint; its governing invariant
-  is "fail closed by time, fail open by webhook", and because force-update leaves no client
-  rollback, the only kill switch is the `plans.is_active` row inserted last.
-- `docs/plans/force-update.md` — mandatory-update overlay. Phases 1–3 shipped, phase 4 (server-
-  issued `minVersion` kill switch) deferred. Forcing is gated on `!isDevMode()`, so `tauri dev` is
-  never blocked; nothing can switch it *off* in a shipped build.
-- `docs/plans/verify-recall.md` — why verified matches go missing in large libraries (only ~100
-  of the cosine-ordered near family gets SIFT-checked), and the fix: hash-dedupe plus a separate,
-  backfilled SIFT-VLAD identity store. Proposed, not started. Its governing rule: no phase may
-  make an existing library stale, so `vectors.bin` and `EMBED_SCHEMA_VERSION` are never touched.
-- `docs/plans/deep-verify.md` — a two-tier search. The fast tier verifies cosine ≥ 0.70 as before,
-  then a background "deep" tier keeps verifying down to a user-chosen floor (default 0.40). One
-  progress counter covers both, and the search can be cancelled. Approved; handed to a Sonnet session.
 - `docs/backend/` — the Supabase project: schema, RLS, and all 20 deployed edge functions against
   the 11 the app calls. Read `docs/backend/README.md` before touching auth, subscription, or
   billing — it flags several load-bearing footguns.
-- `SEARCH-LATENCY-PLAN.md`, `MIGRATION-PLAN.md` (root) — both fully landed. Historical record;
-  nothing pending.
 
 ## Conventions
 

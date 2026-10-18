@@ -13,8 +13,7 @@ and why, when the name doesn't already say it. Skip lines that explain themselve
 ## One line, not a paragraph
 
 A comment is one line. Two only when a single line genuinely can't carry the "why". Three or more
-means the explanation belongs somewhere durable — a plan in `docs/plans/`, a note in
-`docs/backend/`, or a rule here — and the inline comment should point at it instead.
+means the explanation belongs somewhere durable — a note in `docs/backend/` or a rule here — and the inline comment should point at it instead.
 
 Write this:
 

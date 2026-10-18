@@ -11,21 +11,21 @@
           "candidate": "image_part.png",
           "min_ratio": 0.60,
           "warn_below_inliers": 40,
-          "baseline": "2026-08-15: 111 inliers @ 0.95. 2026-09-09 after Phase 2c (SIFT nfeatures 4000->1500, candidate decode 1600->1024): 83 @ 0.81.",
+          "baseline": "2026-08-15: 111 inliers @ 0.95. 2026-09-09 after the SIFT cut (nfeatures 4000->1500, candidate decode 1600->1024): 83 @ 0.81.",
           "note": "same design, recoloured."
         },
         {
           "candidate": "Screenshot 2026-08-06 at 2.09.52 PM.png",
           "min_ratio": 0.55,
           "warn_below_inliers": 20,
-          "baseline": "2026-08-15: 45 inliers @ 0.88. 2026-09-09 after Phase 2c: 11 @ 0.73 — a 4x margin loss that leaves it 1 above pipeline.verify_one's min_inliers=10 hard floor. The ratio held; the count did not.",
+          "baseline": "2026-08-15: 45 inliers @ 0.88. 2026-09-09 after the SIFT cut: 11 @ 0.73 — a 4x margin loss that leaves it 1 above pipeline.verify_one's min_inliers=10 hard floor. The ratio held; the count did not.",
           "note": "same design, recoloured. THE pair to watch — any further SIFT reduction likely drops it out entirely."
         },
         {
           "candidate": "big image.png",
           "min_ratio": 0.40,
           "warn_below_inliers": 12,
-          "baseline": "2026-08-15: 11 inliers @ 0.69. 2026-09-09 after Phase 2c: 20 @ 0.67 — went UP, because dropping the candidate decode 1600->1024 moved it closer to the query's own 800px scale.",
+          "baseline": "2026-08-15: 11 inliers @ 0.69. 2026-09-09 after the SIFT cut: 20 @ 0.67 — went UP, because dropping the candidate decode 1600->1024 moved it closer to the query's own 800px scale.",
           "note": "pattern found inside a larger slab. Historically the tight one: a min_inliers=12 floor dropped it once, and an 8-DOF homography fit bent it into a false implausible-warp rejection another time."
         }
       ],

@@ -128,7 +128,7 @@ pub async fn update_install(app: tauri::AppHandle) {
     }
 }
 
-// docs/plans/force-update.md §2.3 — manual-download fallback for when the
+// Manual-download fallback for when the
 // in-app installer itself is broken (bad signature, missing platform
 // artifact, `latest.json` malformed). The URL is a constant, never accepted
 // from the webview — never give the frontend an "open any URL" primitive.
@@ -158,7 +158,7 @@ pub fn update_open_releases_page(app: tauri::AppHandle, request_id: Option<Strin
     let _ = app.emit("update_open_releases_page_response", result.with_request_id(request_id));
 }
 
-// §2.4 — the window's X hides Pictoria to the tray rather than quitting, so
+// The window's X hides Pictoria to the tray rather than quitting, so
 // the force-update overlay's Quit button needs a real exit path. Mirrors the
 // tray's own `tray_quit` handler in `lib.rs` exactly. No response event: the
 // process is gone by the time one could be observed.

@@ -507,7 +507,7 @@ def suite_store(rep, ctx):
     rep.add("store", "no duplicate live ids", "PASS" if dupes == 0 else "FAIL",
             f"{len(live)} live, {st['n_entries'] - len(live)} tombstoned, {dupes} duplicates")
 
-    # The Phase 5b precondition, checked against real stored data rather than
+    # The `best_zoom_dot` precondition, checked against real stored data rather than
     # the producer's promise: near_family uses a dot product for the
     # embedding, which only equals the cosine when every stored zoom level is
     # already unit length. A debug_assert covers this in debug builds only —
@@ -646,7 +646,7 @@ def suite_latency(rep, ctx):
 
     rust_ms = sum(float(last.get(k, 0)) for k in ("store_load_ms", "id_map_ms", "near_family_ms"))
     rep.add("latency", "Rust-side hot path (store_load + id_map + near_family)", "INFO",
-            f"{rust_ms:.1f} ms — Phase 0's decision gate is whether this stays under ~150 ms "
+            f"{rust_ms:.1f} ms — the target is to stay under ~150 ms "
             f"at this library size in a release build")
 
     calib = [l for l in lines if "[calibration]" in l]

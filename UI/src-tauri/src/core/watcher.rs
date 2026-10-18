@@ -544,7 +544,7 @@ fn sync_one(folder: &PathBuf) {
             let save_result = {
                 let _write_guard = crate::core::vector_store::store_io_write_guard();
                 let result = store.save(VECTOR_STORE_PATH.as_path());
-                // Drop the resident cache (Phase 5a) inside the same write-guard
+                // Drop the resident cache inside the same write-guard
                 // scope as the save that just changed the file — otherwise a
                 // search could observe the old resident copy and a freshly
                 // written `vectors.bin` at the same time and wrongly assume
