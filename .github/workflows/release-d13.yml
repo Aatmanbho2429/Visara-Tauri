@@ -1,0 +1,569 @@
+# D13 channel: a separate build for one customer, published off the public feed.
+# Its installs update only from the `d13-latest` release (UI/src-tauri/tauri.d13.conf.json),
+# and its releases are prereleases, so `releases/latest` (the public feed) never points at one.
+name: Release (D13)
+
+on:
+  push:
+    tags:
+      - 'd13-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # Only D13_Branch may publish here, and the tag must match the app version in all three places.
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check branch, channel config and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f UI/src-tauri/tauri.d13.conf.json ]; then
+            echo "::error::UI/src-tauri/tauri.d13.conf.json is missing; without it this build would update from the public feed."
+            exit 1
+          fi
+          if ! git branch -r --contains "$GITHUB_SHA" | grep -qx '  origin/D13_Branch'; then
+            echo "::error::$GITHUB_SHA is not on D13_Branch; D13 releases are tagged from that branch only."
+            exit 1
+          fi
+          want="${GITHUB_REF_NAME#d13-v}"
+          conf=$(jq -r .version UI/src-tauri/tauri.conf.json)
+          cargo=$(sed -n 's/^version *= *"\(.*\)"/\1/p' UI/src-tauri/Cargo.toml | head -1)
+          app=$(sed -n 's/.*APP_VERSION: *&str *= *"\(.*\)";.*/\1/p' UI/src-tauri/src/config.rs)
+          echo "tag=$want tauri.conf.json=$conf Cargo.toml=$cargo config.rs=$app"
+          if [ "$conf" != "$want" ] || [ "$cargo" != "$want" ] || [ "$app" != "$want" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the app version in all three files."
+            exit 1
+          fi
+
+  # Creates the GitHub Release before any build starts, so all build jobs
+  # upload to the same release without racing to create it.
+  create-release:
+    needs: guard
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Create GitHub Release
+        id: create
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            // Re-pushing an existing tag rebuilds into its release; tauri-action replaces same-name assets.
+            try {
+              const { data } = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                tag,
+              });
+              core.info(`Reusing existing release ${data.id} for ${tag}`);
+              return data.id;
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              tag_name:   tag,
+              name:       `Pictoria D13 ${tag.replace('d13-', '')}`,
+              body:       `## D13 build ${tag}\n\nPrivate channel build; not offered to regular installs.\n\n### Download\n- **Windows**: \`Pictoria_*_x64-setup.exe\`\n- **macOS (Apple Silicon)**: \`Pictoria_*_aarch64.dmg\`\n- **macOS (Intel)**: \`Pictoria_*_x64.dmg\``,
+              draft:      false,
+              // Both keep this release off `releases/latest`, which is the public update feed.
+              prerelease: true,
+              make_latest: 'false',
+            });
+            return data.id;
+          result-encoding: string
+
+  build:
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows
+            blocking: true
+            py_arch: x64
+            sidecar_reqs: requirements.txt
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-arm
+            blocking: true
+            py_arch: arm64
+            sidecar_reqs: requirements.txt
+
+          # Intel macOS (x86_64) is cross-compiled on the same Apple Silicon
+          # runner, since GitHub's macos-13 (last Intel runner image) is no
+          # longer reliably available.
+          #
+          # Rust cross-compiles from a `--target` flag, but PyInstaller cannot:
+          # it freezes whatever interpreter is running it. So this leg installs
+          # an *x86_64* Python (`py_arch`), which runs under Rosetta on the
+          # arm64 runner, and freezes the sidecar through that — otherwise the
+          # Intel .dmg ships an arm64 sidecar that Intel Macs cannot execute at
+          # all (Rosetta translates x86_64 -> arm64, never the reverse), giving
+          # users an app that opens and silently never searches.
+          #
+          # An x86_64 Python also forces pip to resolve x86_64 wheels, and
+          # torch/torchvision stopped publishing those — hence the separate,
+          # pinned `sidecar_reqs`. See sidecar/requirements-macos-x86_64.txt.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            label: macos-intel
+            blocking: false
+            py_arch: x64
+            sidecar_reqs: requirements-macos-x86_64.txt
+
+    runs-on: ${{ matrix.os }}
+    # Apple's notarization queue has no SLA and can take well over 90
+    # minutes during load spikes — give it room so the job isn't killed
+    # mid-wait after build+sign already succeeded.
+    timeout-minutes: 300
+    continue-on-error: ${{ !matrix.blocking }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: UI/package-lock.json
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: UI/src-tauri
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: UI
+
+      # `architecture` is what makes the Intel leg work: on the arm64 macOS
+      # runner it fetches an x86_64 CPython, which then runs under Rosetta.
+      # Everything downstream — pip's wheel resolution and the architecture
+      # PyInstaller freezes — follows from which interpreter this installs.
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: ${{ matrix.py_arch }}
+
+      # Rosetta is required to run the x86_64 interpreter installed above on
+      # an Apple Silicon runner. Usually already present on GitHub's images;
+      # this is a cheap no-op when it is.
+      - name: Ensure Rosetta (Intel macOS leg)
+        if: matrix.label == 'macos-intel'
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      # The model checkpoint is shipped inside the sidecar rather than fetched
+      # at first run. torchvision's `weights=IMAGENET1K_V1` downloads ~13.5MB
+      # from download.pytorch.org the first time it runs on a machine, which
+      # made every fresh install depend on the end user's network: on a
+      # locked-down or offline machine it stalls with no timeout and the app
+      # sits on "Model is loading..." indefinitely. Downloading it here means
+      # the build machine pays that cost once, and users never do.
+      - name: Fetch model weights for bundling
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sidecar/weights
+          curl -fL --retry 3 --retry-delay 2 \
+            -o sidecar/weights/mobilenet_v2-b0353104.pth \
+            https://download.pytorch.org/models/mobilenet_v2-b0353104.pth
+
+          # Verify before it gets baked into a signed, notarised binary — a
+          # truncated or substituted checkpoint would otherwise ship silently
+          # and only surface as wrong search results.
+          EXPECTED=b03531047ffacf1e2488318dcd2aba1126cde36e3bfe1aa5cb07700aeeee9889
+          if command -v sha256sum >/dev/null; then
+            ACTUAL=$(sha256sum sidecar/weights/mobilenet_v2-b0353104.pth | cut -d' ' -f1)
+          else
+            ACTUAL=$(shasum -a 256 sidecar/weights/mobilenet_v2-b0353104.pth | cut -d' ' -f1)
+          fi
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::model checkpoint hash mismatch"
+            echo "::error::expected $EXPECTED"
+            echo "::error::actual   $ACTUAL"
+            exit 1
+          fi
+          echo "checkpoint verified ($ACTUAL)"
+
+      # The encrypted DINO model comes from the repo via Git LFS, not a
+      # download — it is the licensed artefact and there is nowhere public to
+      # fetch it from. The check that matters is the LFS one: if `lfs: true`
+      # ever regresses, or the object is missing from the LFS remote, checkout
+      # silently leaves a ~134-byte pointer *text file* in its place.
+      # PyInstaller would bundle that quite happily, and the failure would only
+      # surface on a user's machine as a decryption error behind a permanent
+      # "Model is loading...".
+      - name: Verify encrypted DINO model
+        shell: bash
+        working-directory: sidecar
+        run: |
+          set -euo pipefail
+          MODEL=clip_vitb32.onnx.enc
+          if [ ! -f "$MODEL" ]; then
+            echo "::error::$MODEL missing — it must be committed (Git LFS)."
+            exit 1
+          fi
+          if head -c 40 "$MODEL" | grep -q 'git-lfs.github.com'; then
+            echo "::error::$MODEL is an unexpanded Git LFS pointer, not the model."
+            echo "::error::Check that checkout ran with lfs:true and the LFS object exists."
+            exit 1
+          fi
+          # Fernet tokens are URL-safe base64 of a 0x80 version byte, which is
+          # always "gAAAAA" once encoded. Catches a truncated or wrong file.
+          if ! head -c 6 "$MODEL" | grep -q '^gAAAAA'; then
+            echo "::error::$MODEL is not a Fernet token (bad magic)."
+            exit 1
+          fi
+          echo "DINO model present ($(wc -c < "$MODEL") bytes)"
+
+      # Produces sidecar/dist/pictoria-sidecar[.exe] — see sidecar/README.md.
+      #
+      # PyInstaller freezes whatever interpreter runs it, so the Intel leg has
+      # to run an *x86_64 Python process*. `setup-python`'s `architecture: x64`
+      # is not sufficient on its own: the macOS CPython it installs is a
+      # universal2 binary, and a universal2 binary on Apple Silicon runs its
+      # arm64 slice by default — which is how the first attempt still produced
+      # an arm64 sidecar despite `architecture: x64`.
+      #
+      # `arch -x86_64` selects the x86_64 slice instead. Everything downstream
+      # follows from that one choice: platform.machine(), the wheels pip
+      # resolves, and the architecture PyInstaller emits.
+      - name: Freeze sidecar (PyInstaller)
+        shell: bash
+        working-directory: sidecar
+        run: |
+          set -euo pipefail
+
+          PY=(python)
+          if [ "${{ matrix.label }}" = "macos-intel" ]; then
+            PY=(arch -x86_64 python)
+          fi
+
+          echo "--- interpreter diagnostics ---"
+          echo "which python : $(which python)"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            echo "python slices: $(lipo -archs "$(python -c 'import sys; print(sys.executable)')" 2>/dev/null || echo 'n/a')"
+          fi
+          "${PY[@]}" -c "import platform, sys; print('freezing with', platform.machine(), '| python', sys.version.split()[0])"
+
+          # Fail here, with the reason, rather than 2 minutes later at the
+          # architecture check — this is the step that can actually explain it.
+          if [ "${{ matrix.label }}" = "macos-intel" ]; then
+            got="$("${PY[@]}" -c 'import platform; print(platform.machine())')"
+            if [ "$got" != "x86_64" ]; then
+              echo "::error::interpreter reports '$got', need 'x86_64'."
+              echo '::error::arch -x86_64 did not yield an x86_64 process — the installed'
+              echo '::error::CPython is probably arm64-only rather than universal2, so an'
+              echo '::error::x86_64 interpreter has to come from elsewhere (python.org installer).'
+              exit 1
+            fi
+          fi
+
+          "${PY[@]}" -m pip install --upgrade pip
+
+          # Intel leg: refuse source builds outright.
+          #
+          # This runner is arm64 executing an x86_64 interpreter under Rosetta.
+          # If pip cannot find an x86_64 wheel it falls back to the sdist, and
+          # any native extension then compiles for the *host* (arm64) rather
+          # than the target — producing a package that imports fine here but
+          # blows up at PyInstaller's PKG stage, ~15 minutes into the job:
+          #
+          #   IncompatibleBinaryArchError: .../_rust.abi3.so is incompatible
+          #   with target arch x86_64 (has arch: arm64)
+          #
+          # cryptography 49.0.0 dropping its universal2 macOS wheel is what hit
+          # this first. `--only-binary` makes pip pick the newest release that
+          # actually has a usable wheel instead, and fail immediately (naming
+          # the package) when none exists. The whole Intel set is verified to
+          # resolve wheel-only, so this constrains nothing today.
+          if [ "${{ matrix.label }}" = "macos-intel" ]; then
+            "${PY[@]}" -m pip install --only-binary=:all: -r "${{ matrix.sidecar_reqs }}"
+          else
+            "${PY[@]}" -m pip install -r "${{ matrix.sidecar_reqs }}"
+          fi
+
+          # PyInstaller's --add-data separator is os.pathsep: ';' on Windows,
+          # ':' everywhere else. Getting it wrong silently produces a build with
+          # no weights, which only shows up as a hung "Model is loading..." on a
+          # machine that has never downloaded them.
+          if [ "${{ runner.os }}" = "Windows" ]; then SEP=";"; else SEP=":"; fi
+
+          # Windows and macOS freeze --onedir: --onefile re-unpacks every torch file
+          # into a temp dir on every launch (~30 s on Apple Silicon, ~100 s under Rosetta).
+          # The contents dir is renamed from `_internal` because it lands in the shared
+          # install dir on Windows; tauri.<os>.conf.json bundles it under this name.
+          if [ "${{ runner.os }}" = "Windows" ] || [ "${{ runner.os }}" = "macOS" ]; then
+            MODE=(--onedir --contents-directory pictoria-sidecar-lib)
+          else
+            MODE=(--onefile)
+          fi
+
+          # torchvision >=0.29 loads `_C_stable` via torch.ops.load_library, which PyInstaller's
+          # hook misses (it only knows `_C`) — without it the sidecar dies on `torchvision::nms`.
+          "${PY[@]}" -m PyInstaller "${MODE[@]}" --name pictoria-sidecar \
+            --hidden-import torchvision._C_stable --hidden-import torchvision.image_stable \
+            --add-data "weights/mobilenet_v2-b0353104.pth${SEP}weights" \
+            --add-data "clip_vitb32.onnx.enc${SEP}." \
+            --distpath dist --workpath build --specpath . server.py
+
+      # The whole point of the per-leg Python above is that the frozen binary
+      # matches the target. Assert it rather than trust it — a silent mismatch
+      # here is what previously shipped an arm64 sidecar to Intel users, and it
+      # is invisible until someone launches the app on real hardware.
+      - name: Verify sidecar architecture
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) want=arm64  ;;
+            x86_64-apple-darwin)  want=x86_64 ;;
+            *) echo "::error::unhandled target"; exit 1 ;;
+          esac
+          got="$(lipo -archs sidecar/dist/pictoria-sidecar/pictoria-sidecar)"
+          echo "sidecar archs: '$got' (want '$want' for ${{ matrix.target }})"
+          if ! echo "$got" | tr ' ' '\n' | grep -qx "$want"; then
+            echo "::error::sidecar is '$got' but ${{ matrix.target }} needs '$want' —"
+            echo "::error::PyInstaller froze the wrong interpreter; check the Setup Python step."
+            exit 1
+          fi
+
+      # `bundle.externalBin` names the sidecar `binaries/pictoria-sidecar` and
+      # resolves it per-platform as `<name>-<target-triple>[.exe]`, so the
+      # frozen binary has to be staged under that exact filename before
+      # tauri-action runs. Tauri strips the suffix again when it copies the
+      # binary into the bundle, which is why the app only ever probes the
+      # plain name (see config::sidecar_bin_path).
+      # On Windows the onedir exe is useless without its contents dir, which
+      # tauri.windows.conf.json bundles as a resource next to it.
+      # macOS ships exe + contents dir together as one resource folder instead
+      # (tauri.macos.conf.json, which also empties externalBin): in Contents/MacOS
+      # PyInstaller's bootloader would look for its libs in Contents/Frameworks.
+      - name: Stage sidecar for externalBin
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p UI/src-tauri/binaries
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            rm -rf UI/src-tauri/binaries/pictoria-sidecar-macos
+            cp -R sidecar/dist/pictoria-sidecar UI/src-tauri/binaries/pictoria-sidecar-macos
+            rm -rf UI/src-tauri/binaries/pictoria-sidecar-macos/logs
+            ls UI/src-tauri/binaries/pictoria-sidecar-macos/pictoria-sidecar-lib/torchvision/_C*.so
+            # Tauri dereferences symlinks when it bundles resources, and a framework binary copied out of its
+            # bundle fails notarization: make the top-level alias (libpython) a real file, drop the root link.
+            L=UI/src-tauri/binaries/pictoria-sidecar-macos/pictoria-sidecar-lib
+            for fw in "$L"/*.framework; do
+              [ -d "$fw" ] || continue
+              name="$(basename "$fw" .framework)"
+              if [ -L "$L/$name" ]; then
+                cp -L "$L/$name" "$L/$name.real" && mv -f "$L/$name.real" "$L/$name"
+              fi
+              rm -f "$fw/$name"
+              echo "flattened $name.framework aliases"
+            done
+          elif [ "${{ matrix.label }}" = "windows" ]; then
+            cp sidecar/dist/pictoria-sidecar/pictoria-sidecar.exe \
+               "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}.exe"
+            rm -rf UI/src-tauri/binaries/pictoria-sidecar-lib
+            cp -r sidecar/dist/pictoria-sidecar/pictoria-sidecar-lib UI/src-tauri/binaries/
+            # Fail here, not on a user's machine, if torchvision's ops didn't make it in.
+            ls UI/src-tauri/binaries/pictoria-sidecar-lib/torchvision/_C*.pyd
+          else
+            cp sidecar/dist/pictoria-sidecar \
+               "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}"
+            chmod +x "UI/src-tauri/binaries/pictoria-sidecar-${{ matrix.target }}"
+          fi
+          ls -l UI/src-tauri/binaries/
+
+      # PyInstaller ad-hoc-signs its output (Signature=adhoc, TeamIdentifier
+      # not set, no hardened runtime). Notarization rejects that: every Mach-O
+      # inside the bundle must carry a Developer ID signature AND the hardened
+      # runtime. Sign it here, before tauri-action seals the .app around it —
+      # once the outer signature exists it is too late.
+      #
+      # The exe is signed with the same entitlements the app declares, because the
+      # hardened runtime is what a frozen Python binary trips over at startup;
+      # see UI/src-tauri/entitlements.plist for why each key is needed.
+      - name: Sign sidecar (macOS)
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE:          ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY:     ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/sidecar-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+
+          # Prepend to the search list rather than replacing it — tauri-action
+          # imports the same certificate into its own keychain afterwards, and
+          # taking over the default keychain here has broken that in the past.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          # Onedir: every Mach-O in the contents dir needs its own Developer ID signature,
+          # inside-out — libraries and helper executables first, the sidecar exe last.
+          DIR="UI/src-tauri/binaries/pictoria-sidecar-macos"
+          BIN="$DIR/pictoria-sidecar"
+          find "$DIR/pictoria-sidecar-lib" -type f -print0 \
+            | xargs -0 file | grep 'Mach-O' | cut -d: -f1 > "$RUNNER_TEMP/macho.txt"
+          echo "signing $(wc -l < "$RUNNER_TEMP/macho.txt") nested Mach-O files"
+          while IFS= read -r f; do
+            codesign --force --timestamp --options runtime \
+              --sign "$APPLE_SIGNING_IDENTITY" "$f"
+          done < "$RUNNER_TEMP/macho.txt"
+          codesign --force --timestamp --options runtime \
+            --entitlements UI/src-tauri/entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" "$BIN"
+
+          echo "--- verifying ---"
+          codesign -dvvv "$BIN" 2>&1 | grep -E "Authority|TeamIdentifier|flags"
+          echo "$BIN" >> "$RUNNER_TEMP/macho.txt"
+          # Fail loudly here rather than at notarization, which is ~40 min later.
+          while IFS= read -r f; do
+            codesign --verify --strict "$f"
+            if codesign -dvvv "$f" 2>&1 | grep -q "adhoc"; then
+              echo "::error::$f is still ad-hoc signed — notarization would reject it"
+              exit 1
+            fi
+          done < "$RUNNER_TEMP/macho.txt"
+
+          # Re-verify a symlink-dereferenced copy, which is what Tauri actually puts in the .app.
+          DEREF="$RUNNER_TEMP/sidecar-deref"
+          rm -rf "$DEREF" && mkdir -p "$DEREF" && cp -RL "$DIR" "$DEREF/"
+          find "$DEREF" -type f -print0 | xargs -0 file | grep 'Mach-O' | cut -d: -f1 > "$RUNNER_TEMP/deref.txt"
+          while IFS= read -r f; do
+            if ! codesign --verify --strict "$f"; then
+              echo "::error::$f has an invalid signature once dereferenced — notarization would reject it"
+              exit 1
+            fi
+          done < "$RUNNER_TEMP/deref.txt"
+          echo "dereferenced copy: $(wc -l < "$RUNNER_TEMP/deref.txt") Mach-O files verified"
+          rm -rf "$DEREF"
+
+      - name: Verify signing secrets are present
+        shell: bash
+        env:
+          KEY:  ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is EMPTY or NOT SET"
+            exit 1
+          fi
+          if [ -z "$PASS" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is EMPTY or NOT SET"
+            exit 1
+          fi
+          KEY_LEN=$(printf %s "$KEY" | wc -c)
+          KEY_HEAD=$(printf %s "$KEY" | head -c 8)
+          PASS_LEN=$(printf %s "$PASS" | wc -c)
+          echo "[diag] KEY length=$KEY_LEN head='$KEY_HEAD...'"
+          echo "[diag] PASS length=$PASS_LEN"
+
+      - name: Build & publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN:                       ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY:          ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE:                  ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD:         ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY:             ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID:                           ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD:                     ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID:                      ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: UI
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          # Merged over tauri.conf.json: points this build's updater at the D13 feed, not the public one.
+          args: --target ${{ matrix.target }} --verbose --config src-tauri/tauri.d13.conf.json
+
+  # Copies this release's latest.json to `d13-latest`, the fixed URL every D13 install polls.
+  # Skipped when a blocking build leg failed, so the feed never offers a half-published release.
+  publish-feed:
+    needs: build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: d13-feed
+      cancel-in-progress: false
+    steps:
+      - name: Point d13-latest at this release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO:     ${{ github.repository }}
+          TAG:      ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$REPO" --pattern latest.json --dir feed
+          want="${TAG#d13-v}"
+          got=$(jq -r .version feed/latest.json)
+          echo "latest.json version=$got platforms=$(jq -c '.platforms | keys' feed/latest.json)"
+          if [ "${got#v}" != "$want" ]; then
+            echo "::error::latest.json says $got but the tag is $TAG."
+            exit 1
+          fi
+          # The two blocking legs must both be in the feed; Intel macOS is best-effort, as in release.yml.
+          for p in windows-x86_64 darwin-aarch64; do
+            if ! jq -e --arg p "$p" '.platforms | has($p)' feed/latest.json >/dev/null; then
+              echo "::error::latest.json has no $p entry; those D13 installs would never see this update."
+              exit 1
+            fi
+          done
+          notes=$(printf '%s\n\n%s' \
+            "Holds latest.json for the D13 channel. Do not delete: every D13 install checks for updates here." \
+            "Download the current D13 build: https://github.com/$REPO/releases/tag/$TAG")
+          if ! gh release view d13-latest --repo "$REPO" >/dev/null 2>&1; then
+            gh release create d13-latest --repo "$REPO" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "Pictoria D13 update feed" \
+              --notes "$notes"
+          fi
+          gh release upload d13-latest feed/latest.json --repo "$REPO" --clobber
+          # The app's manual-download fallback opens this release page, so it must link the current installers.
+          gh release edit d13-latest --repo "$REPO" --notes "$notes"

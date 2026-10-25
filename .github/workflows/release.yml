@@ -9,9 +9,25 @@ permissions:
   contents: write
 
 jobs:
+  # A D13 build must never reach the public update feed: every install force-updates from it.
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Refuse D13 commits
+        shell: bash
+        run: |
+          if [ -f UI/src-tauri/tauri.d13.conf.json ]; then
+            echo "::error::This commit is a D13 build (UI/src-tauri/tauri.d13.conf.json exists). Tag it d13-vX.Y.Z, not v*."
+            exit 1
+          fi
+
   # Creates the GitHub Release before any build starts, so all build jobs
   # upload to the same release without racing to create it.
   create-release:
+    needs: guard
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create.outputs.result }}
