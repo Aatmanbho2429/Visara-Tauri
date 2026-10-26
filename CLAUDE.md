@@ -80,6 +80,12 @@ machine, not at build time.
   (`version`), `UI/src-tauri/Cargo.toml` (`package.version`), and `UI/src-tauri/src/config.rs`
   (`APP_VERSION`). Release commits (`vX.Y.Z`) bump all three; check with
   `grep -nE '^version|"version"|APP_VERSION' UI/src-tauri/tauri.conf.json UI/src-tauri/Cargo.toml UI/src-tauri/src/config.rs`.
+- **`Airson_Branch` ships only the Airson client build.** Release it with an `airson-vX.Y.Z` tag
+  (`release-airson.yml`), never `v*`, which `release.yml` refuses here. Its installs update from the
+  `airson-latest` release (`tauri.airson.conf.json`), and the manual-download fallback in
+  `update_commands.rs` opens that page too. `release-airson.yml`'s build job is a copy of
+  `release.yml`'s, so a change to one must be made in both. D13 and Iris work the same way on
+  `D13_Branch` and `Iris_Creation_Dev`.
 - **`config::EMBED_DIM` must match the sidecar model's real output width.**
   `sidecar/pipeline.py::load_embed_model` measures it and reports it through `/health`, and
   `core::sidecar` refuses a mismatch rather than let a wrong stride reach `vectors.bin`.

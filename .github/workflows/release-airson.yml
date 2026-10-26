@@ -1,18 +1,18 @@
-# Iris channel: a separate build for one customer, published off the public feed.
-# Its installs update only from the `iris-latest` release (UI/src-tauri/tauri.iris.conf.json),
+# Airson channel: a separate build for one customer, published off the public feed.
+# Its installs update only from the `airson-latest` release (UI/src-tauri/tauri.airson.conf.json),
 # and its releases are prereleases, so `releases/latest` (the public feed) never points at one.
-name: Release (Iris)
+name: Release (Airson)
 
 on:
   push:
     tags:
-      - 'iris-v*'
+      - 'airson-v*'
 
 permissions:
   contents: write
 
 jobs:
-  # Only Iris_Creation_Dev may publish here, and the tag must match the app version in all three places.
+  # Only Airson_Branch may publish here, and the tag must match the app version in all three places.
   guard:
     runs-on: ubuntu-latest
     steps:
@@ -25,15 +25,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f UI/src-tauri/tauri.iris.conf.json ]; then
-            echo "::error::UI/src-tauri/tauri.iris.conf.json is missing; without it this build would update from the public feed."
+          if [ ! -f UI/src-tauri/tauri.airson.conf.json ]; then
+            echo "::error::UI/src-tauri/tauri.airson.conf.json is missing; without it this build would update from the public feed."
             exit 1
           fi
-          if ! git branch -r --contains "$GITHUB_SHA" | grep -qx '  origin/Iris_Creation_Dev'; then
-            echo "::error::$GITHUB_SHA is not on Iris_Creation_Dev; Iris releases are tagged from that branch only."
+          if ! git branch -r --contains "$GITHUB_SHA" | grep -qx '  origin/Airson_Branch'; then
+            echo "::error::$GITHUB_SHA is not on Airson_Branch; Airson releases are tagged from that branch only."
             exit 1
           fi
-          want="${GITHUB_REF_NAME#iris-v}"
+          want="${GITHUB_REF_NAME#airson-v}"
           conf=$(jq -r .version UI/src-tauri/tauri.conf.json)
           cargo=$(sed -n 's/^version *= *"\(.*\)"/\1/p' UI/src-tauri/Cargo.toml | head -1)
           app=$(sed -n 's/.*APP_VERSION: *&str *= *"\(.*\)";.*/\1/p' UI/src-tauri/src/config.rs)
@@ -78,8 +78,8 @@ jobs:
               owner: context.repo.owner,
               repo:  context.repo.repo,
               tag_name:   tag,
-              name:       `Pictoria Iris ${tag.replace('iris-', '')}`,
-              body:       `## Iris build ${tag}\n\nPrivate channel build; not offered to regular installs.\n\n### Download\n- **Windows**: \`Pictoria_*_x64-setup.exe\`\n- **macOS (Apple Silicon)**: \`Pictoria_*_aarch64.dmg\`\n- **macOS (Intel)**: \`Pictoria_*_x64.dmg\``,
+              name:       `Pictoria Airson ${tag.replace('airson-', '')}`,
+              body:       `## Airson build ${tag}\n\nPrivate channel build; not offered to regular installs.\n\n### Download\n- **Windows**: \`Pictoria_*_x64-setup.exe\`\n- **macOS (Apple Silicon)**: \`Pictoria_*_aarch64.dmg\`\n- **macOS (Intel)**: \`Pictoria_*_x64.dmg\``,
               draft:      false,
               // Both keep this release off `releases/latest`, which is the public update feed.
               prerelease: true,
@@ -521,19 +521,19 @@ jobs:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
-          # Merged over tauri.conf.json: points this build's updater at the Iris feed, not the public one.
-          args: --target ${{ matrix.target }} --verbose --config src-tauri/tauri.iris.conf.json
+          # Merged over tauri.conf.json: points this build's updater at the Airson feed, not the public one.
+          args: --target ${{ matrix.target }} --verbose --config src-tauri/tauri.airson.conf.json
 
-  # Copies this release's latest.json to `iris-latest`, the fixed URL every Iris install polls.
+  # Copies this release's latest.json to `airson-latest`, the fixed URL every Airson install polls.
   # Skipped when a blocking build leg failed, so the feed never offers a half-published release.
   publish-feed:
     needs: build
     runs-on: ubuntu-latest
     concurrency:
-      group: iris-feed
+      group: airson-feed
       cancel-in-progress: false
     steps:
-      - name: Point iris-latest at this release
+      - name: Point airson-latest at this release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -542,7 +542,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release download "$TAG" --repo "$REPO" --pattern latest.json --dir feed
-          want="${TAG#iris-v}"
+          want="${TAG#airson-v}"
           got=$(jq -r .version feed/latest.json)
           echo "latest.json version=$got platforms=$(jq -c '.platforms | keys' feed/latest.json)"
           if [ "${got#v}" != "$want" ]; then
@@ -552,13 +552,18 @@ jobs:
           # The two blocking legs must both be in the feed; Intel macOS is best-effort, as in release.yml.
           for p in windows-x86_64 darwin-aarch64; do
             if ! jq -e --arg p "$p" '.platforms | has($p)' feed/latest.json >/dev/null; then
-              echo "::error::latest.json has no $p entry; those Iris installs would never see this update."
+              echo "::error::latest.json has no $p entry; those Airson installs would never see this update."
               exit 1
             fi
           done
-          if ! gh release view iris-latest --repo "$REPO" >/dev/null 2>&1; then
-            gh release create iris-latest --repo "$REPO" --target "$GITHUB_SHA" --prerelease --latest=false \
-              --title "Pictoria Iris update feed" \
-              --notes "Holds latest.json for the Iris channel. Do not delete: every Iris install checks for updates here."
+          notes=$(printf '%s\n\n%s' \
+            "Holds latest.json for the Airson channel. Do not delete: every Airson install checks for updates here." \
+            "Download the current Airson build: https://github.com/$REPO/releases/tag/$TAG")
+          if ! gh release view airson-latest --repo "$REPO" >/dev/null 2>&1; then
+            gh release create airson-latest --repo "$REPO" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "Pictoria Airson update feed" \
+              --notes "$notes"
           fi
-          gh release upload iris-latest feed/latest.json --repo "$REPO" --clobber
+          gh release upload airson-latest feed/latest.json --repo "$REPO" --clobber
+          # The app's manual-download fallback opens this release page, so it must link the current installers.
+          gh release edit airson-latest --repo "$REPO" --notes "$notes"

@@ -3,7 +3,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/Aatmanbho2429/Visara-Tauri/releases/download/iris-latest/latest.json"
+        "https://github.com/Aatmanbho2429/Visara-Tauri/releases/download/airson-latest/latest.json"
       ]
     }
   }

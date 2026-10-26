@@ -9,18 +9,18 @@ permissions:
   contents: write
 
 jobs:
-  # An Iris build must never reach the public update feed: every install force-updates from it.
+  # An Airson build must never reach the public update feed: every install force-updates from it.
   guard:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Refuse Iris commits
+      - name: Refuse Airson commits
         shell: bash
         run: |
-          if [ -f UI/src-tauri/tauri.iris.conf.json ]; then
-            echo "::error::This commit is an Iris build (UI/src-tauri/tauri.iris.conf.json exists). Tag it iris-vX.Y.Z, not v*."
+          if [ -f UI/src-tauri/tauri.airson.conf.json ]; then
+            echo "::error::This commit is an Airson build (UI/src-tauri/tauri.airson.conf.json exists). Tag it airson-vX.Y.Z, not v*."
             exit 1
           fi
 

@@ -135,7 +135,8 @@ pub async fn update_install(app: tauri::AppHandle) {
 // Follows the same per-platform shell-out shape as `file_commands::file_open_path`.
 #[tauri::command]
 pub fn update_open_releases_page(app: tauri::AppHandle, request_id: Option<String>) {
-    const RELEASES_URL: &str = "https://github.com/Aatmanbho2429/Visara-Tauri/releases/latest";
+    // Airson channel: `releases/latest` is the public build, which would move this install onto the public feed.
+    const RELEASES_URL: &str = "https://github.com/Aatmanbho2429/Visara-Tauri/releases/tag/airson-latest";
 
     #[cfg(target_os = "windows")]
     let spawn_result = std::process::Command::new("cmd")
