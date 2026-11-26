@@ -26,6 +26,7 @@ read and write to `meta.db` and `vectors.bin`.
 | `POST /model/reset` | Drop the key |
 | `POST /describe` | Batch → embed/rose/gram/color descriptors |
 | `POST /verify` | SIFT/RANSAC verification, parallelized server-side across an 8-way pool |
+| `POST /fingerprint` | Decode + 64-bit DCT pHash (8 dihedral variants as hex); needs no DINO model |
 
 The DINO model ships encrypted (`clip_vitb32.onnx.enc`, Git LFS) and only loads once Rust posts a
 licence-derived key after a successful login. Without it `/describe` returns

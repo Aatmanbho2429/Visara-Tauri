@@ -82,6 +82,81 @@ pub const GRAM_DIM_PER_ZOOM: usize = 576;
 pub const ROSE_WEIGHT: f32 = 0.4;
 pub const GRAM_WEIGHT: f32 = 0.6;
 
+// ── Exact-match engine (pHash fingerprint tier, see docs/plans/exact-match-engine.md) ──
+
+// Hamming distance (of 64 bits) at or below which a file counts as the same image as the query.
+pub const EXACT_HASH_MAX_DIST: u32 = 6;
+
+// Colour-histogram cosine at or above which a hash match is "exact"; below it the file is a colourway.
+pub const EXACT_COLOR_MIN_SIM: f32 = 0.90;
+
+// How the exact-match engine takes part in a search; `Shadow` computes it after the results ship and only logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchEngineMode {
+    Off,
+    Shadow,
+    Primary,
+}
+
+// Build-time default mode; `PICTORIA_MATCH_ENGINE` (off|shadow|primary) overrides it at runtime.
+pub const MATCH_ENGINE_MODE: MatchEngineMode = MatchEngineMode::Shadow;
+
+// Env var that overrides `MATCH_ENGINE_MODE` so the engine can be tried without a rebuild.
+pub const MATCH_ENGINE_ENV: &str = "PICTORIA_MATCH_ENGINE";
+
+// Parses the override value (case-insensitive); anything missing or unrecognised keeps the build default.
+pub fn parse_match_engine_mode(value: Option<&str>) -> MatchEngineMode {
+    match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("off") => MatchEngineMode::Off,
+        Some("shadow") => MatchEngineMode::Shadow,
+        Some("primary") => MatchEngineMode::Primary,
+        _ => MATCH_ENGINE_MODE,
+    }
+}
+
+// The mode in effect for this process, read from the environment once.
+pub fn match_engine_mode() -> MatchEngineMode {
+    static MODE: Lazy<MatchEngineMode> =
+        Lazy::new(|| parse_match_engine_mode(std::env::var(MATCH_ENGINE_ENV).ok().as_deref()));
+    *MODE
+}
+
+// Local-feature engine tuning (features.bin / words.bin / vocab.bin). Every value below is an
+// uncalibrated starting point, to be tuned with `sidecar/tools/eval_exact_match.py`.
+
+// Strongest SIFT keypoints kept per image; mirrors `MATCH_FEATURES_PER_IMAGE` in `sidecar/pipeline.py`.
+pub const MATCH_FEATURES_PER_IMAGE: usize = 400;
+
+// Longest image side the features are extracted at; mirrors `MATCH_FEATURE_MAX_DIM` in `sidecar/pipeline.py`.
+pub const MATCH_FEATURE_MAX_DIM: u32 = 1024;
+
+// Visual-vocabulary size (k-means centroids over SIFT descriptors).
+pub const MATCH_VOCAB_K: usize = 4096;
+
+// Descriptors sampled (uniformly over files) to train the vocabulary.
+pub const MATCH_VOCAB_SAMPLE: usize = 200_000;
+
+// Indexed files needed before a vocabulary is trained (capped by the library size).
+pub const MATCH_VOCAB_MIN_IMAGES: usize = 300;
+
+// Visual words present in more than this fraction of files are ignored at query time.
+pub const MATCH_STOP_WORD_FRAC: f32 = 0.10;
+
+// Files the inverted index hands to feature verification.
+pub const MATCH_SHORTLIST: usize = 100;
+
+// A verified match is a "copy" at or above this many RANSAC inliers...
+pub const MATCH_COPY_MIN_INLIERS: u32 = 25;
+
+// ...and at or above this inlier ratio.
+pub const MATCH_COPY_MIN_RATIO: f32 = 0.5;
+
+// Layout version of features.bin / words.bin / vocab.bin; bump when feature extraction parameters change.
+pub const MATCH_FEATURES_VERSION: u32 = 1;
+
+// Longest the startup backfill waits for the sidecar to come up before giving up until next launch.
+pub const BACKFILL_STARTUP_WAIT_SECS: u64 = 600;
+
 // ── Sidecar (Python: Gabor/Gram descriptors + SIFT/RANSAC verification) ──
 
 // Localhost port the sidecar's HTTP server listens on.
@@ -213,6 +288,15 @@ pub static DB_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("meta.db"));
 pub static VECTOR_STORE_PATH: Lazy<PathBuf> =
     Lazy::new(|| DATA_DIR.join("vectors.bin"));
 
+// Local SIFT keypoints + descriptors per file (exact-match engine); written by Rust only.
+pub static FEATURES_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("features.bin"));
+
+// Visual-word ids per file, derived from features.bin and the vocabulary.
+pub static WORDS_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("words.bin"));
+
+// The trained visual vocabulary (k centroids of 128 floats).
+pub static VOCAB_PATH: Lazy<PathBuf> = Lazy::new(|| DATA_DIR.join("vocab.bin"));
+
 // Bearer-token persisted between sessions.
 // This is the ONLY file written to disk — deleted on logout.
 // The model key and user data live in memory only (sourced from validate-token).
@@ -220,3 +304,19 @@ pub static TOKEN_FILE: Lazy<PathBuf> =
     Lazy::new(|| dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".pictoria_token"));
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The env override accepts the three names in any case and falls back to the build default otherwise.
+    #[test]
+    fn match_engine_mode_parses_the_override() {
+        assert_eq!(parse_match_engine_mode(Some("off")), MatchEngineMode::Off);
+        assert_eq!(parse_match_engine_mode(Some("Shadow")), MatchEngineMode::Shadow);
+        assert_eq!(parse_match_engine_mode(Some(" PRIMARY ")), MatchEngineMode::Primary);
+        assert_eq!(parse_match_engine_mode(Some("bogus")), MATCH_ENGINE_MODE);
+        assert_eq!(parse_match_engine_mode(None), MATCH_ENGINE_MODE);
+        assert_eq!(MATCH_ENGINE_MODE, MatchEngineMode::Shadow);
+    }
+}

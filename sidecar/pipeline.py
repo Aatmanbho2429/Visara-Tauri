@@ -21,10 +21,9 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
-import onnxruntime as ort
-import torch
-import torchvision
-from cryptography.fernet import Fernet, InvalidToken
+
+# torch, torchvision, onnxruntime and cryptography are imported inside the functions that use them,
+# so the cv2/numpy-only paths (fingerprint, features, verify, the eval harness) import without them.
 
 # Child of the "sidecar" logger configured in server.py — propagates to the
 # same StreamHandler + FileHandler (sidecar/logs/sidecar.log), so these lines
@@ -147,6 +146,8 @@ def _fernet_decrypt(key_b64: str, token: bytes) -> bytes:
     working unchanged. `Fernet` verifies the HMAC before decrypting, so a
     wrong key raises rather than yielding garbage bytes for ORT to choke on.
     """
+    from cryptography.fernet import Fernet, InvalidToken
+
     try:
         return Fernet(key_b64.strip()).decrypt(token)
     except (InvalidToken, ValueError, TypeError) as e:
@@ -181,6 +182,8 @@ def load_embed_model(key_b64: str):
             token = f.read()
         model_bytes = _fernet_decrypt(key_b64, token)
         t_decrypt = time.perf_counter()
+
+        import onnxruntime as ort
 
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -248,6 +251,9 @@ def load_model():
     """
     global _model, _mean, _std
     if _model is None:
+        import torch
+        import torchvision
+
         weights = torchvision.models.MobileNet_V2_Weights.IMAGENET1K_V1
         ckpt = bundled_weights_path()
 
@@ -367,25 +373,27 @@ def zoom_crops(img_rgb, size=_EMBED_INPUT_SIZE, zoom_scales=_GRAM_ZOOM_SCALES):
     return crops
 
 
-@torch.no_grad()
 def gram_descriptor(img_rgb=None, size=_EMBED_INPUT_SIZE, zoom_scales=_GRAM_ZOOM_SCALES, crops=None):
     """Channel-correlation texture-style descriptor, one vector per zoom level.
 
     Pass `crops` from `zoom_crops()` to reuse the crops the embedding already
     needed; `img_rgb` is the standalone path and just computes them itself.
     """
+    import torch
+
     if crops is None:
         crops = zoom_crops(img_rgb, size=size, zoom_scales=zoom_scales)
     model = load_model()
     grams = []
-    for crop in crops:
-        t = torch.from_numpy(crop).float().permute(2, 0, 1).unsqueeze(0) / 255.0
-        t = (t - _mean) / _std
-        feat = model(t)
-        b, c, h, w = feat.shape
-        f = feat.reshape(c, h * w)
-        g = (f @ f.t()) / (c * h * w)
-        grams.append(g.flatten().numpy())
+    with torch.no_grad():
+        for crop in crops:
+            t = torch.from_numpy(crop).float().permute(2, 0, 1).unsqueeze(0) / 255.0
+            t = (t - _mean) / _std
+            feat = model(t)
+            b, c, h, w = feat.shape
+            f = feat.reshape(c, h * w)
+            g = (f @ f.t()) / (c * h * w)
+            grams.append(g.flatten().numpy())
     return grams
 
 

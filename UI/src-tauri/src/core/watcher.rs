@@ -626,7 +626,7 @@ fn sync_one(folder: &PathBuf) {
             // Fingerprint any files that lack a pHash (background); also covers libraries indexed before the exact-match tier existed.
             let folder_for_fp = folder_str.clone();
             std::thread::spawn(move || {
-                sync::backfill_fingerprints(&folder_for_fp);
+                crate::services::match_engine::backfill_folder(&folder_for_fp);
             });
         }
         Err(e) => {

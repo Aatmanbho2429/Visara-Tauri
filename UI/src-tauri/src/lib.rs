@@ -289,6 +289,9 @@ pub fn run() {
             // -> `crate::core::watcher::notify_model_ready`.
             crate::core::watcher::init(app.handle().clone());
 
+            // Fingerprint (and later feature-index) already-indexed files once the sidecar is up, independent of any sync.
+            crate::services::match_engine::spawn_startup_backfill();
+
             // Spawn the NAS auto-recovery loop (macOS only — no-op elsewhere).
             // Checks every 30 s for missing folders with a stored network URL
             // and remounts them silently using Keychain credentials.

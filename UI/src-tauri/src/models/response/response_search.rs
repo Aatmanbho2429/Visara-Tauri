@@ -18,7 +18,7 @@ pub struct SearchResult {
     pub rank: usize,
     pub path: String,
     pub name: String,
-    // Stage-1 combined score (Gabor rose + Gram-matrix), scaled 0-100.
+    // DINO embedding cosine (the number `NEAR_FAMILY_MIN_SIM` filters on), scaled 0-100.
     pub similarity: f32,
     pub pattern_match: f32,
     pub color_match: f32,
@@ -45,6 +45,10 @@ pub struct SearchResult {
     // query — a book-matched or mirrored copy of the reference rather than
     // a straight one. Always false unless `verified`.
     pub mirrored: bool,
+    // Exact-match engine verdict: "exact" | "exactTransformed" | "colourway" | "copy" | "none" ("none" unless the engine is primary).
+    pub match_kind: String,
+    // Hamming distance (of 64 bits) to the query's pHash for exact/exactTransformed/colourway rows.
+    pub hash_distance: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Clone)]

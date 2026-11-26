@@ -43,7 +43,7 @@ describe('Search', () => {
     const base: any = {
       path: 'a.png', name: 'a.png', similarity: 80, patternMatch: 80, colorMatch: 50,
       folder: 'f', verified: false, verification: 'unchecked', partial: false,
-      matchRegion: { x: 0, y: 0, w: 1, h: 1 }, matchPoints: 0, mirrored: false, rank: 1,
+      matchRegion: { x: 0, y: 0, w: 1, h: 1 }, matchPoints: 0, mirrored: false, matchKind: 'none', rank: 1,
       thumbnailUrl: 'asset://a', imgError: false, matchBox: { left: '1px', top: '1px', width: '2px', height: '2px' },
     };
     component.state.results = [base];
@@ -65,7 +65,7 @@ describe('Search', () => {
     (component as any).mergeResults([{
       path: 'b.png', name: 'b.png', similarity: 60, patternMatch: 60, colorMatch: 40,
       folder: 'f', verified: false, verification: 'unchecked', partial: false,
-      matchRegion: { x: 0, y: 0, w: 1, h: 1 }, matchPoints: 0, mirrored: false, rank: 0,
+      matchRegion: { x: 0, y: 0, w: 1, h: 1 }, matchPoints: 0, mirrored: false, matchKind: 'none', rank: 0,
     }]);
     expect(component.state.results.length).toBe(1);
     expect(component.state.results[0].path).toBe('b.png');

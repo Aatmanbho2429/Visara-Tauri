@@ -21,10 +21,12 @@
 //
 // Multi-folder model unchanged: empty `scope` means every watched folder.
 
+use super::match_tier::{self, MatchKind};
 use crate::{
     config::{
-        CALIBRATION_LOGGING_ENABLED, DEEP_VERIFY_DEFAULT_MIN_SIM, DEEP_VERIFY_MAX_CANDIDATES, DEEP_VERIFY_MIN_SIM_FLOOR,
-        DEEP_VERIFY_TIME_BUDGET_MS, NEAR_FAMILY_MIN_SIM, VECTOR_STORE_PATH, VERIFY_MAX_CANDIDATES, VERIFY_TIME_BUDGET_MS,
+        match_engine_mode, CALIBRATION_LOGGING_ENABLED, DEEP_VERIFY_DEFAULT_MIN_SIM, DEEP_VERIFY_MAX_CANDIDATES,
+        DEEP_VERIFY_MIN_SIM_FLOOR, DEEP_VERIFY_TIME_BUDGET_MS, EXACT_HASH_MAX_DIST, MatchEngineMode, NEAR_FAMILY_MIN_SIM,
+        VECTOR_STORE_PATH, VERIFY_MAX_CANDIDATES, VERIFY_TIME_BUDGET_MS,
     },
     core::{database, search_gate, sidecar, vector_store},
     error::{Result, PictoriaError},
@@ -33,9 +35,11 @@ use crate::{
 };
 use image::DynamicImage;
 use std::{
+    cmp::Ordering as CmpOrdering,
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -94,6 +98,10 @@ struct Candidate {
     m: crate::core::vector_store::Match,
     path: String,
     folder: String,
+    // pHash verdict (`MatchKind::None` when the fingerprint tier did not claim this file).
+    kind: MatchKind,
+    // Hamming distance behind `kind`; only set for the three hash tiers.
+    hash_distance: Option<u32>,
 }
 
 // Reported after every verify chunk (including a zero-progress call before
@@ -107,6 +115,56 @@ pub struct VerifyProgress<'a> {
     pub total: usize,
     pub tier: &'static str,
     pub updated: &'a [SearchResult],
+}
+
+// Everything `execute` produces: the result set plus, in shadow mode, the inputs for the post-complete engine run.
+pub struct SearchOutput {
+    pub results: Vec<SearchResult>,
+    pub failed_files: Vec<FailedFile>,
+    pub shadow: Option<ShadowInput>,
+}
+
+// What the shadow run needs after the search has shipped; owns the temp query file so it outlives `execute`.
+pub struct ShadowInput {
+    _temp: TempQueryFile,
+    store: Arc<vector_store::VectorStore>,
+    scope_paths: Vec<String>,
+    variants: Vec<u64>,
+    descs: QueryDescriptors,
+    id_map: HashMap<i64, (String, String)>,
+    query_abs: String,
+    legacy_results: Vec<SearchResult>,
+}
+
+// Shadow mode: runs the engine's stages against the same query after `search_complete` and only logs what it found.
+pub fn run_shadow(input: ShadowInput) {
+    let t0 = Instant::now();
+    let s0 = match stage0_fingerprint(
+        &input.store,
+        &input.scope_paths,
+        &input.variants,
+        &input.descs,
+        &HashMap::new(),
+        &input.id_map,
+        &input.query_abs,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("[match_engine] shadow stage 0 failed: {e}");
+            return;
+        }
+    };
+    let basename = |p: &str| Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or(p).to_string();
+    let exact: Vec<String> = s0.hits.iter().filter(|c| matches!(c.kind, MatchKind::Exact | MatchKind::ExactTransformed)).map(|c| basename(&c.path)).collect();
+    let colourway: Vec<String> = s0.hits.iter().filter(|c| c.kind == MatchKind::Colourway).map(|c| basename(&c.path)).collect();
+    log::info!(
+        "[match_engine] shadow exact_n={} colourway_n={} exact={exact:?} colourway={colourway:?} fingerprints_n={} legacy_n={} shadow_ms={:.2}",
+        exact.len(),
+        colourway.len(),
+        s0.fingerprints_n,
+        input.legacy_results.len(),
+        t0.elapsed().as_secs_f64() * 1000.0,
+    );
 }
 
 // What one `verify_pass` run learned, beyond the raw sidecar responses:
@@ -254,6 +312,16 @@ fn build_result(c: &Candidate, v: Option<&sidecar::VerifyResult>, verification: 
         None => (false, MatchRegion { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }),
     };
 
+    // The pHash verdict stands; otherwise a strong verified match is a copy, but only when the engine is primary.
+    let kind = match (c.kind, v) {
+        (MatchKind::None, Some(r))
+            if verified && match_engine_mode() == MatchEngineMode::Primary && match_tier::is_copy(r.matched, r.inliers, r.inlier_ratio) =>
+        {
+            MatchKind::Copy
+        }
+        (k, _) => k,
+    };
+
     SearchResult {
         rank: 0,
         path: c.path.clone(),
@@ -271,12 +339,14 @@ fn build_result(c: &Candidate, v: Option<&sidecar::VerifyResult>, verification: 
         match_region,
         match_points: if verified { v.map(|r| r.inliers).unwrap_or(0) } else { 0 },
         mirrored: verified && v.map(|r| r.mirrored).unwrap_or(false),
+        match_kind: kind.as_str().to_string(),
+        hash_distance: c.hash_distance,
     }
 }
 
-// Apply one verify chunk's results onto `results` in place, returning just
-// the rows that changed so the caller can stream that slice on without
-// re-sending everything. `mirror_hits_only`, set for the mirrored pass,
+// Apply one verify chunk's results onto `results` in place, returning the
+// indices of the rows that changed so the caller can stream just those on
+// without re-sending everything. `mirror_hits_only`, set for the mirrored pass,
 // keeps a straight-pass miss's data intact — a mirrored miss carries no more
 // information than the straight miss already recorded, and overwriting
 // would discard the first pass's inlier counts for no reason.
@@ -286,7 +356,7 @@ fn apply_chunk(
     candidates: &[Candidate],
     chunk_out: &HashMap<String, sidecar::VerifyResult>,
     mirror_hits_only: bool,
-) -> Vec<SearchResult> {
+) -> Vec<usize> {
     let mut updated = Vec::with_capacity(chunk_out.len());
     for (path, v) in chunk_out {
         if mirror_hits_only && !v.matched {
@@ -295,7 +365,7 @@ fn apply_chunk(
         if let Some(&i) = path_index.get(path) {
             let verification = if v.matched { "verified" } else { "rejected" };
             results[i] = build_result(&candidates[i], Some(v), verification);
-            updated.push(results[i].clone());
+            updated.push(i);
         }
     }
     updated
@@ -324,25 +394,112 @@ fn tier_a_count(sims: &[f32]) -> usize {
     sims.partition_point(|&s| s >= NEAR_FAMILY_MIN_SIM)
 }
 
-// Applies one deep-tier chunk: only rows that verified are built, appended to `results` and returned.
+// Applies one deep-tier chunk: only rows that verified are built and appended to `results`; returns their indices.
 fn apply_deep_chunk(
     results: &mut Vec<SearchResult>,
     path_index: &HashMap<String, usize>,
     candidates: &[Candidate],
     chunk_out: &HashMap<String, sidecar::VerifyResult>,
-) -> Vec<SearchResult> {
+) -> Vec<usize> {
     let mut updated = Vec::new();
     for (path, v) in chunk_out {
         if !v.matched {
             continue;
         }
         if let Some(&i) = path_index.get(path) {
-            let row = build_result(&candidates[i], Some(v), "verified");
-            results.push(row.clone());
-            updated.push(row);
+            results.push(build_result(&candidates[i], Some(v), "verified"));
+            updated.push(results.len() - 1);
         }
     }
     updated
+}
+
+// Ranks `results` in place, then clones the rows at `idx` so a partial carries real (never 0) ranks.
+fn ranked_updates(results: &mut [SearchResult], idx: &[usize], cmp: fn(&SearchResult, &SearchResult) -> CmpOrdering) -> Vec<SearchResult> {
+    match_tier::assign_ranks(results, cmp);
+    idx.iter().map(|&i| results[i].clone()).collect()
+}
+
+// Folds fingerprint/engine hits into the stage-1 candidates: a hit already in tier A only gains its verdict,
+// one in the deep band moves out of it, and the rest are returned as extras (never touching tier A's cosine order).
+fn merge_extras(tier_a: &mut [Candidate], deep_band: &mut Vec<Candidate>, hits: Vec<Candidate>) -> Vec<Candidate> {
+    let a_index: HashMap<i64, usize> = tier_a.iter().enumerate().map(|(i, c)| (c.m.id, i)).collect();
+    let hit_ids: HashSet<i64> = hits.iter().map(|h| h.m.id).collect();
+    deep_band.retain(|c| !hit_ids.contains(&c.m.id));
+    let mut extras = Vec::new();
+    for h in hits {
+        match a_index.get(&h.m.id) {
+            Some(&i) => {
+                if h.kind != MatchKind::None {
+                    tier_a[i].kind = h.kind;
+                    tier_a[i].hash_distance = h.hash_distance;
+                }
+            }
+            None => extras.push(h),
+        }
+    }
+    extras
+}
+
+// The query's descriptors as the engine stages need them.
+struct QueryDescriptors {
+    embed: Vec<f32>,
+    rose: Vec<f32>,
+    gram: Vec<f32>,
+    color: Vec<f32>,
+}
+
+// What stage 0 (pHash) found for one query.
+struct Stage0 {
+    hits: Vec<Candidate>,
+    fingerprints_n: usize,
+}
+
+// Stage 0: Hamming distance from each query variant to every stored fingerprint in scope; files within
+// `EXACT_HASH_MAX_DIST` are classified by colour and returned as candidates. `known` holds stage-1 scores to reuse.
+fn stage0_fingerprint(
+    store: &vector_store::VectorStore,
+    scope_paths: &[String],
+    variants: &[u64],
+    q: &QueryDescriptors,
+    known: &HashMap<i64, vector_store::Match>,
+    id_map: &HashMap<i64, (String, String)>,
+    query_abs: &str,
+) -> Result<Stage0> {
+    let con = database::open()?;
+    let mut best: HashMap<i64, (u32, usize)> = HashMap::new();
+    let mut fingerprints_n = 0usize;
+    for folder in scope_paths {
+        for (id, hash) in database::fingerprints_in_folder(&con, folder)? {
+            fingerprints_n += 1;
+            if let Some((d, v)) = match_tier::min_hamming(variants, hash) {
+                if d <= EXACT_HASH_MAX_DIST {
+                    best.insert(id, (d, v));
+                }
+            }
+        }
+    }
+    let missing: Vec<i64> = best.keys().copied().filter(|id| !known.contains_key(id)).collect();
+    let mut scored: HashMap<i64, vector_store::Match> = store
+        .score_ids(&missing, &q.embed, &q.rose, &q.gram, &q.color)
+        .into_iter()
+        .map(|m| (m.id, m))
+        .collect();
+    scored.extend(known.iter().filter(|(id, _)| best.contains_key(id)).map(|(id, m)| (*id, *m)));
+
+    let mut hits = Vec::new();
+    for (id, (dist, variant)) in best {
+        let (Some(m), Some((path, folder))) = (scored.get(&id), id_map.get(&id)) else { continue };
+        if path == query_abs || !Path::new(path).exists() {
+            continue;
+        }
+        let kind = match_tier::classify_hash(dist, variant, m.color_sim);
+        if kind == MatchKind::None {
+            continue;
+        }
+        hits.push(Candidate { m: *m, path: path.clone(), folder: folder.clone(), kind, hash_distance: Some(dist) });
+    }
+    Ok(Stage0 { hits, fingerprints_n })
 }
 
 // `on_verify_progress` fires once before verification starts (the initial
@@ -360,9 +517,14 @@ pub fn execute(
     deep_min_sim: f32,
     full_db: bool,
     mut on_verify_progress: impl FnMut(VerifyProgress),
-) -> Result<(Vec<SearchResult>, Vec<FailedFile>)> {
+) -> Result<SearchOutput> {
     let t_total = Instant::now();
     let limits = verify_limits(deep_min_sim, full_db);
+    let mode = match_engine_mode();
+    let primary = mode == MatchEngineMode::Primary;
+    // Ordering for ranks, partials and the final sort: tiers in primary mode, the pre-engine order otherwise.
+    let rank_cmp: fn(&SearchResult, &SearchResult) -> CmpOrdering =
+        if primary { match_tier::compare_results } else { match_tier::legacy_compare };
 
     // Pause background maintenance (the colour-tag backfill) for the duration —
     // it saturates the same cores the sidecar needs and can stall a search by
@@ -401,7 +563,7 @@ pub fn execute(
     // a temp file only when trimming actually changed anything; otherwise
     // just point it at the original.
     let trimmed = query_img.width() != orig_w || query_img.height() != orig_h;
-    let (query_sidecar_path, _temp_guard) = query_path_for_sidecar(image_path, &query_img, trimmed)?;
+    let (query_sidecar_path, temp_guard) = query_path_for_sidecar(image_path, &query_img, trimmed)?;
     let prep_ms = t_prep.elapsed().as_secs_f64() * 1000.0;
 
     let t_describe = Instant::now();
@@ -412,6 +574,7 @@ pub fn execute(
         .next()
         .and_then(|(_, d)| d.ok())
         .ok_or_else(|| PictoriaError::Fatal("Could not describe the reference image.".into()))?;
+    let query_phash = query_desc.phash.clone();
     let query_embed: Vec<f32> = query_desc.embed.into_iter().flatten().collect();
     let query_gram: Vec<f32> = query_desc.gram.into_iter().flatten().collect();
     // Colour histogram is computed sidecar-side now (same decode as rose/gram —
@@ -490,45 +653,78 @@ pub fn execute(
 
     let mut seen_paths: HashSet<String> = HashSet::new();
     let query_abs = image_path.to_string_lossy().to_string();
-    let candidates: Vec<Candidate> = stage1
+    let mut tier_a: Vec<Candidate> = stage1
         .into_iter()
         .filter_map(|m| {
             let (path, folder) = id_map.get(&m.id)?.clone();
             if path == query_abs || !Path::new(&path).exists() || !seen_paths.insert(path.clone()) {
                 return None;
             }
-            Some(Candidate { m, path, folder })
+            Some(Candidate { m, path, folder, kind: MatchKind::None, hash_distance: None })
         })
         .collect();
 
-    // ── Stage 2: geometrically verify a bounded, cosine-ordered prefix ──
-    // `candidates` is already sorted by embed_sim descending (stage1's own
-    // order, preserved through the filter above), so taking a prefix here
-    // keeps exactly the highest-cosine members — see `VERIFY_MAX_CANDIDATES`.
-    // Tier A is the fast tier (cosine at or above the fast floor); the rest, if
-    // any, is the deep band `[deep_min_sim, NEAR_FAMILY_MIN_SIM)`.
-    let deep_on = limits.deep_on;
-    let sims: Vec<f32> = candidates.iter().map(|c| c.m.embed_sim).collect();
+    // `tier_a` is sorted by embed_sim descending (stage1's own order, preserved through the filter above), so a
+    // prefix keeps exactly the highest-cosine members — see `VERIFY_MAX_CANDIDATES`. Tier A is the fast tier
+    // (cosine at or above the fast floor); the rest is the deep band `[deep_min_sim, NEAR_FAMILY_MIN_SIM)`.
+    let sims: Vec<f32> = tier_a.iter().map(|c| c.m.embed_sim).collect();
     let tier_a_n = tier_a_count(&sims);
+    let mut deep_band = tier_a.split_off(tier_a_n);
+
+    // ── Stage 0: pHash fingerprint tier (primary computes it here; shadow after the results ship) ─────
+    let t_stage0 = Instant::now();
+    let query_descs = QueryDescriptors {
+        embed: query_embed.clone(),
+        rose: query_desc.rose.clone(),
+        gram: query_gram.clone(),
+        color: query_color.clone(),
+    };
+    let variants_ok = query_phash.len() == 8;
+    let mut fingerprints_n = 0usize;
+    let extras: Vec<Candidate> = if primary && variants_ok {
+        let known: HashMap<i64, vector_store::Match> = tier_a.iter().chain(deep_band.iter()).map(|c| (c.m.id, c.m)).collect();
+        match stage0_fingerprint(&store, &scope_paths, &query_phash, &query_descs, &known, &id_map, &query_abs) {
+            Ok(s0) => {
+                fingerprints_n = s0.fingerprints_n;
+                merge_extras(&mut tier_a, &mut deep_band, s0.hits)
+            }
+            Err(e) => {
+                log::warn!("[match_engine] stage 0 failed, continuing without it: {e}");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let stage0_ms = t_stage0.elapsed().as_secs_f64() * 1000.0;
+
+    // Final order: tier A, then the fingerprint extras (decided rows, never verified here), then the deep band.
+    let extras_n = extras.len();
+    let head_n = tier_a_n + extras_n;
+    let mut candidates = tier_a;
+    candidates.extend(extras);
+    candidates.extend(deep_band);
+
+    let deep_on = limits.deep_on;
     let near_family_n = tier_a_n;
     let verify_pool_n = near_family_n.min(limits.tier_a_max);
     let verify_paths: Vec<String> = candidates[..verify_pool_n].iter().map(|c| c.path.clone()).collect();
 
-    let deep_available_n = candidates.len() - tier_a_n;
+    let deep_available_n = candidates.len() - head_n;
     let deep_pool_n = if deep_on { deep_available_n.min(limits.deep_max) } else { 0 };
     let deep_paths: Vec<String> =
-        candidates[tier_a_n..tier_a_n + deep_pool_n].iter().map(|c| c.path.clone()).collect();
+        candidates[head_n..head_n + deep_pool_n].iter().map(|c| c.path.clone()).collect();
 
     let path_index: HashMap<String, usize> =
-        candidates[..tier_a_n].iter().enumerate().map(|(i, c)| (c.path.clone(), i)).collect();
+        candidates[..head_n].iter().enumerate().map(|(i, c)| (c.path.clone(), i)).collect();
     let deep_index: HashMap<String, usize> =
-        (tier_a_n..tier_a_n + deep_pool_n).map(|i| (candidates[i].path.clone(), i)).collect();
+        (head_n..head_n + deep_pool_n).map(|i| (candidates[i].path.clone(), i)).collect();
 
-    // The initial set: every Tier A member, unverified. This is what lets the
-    // UI paint a ranked grid before SIFT/RANSAC has looked at a single
-    // candidate. Tier B rows join only once verified.
+    // The initial set: every Tier A member plus any fingerprint extras, unverified. This is what lets the
+    // UI paint a ranked grid before SIFT/RANSAC has looked at a single candidate. Tier B rows join only once verified.
     let mut results: Vec<SearchResult> =
-        candidates[..tier_a_n].iter().map(|c| build_result(c, None, "unchecked")).collect();
+        candidates[..head_n].iter().map(|c| build_result(c, None, "unchecked")).collect();
+    match_tier::assign_ranks(&mut results, rank_cmp);
     // One counter for the whole search: `total` grows only when the mirrored pass triggers.
     let mut total = verify_pool_n + deep_pool_n;
     let mut done_so_far = 0usize;
@@ -537,7 +733,8 @@ pub fn execute(
     let budget = limits.tier_a_budget;
     let t_verify = Instant::now();
     let straight = verify_pass(&query_sidecar_path, &verify_paths, false, budget, &SEARCH_CANCEL, |done, _, _, chunk_out| {
-        let updated = apply_chunk(&mut results, &path_index, &candidates, chunk_out, false);
+        let idx = apply_chunk(&mut results, &path_index, &candidates, chunk_out, false);
+        let updated = ranked_updates(&mut results, &idx, rank_cmp);
         on_verify_progress(VerifyProgress { done, total, tier: "near", updated: &updated });
     });
     let verify_ms = t_verify.elapsed().as_secs_f64() * 1000.0;
@@ -573,7 +770,8 @@ pub fn execute(
         total += verify_pool_n;
         let base = done_so_far;
         let mirrored = verify_pass(&query_sidecar_path, &verify_paths, true, budget, &SEARCH_CANCEL, |done, _, _, chunk_out| {
-            let updated = apply_chunk(&mut results, &path_index, &candidates, chunk_out, true);
+            let idx = apply_chunk(&mut results, &path_index, &candidates, chunk_out, true);
+            let updated = ranked_updates(&mut results, &idx, rank_cmp);
             mirror_hits += updated.len();
             on_verify_progress(VerifyProgress { done: base + done, total, tier: "mirrored", updated: &updated });
         });
@@ -597,7 +795,8 @@ pub fn execute(
             limits.deep_budget,
             &SEARCH_CANCEL,
             |done, _, _, chunk_out| {
-                let updated = apply_deep_chunk(&mut results, &deep_index, &candidates, chunk_out);
+                let idx = apply_deep_chunk(&mut results, &deep_index, &candidates, chunk_out);
+                let updated = ranked_updates(&mut results, &idx, rank_cmp);
                 on_verify_progress(VerifyProgress { done: base + done, total, tier: "deep", updated: &updated });
             },
         );
@@ -617,30 +816,24 @@ pub fn execute(
         deep_stopped = "cancelled";
     }
     let deep_ms = t_deep.elapsed().as_secs_f64() * 1000.0;
-    let deep_verified_n = results.len() - tier_a_n;
+    let deep_verified_n = results.len() - head_n;
 
-    // Verified matches first (the stage-1 score breaks ties within that
-    // group, same as every other tier), then rejected/unchecked together by
-    // stage-1 score — `verification` (not this ordering) is what tells the
-    // client which of those two a given row actually is.
-    results.sort_by(|a, b| {
-        b.verified.cmp(&a.verified).then_with(|| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal))
-    });
+    // Primary: exact > transformed > colourway > copy, then the pre-engine order. Otherwise verified matches
+    // first, then stage-1 score — `verification` (not this ordering) is what tells the client a row's real state.
+    results.sort_by(rank_cmp);
     // Nothing is truncated. Every result here is already a member of the near
     // family — it cleared `NEAR_FAMILY_MIN_SIM` — so the set is defined by
     // similarity, not by rank, and cutting it at `top_k` would put back the
-    // arbitrary boundary the threshold exists to remove. The verified tier
-    // leads (geometric proof), the rest follow, and the client decides how
-    // many of them to paint.
+    // arbitrary boundary the threshold exists to remove. The client decides how many rows to paint.
     let t_assemble = Instant::now();
-    let verified_n = results.iter().take_while(|r| r.verified).count();
+    let verified_n = results.iter().filter(|r| r.verified).count();
 
     // Calibration instrumentation:
     // the lowest cosine among genuinely verified results, across many real
     // queries, is the empirical floor the procedure asks for — cheap, since
     // it's just a min/max over what was already computed, not another scan.
     if CALIBRATION_LOGGING_ENABLED {
-        let verified_cosines = results.iter().take(verified_n).map(|r| r.similarity / 100.0);
+        let verified_cosines = results.iter().filter(|r| r.verified).map(|r| r.similarity / 100.0);
         let (mut hi, mut lo) = (f32::MIN, f32::MAX);
         let mut n = 0usize;
         for c in verified_cosines { hi = hi.max(c); lo = lo.min(c); n += 1; }
@@ -654,6 +847,8 @@ pub fn execute(
     }
     let assemble_ms = t_assemble.elapsed().as_secs_f64() * 1000.0;
 
+    let exact_n = results.iter().filter(|r| matches!(r.match_kind.as_str(), "exact" | "exactTransformed")).count();
+    let colourway_n = results.iter().filter(|r| r.match_kind == "colourway").count();
     log::info!(
         "[timing] search TOTAL query={:?} scope_folders={} candidates_indexed={} \
          near_family_n={near_family_n} verify_pool_n={verify_pool_n} verify_attempted_n={} \
@@ -664,7 +859,8 @@ pub fn execute(
          mirror_hits={mirror_hits} mirror_ms={mirror_ms:.2} deep_min_sim={deep_min_sim:.2} \
          deep_pool_n={deep_pool_n} deep_attempted_n={deep_attempted_n} deep_verified_n={deep_verified_n} \
          deep_ms={deep_ms:.2} deep_stopped={deep_stopped} search_cancelled={cancelled} \
-         assemble_ms={assemble_ms:.2} total_ms={:.2} full_db={full_db} deep_failed_n={deep_failed_n}",
+         assemble_ms={assemble_ms:.2} total_ms={:.2} full_db={full_db} deep_failed_n={deep_failed_n} \
+         engine_mode={mode:?} exact_n={exact_n} colourway_n={colourway_n} fingerprints_n={fingerprints_n} stage0_ms={stage0_ms:.2}",
         query_sidecar_path.rsplit(['/', '\\']).next().unwrap_or(&query_sidecar_path),
         scope_paths.len(),
         id_map.len(),
@@ -674,7 +870,18 @@ pub fn execute(
         t_total.elapsed().as_secs_f64() * 1000.0,
     );
 
-    Ok((results, Vec::new()))
+    // Shadow mode: hand back what the post-complete engine run needs; the temp query file stays alive with it.
+    let shadow = (mode == MatchEngineMode::Shadow && variants_ok).then(|| ShadowInput {
+        _temp: temp_guard,
+        store,
+        scope_paths: scope_paths.clone(),
+        variants: query_phash,
+        descs: query_descs,
+        id_map,
+        query_abs,
+        legacy_results: results.clone(),
+    });
+    Ok(SearchOutput { results, failed_files: Vec::new(), shadow })
 }
 
 // Convert a possibly-skewed 4-point quad (candidate pixel coordinates) to
@@ -885,5 +1092,49 @@ mod tests {
         assert_eq!(resolve_deep_min_sim(Some(0.95)), NEAR_FAMILY_MIN_SIM);
         assert_eq!(resolve_deep_min_sim(Some(0.5)), 0.5);
         assert_eq!(resolve_deep_min_sim(Some(f32::NAN)), DEEP_VERIFY_DEFAULT_MIN_SIM);
+    }
+
+    fn cand(id: i64, sim: f32, kind: MatchKind, dist: Option<u32>) -> Candidate {
+        Candidate {
+            m: vector_store::Match { id, embed_sim: sim, design_sim: 0.0, rose_sim: 0.0, gram_sim: 0.0, color_sim: 0.5 },
+            path: format!("/lib/{id}.png"),
+            folder: "/lib".into(),
+            kind,
+            hash_distance: dist,
+        }
+    }
+
+    // A hit in tier A only gains its verdict, a deep-band hit moves out of the band, an unknown hit becomes an extra.
+    #[test]
+    fn merge_extras_routes_each_hit() {
+        let mut tier_a = vec![cand(1, 0.9, MatchKind::None, None), cand(2, 0.8, MatchKind::None, None)];
+        let mut deep = vec![cand(3, 0.6, MatchKind::None, None), cand(4, 0.5, MatchKind::None, None)];
+        let hits = vec![
+            cand(2, 0.8, MatchKind::Exact, Some(1)),
+            cand(3, 0.6, MatchKind::Colourway, Some(4)),
+            cand(9, 0.2, MatchKind::ExactTransformed, Some(0)),
+        ];
+        let extras = merge_extras(&mut tier_a, &mut deep, hits);
+        assert_eq!(tier_a.len(), 2);
+        assert_eq!((tier_a[1].kind, tier_a[1].hash_distance), (MatchKind::Exact, Some(1)));
+        assert_eq!(tier_a[0].kind, MatchKind::None);
+        assert_eq!(deep.iter().map(|c| c.m.id).collect::<Vec<_>>(), vec![4]);
+        let mut ids: Vec<i64> = extras.iter().map(|c| c.m.id).collect();
+        ids.sort();
+        assert_eq!(ids, vec![3, 9]);
+    }
+
+    // The pHash verdict survives verification; a strong verified match becomes a copy only in primary mode.
+    #[test]
+    fn build_result_carries_the_hash_verdict() {
+        let c = cand(7, 0.95, MatchKind::Colourway, Some(3));
+        let r = build_result(&c, None, "unchecked");
+        assert_eq!((r.match_kind.as_str(), r.hash_distance), ("colourway", Some(3)));
+        let plain = build_result(&cand(8, 0.9, MatchKind::None, None), None, "unchecked");
+        assert_eq!((plain.match_kind.as_str(), plain.hash_distance), ("none", None));
+        let strong = sidecar::VerifyResult { matched: true, inliers: 200, inlier_ratio: 0.9, ..Default::default() };
+        let v = build_result(&cand(8, 0.9, MatchKind::None, None), Some(&strong), "verified");
+        let expected = if match_engine_mode() == MatchEngineMode::Primary { "copy" } else { "none" };
+        assert_eq!(v.match_kind, expected);
     }
 }

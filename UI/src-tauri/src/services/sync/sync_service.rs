@@ -327,11 +327,11 @@ fn index_chunks(
                 crate::services::tags::apply_color_tags(con, &path_str, &desc.dominant);
             }
 
-            store_fingerprint(con, &path_str, &desc.phash);
-
             if let Err(e) = store.upsert(vector_id, &embed_flat, &desc.rose, &gram_flat, &desc.color) {
                 errors.push(SyncFileError::new(path_str, ERR_INDEX_FAILED, format!("Index upsert failed: {e}")));
                 progress::increment_errors();
+            } else {
+                store_fingerprint(con, &path_str, &desc.phash);
             }
         }
         // Flip this chunk's rows to loaded before the commit, so an open explorer sees ticks arrive.
@@ -402,11 +402,24 @@ pub fn backfill_fingerprints(folder: &str) -> usize {
             Err(e) => { log::warn!("[sync] fingerprint backfill: sidecar call failed: {e}"); break; }
         };
         let ids: HashMap<&str, i64> = chunk.iter().map(|(id, p)| (p.as_str(), *id)).collect();
+        // One transaction per chunk, so the write lock is taken once instead of per row.
+        if let Err(e) = con.execute_batch("BEGIN;") {
+            log::warn!("[sync] fingerprint backfill: cannot begin transaction: {e}");
+            break;
+        }
+        let mut chunk_done = 0usize;
         for (path, res) in hashed {
             // A decode failure writes nothing, so a later pass retries it.
             let (Some(&id), Ok(hashes)) = (ids.get(path.as_str()), res) else { continue };
             if database::upsert_fingerprint(&con, id, hashes.first().copied()).is_ok() {
-                done += 1;
+                chunk_done += 1;
+            }
+        }
+        match con.execute_batch("COMMIT;") {
+            Ok(()) => done += chunk_done,
+            Err(e) => {
+                log::warn!("[sync] fingerprint backfill: commit failed: {e}");
+                let _ = con.execute_batch("ROLLBACK;");
             }
         }
     }
@@ -475,10 +488,11 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
             };
             let embed_flat: Vec<f32> = desc.embed.into_iter().flatten().collect();
             let gram_flat: Vec<f32> = desc.gram.into_iter().flatten().collect();
-            store_fingerprint(&con, &path_str, &desc.phash);
             if let Err(e) = store.upsert(*id, &embed_flat, &desc.rose, &gram_flat, &desc.color) {
                 errors.push(FileError { file: path_str, reason: format!("Index upsert failed: {e}") });
                 progress::increment_errors();
+            } else {
+                store_fingerprint(&con, &path_str, &desc.phash);
             }
         }
 

@@ -13,6 +13,7 @@ export interface SearchResult {
   rank: number;
   path: string;
   name: string;
+  // DINO embedding cosine, 0-100.
   similarity: number;
   patternMatch: number;
   colorMatch: number;
@@ -36,7 +37,13 @@ export interface SearchResult {
   // reference — a mirrored or book-matched copy, not a straight one.
   // Always false unless `verified`.
   mirrored: boolean;
+  // Exact-match engine verdict; 'none' unless the engine runs in primary mode.
+  matchKind: MatchKind;
+  // Hamming distance (of 64 bits) to the query's pHash for exact / exactTransformed / colourway rows.
+  hashDistance?: number | null;
 }
+
+export type MatchKind = 'exact' | 'exactTransformed' | 'colourway' | 'copy' | 'none';
 
 export interface FailedFile {
   file: string;

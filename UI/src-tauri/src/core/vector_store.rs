@@ -432,17 +432,7 @@ impl VectorStore {
                 if embed_sim < min_sim {
                     return None;
                 }
-                let r = &self.rose[i * ROSE_DIM..(i + 1) * ROSE_DIM];
-                let g = &self.gram[i * GRAM_DIM..(i + 1) * GRAM_DIM];
-                let rose_sim = cos_sim(query_rose, r);
-                let gram_sim = best_zoom_sim(query_gram, g, GRAM_DIM_PER_ZOOM);
-                let color_sim = if use_color {
-                    cos_sim(query_color, &self.color[i * COLOR_DIM..(i + 1) * COLOR_DIM])
-                } else {
-                    0.0
-                };
-                let design_sim = ROSE_WEIGHT * rose_sim + GRAM_WEIGHT * gram_sim;
-                Some(Match { id, embed_sim, design_sim, rose_sim, gram_sim, color_sim })
+                Some(self.score_entry(i, id, embed_sim, query_rose, query_gram, query_color, use_color))
             })
             .collect();
 
@@ -455,6 +445,59 @@ impl VectorStore {
                 })
         });
         scored
+    }
+
+    // Full `Match` for entry `i` once its embedding cosine is known; shared by `near_family` and `score_ids`.
+    #[allow(clippy::too_many_arguments)]
+    fn score_entry(
+        &self,
+        i: usize,
+        id: i64,
+        embed_sim: f32,
+        query_rose: &[f32],
+        query_gram: &[f32],
+        query_color: &[f32],
+        use_color: bool,
+    ) -> Match {
+        let r = &self.rose[i * ROSE_DIM..(i + 1) * ROSE_DIM];
+        let g = &self.gram[i * GRAM_DIM..(i + 1) * GRAM_DIM];
+        let rose_sim = cos_sim(query_rose, r);
+        let gram_sim = best_zoom_sim(query_gram, g, GRAM_DIM_PER_ZOOM);
+        let color_sim = if use_color {
+            cos_sim(query_color, &self.color[i * COLOR_DIM..(i + 1) * COLOR_DIM])
+        } else {
+            0.0
+        };
+        let design_sim = ROSE_WEIGHT * rose_sim + GRAM_WEIGHT * gram_sim;
+        Match { id, embed_sim, design_sim, rose_sim, gram_sim, color_sim }
+    }
+
+    // Scores just the live entries named in `ids` (no floor), for hits found outside the near family; unknown ids are skipped.
+    pub fn score_ids(
+        &self,
+        ids: &[i64],
+        query_embed: &[f32],
+        query_rose: &[f32],
+        query_gram: &[f32],
+        query_color: &[f32],
+    ) -> Vec<Match> {
+        if ids.is_empty() || self.ids.is_empty() {
+            return Vec::new();
+        }
+        let use_color = query_color.len() == COLOR_DIM;
+        let mut query_embed_n = query_embed.to_vec();
+        normalize_zoom_levels(&mut query_embed_n, EMBED_DIM);
+        let wanted: HashSet<i64> = ids.iter().copied().collect();
+        self.ids
+            .iter()
+            .enumerate()
+            .filter(|&(_, id)| *id != TOMBSTONE && wanted.contains(id))
+            .map(|(i, &id)| {
+                let e = &self.embed[i * EMBED_TOTAL..(i + 1) * EMBED_TOTAL];
+                let embed_sim = best_zoom_dot(&query_embed_n, e, EMBED_DIM);
+                self.score_entry(i, id, embed_sim, query_rose, query_gram, query_color, use_color)
+            })
+            .collect()
     }
 
     pub fn live_count(&self) -> usize {
@@ -699,6 +742,27 @@ mod tests {
         // outcome, not an error.
         let none = s.near_family(&target_embed, &unit_rose(0.7), &unit_gram(0.7), &[], 1.01);
         assert!(none.is_empty());
+    }
+
+    // `score_ids` must give the same Match as `near_family` for the same entry, skip unknown/removed ids, and ignore any floor.
+    #[test]
+    fn score_ids_matches_near_family_and_skips_unknown_ids() {
+        let mut s = VectorStore::new();
+        let q = unit_embed(0.7);
+        s.upsert(1, &unit_embed(0.11), &unit_rose(0.11), &unit_gram(0.11), &color(0.1)).unwrap();
+        s.upsert(2, &q, &unit_rose(0.7), &unit_gram(0.7), &color(0.2)).unwrap();
+        s.upsert(3, &unit_embed(0.4), &unit_rose(0.4), &unit_gram(0.4), &color(0.3)).unwrap();
+        s.remove(&[3]);
+        let fam = s.near_family(&q, &unit_rose(0.7), &unit_gram(0.7), &color(0.2), -1.0);
+        let got = s.score_ids(&[1, 2, 3, 99], &q, &unit_rose(0.7), &unit_gram(0.7), &color(0.2));
+        assert_eq!(got.len(), 2, "removed and unknown ids are skipped");
+        for m in &got {
+            let f = fam.iter().find(|f| f.id == m.id).unwrap();
+            assert_eq!(f.embed_sim, m.embed_sim);
+            assert_eq!(f.color_sim, m.color_sim);
+            assert_eq!(f.design_sim, m.design_sim);
+        }
+        assert!(s.score_ids(&[], &q, &unit_rose(0.7), &unit_gram(0.7), &[]).is_empty());
     }
 
     #[test]

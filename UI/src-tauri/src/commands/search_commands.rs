@@ -250,10 +250,14 @@ pub async fn search_start(
         };
 
         let outcome = search::execute(&image, &scope, top_k, deep_min_sim, full_db, on_verify_progress);
+        // Shadow-mode engine work runs only after search_complete is out and `running` is cleared.
+        let mut shadow = None;
         if is_current() {
             match outcome {
-                Ok((results, failed_files)) => {
-                    let payload = ApiResponse::ok(ResponseSearchComplete { done: true, results, failed_files });
+                Ok(out) => {
+                    shadow = out.shadow;
+                    let payload =
+                        ApiResponse::ok(ResponseSearchComplete { done: true, results: out.results, failed_files: out.failed_files });
                     let _ = app_clone.emit("search_complete", payload);
                 }
                 Err(e) => {
@@ -264,6 +268,9 @@ pub async fn search_start(
         }
 
         search_state().lock().unwrap().running = false;
+        if let Some(input) = shadow {
+            search::run_shadow(input);
+        }
     });
 
     // Move the UI from "Starting…" into an active searching state. This first

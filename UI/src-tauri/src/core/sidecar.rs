@@ -619,7 +619,11 @@ struct DescribeResp {
 
 // Parses 16-char hex pHash strings into u64s, skipping any that are malformed (hex because JSON numbers lose precision above 2^53).
 pub fn parse_phashes(hex: &[String]) -> Vec<u64> {
-    hex.iter().filter_map(|s| u64::from_str_radix(s.trim(), 16).ok()).collect()
+    hex.iter()
+        .map(|s| s.trim())
+        .filter(|s| s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .filter_map(|s| u64::from_str_radix(s, 16).ok())
+        .collect()
 }
 
 // `describe` error text for a result that carried neither a descriptor nor a sidecar error.
@@ -811,7 +815,7 @@ mod tests {
     // Malformed entries are skipped rather than failing the whole descriptor.
     #[test]
     fn parse_phashes_skips_bad_strings() {
-        let hex = vec!["zz".to_string(), "00000000000000ff".to_string(), String::new()];
+        let hex = vec!["zz".to_string(), "00000000000000ff".to_string(), String::new(), "+0000000000000ff".to_string(), "ff".to_string()];
         assert_eq!(parse_phashes(&hex), vec![0xff]);
         assert!(parse_phashes(&[]).is_empty());
     }

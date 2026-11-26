@@ -2,6 +2,7 @@ pub mod auth;
 pub mod browse;
 pub mod library;
 pub mod license;
+pub mod match_engine;
 pub mod search;
 pub mod subscription;
 pub mod sync;
