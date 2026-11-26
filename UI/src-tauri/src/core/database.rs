@@ -1111,6 +1111,18 @@ pub fn fingerprints_in_folder(con: &Connection, folder: &str) -> Result<Vec<(i64
     Ok(rows)
 }
 
+// Number of indexed files across every folder.
+pub fn file_count(con: &Connection) -> Result<usize> {
+    Ok(con.query_row("SELECT COUNT(*) FROM files", [], |r| r.get::<_, i64>(0))? as usize)
+}
+
+// Every vector id (`faiss_id`) that has a `files` row, for pruning engine data of files that are gone.
+pub fn all_vector_ids(con: &Connection) -> Result<HashSet<i64>> {
+    let mut stmt = con.prepare_cached("SELECT faiss_id FROM files")?;
+    let ids = stmt.query_map([], |r| r.get::<_, i64>(0))?.filter_map(|r| r.ok()).collect();
+    Ok(ids)
+}
+
 // Files under `folder` with no fingerprint row at all (NULL rows are skipped so flat images aren't retried forever).
 pub fn files_missing_fingerprint(con: &Connection, folder: &str) -> Result<Vec<(i64, String)>> {
     let prefix = normalise_folder_prefix(folder);

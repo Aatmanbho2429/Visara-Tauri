@@ -284,10 +284,17 @@ fn purge_folder_rows(con: &rusqlite::Connection, folder: &str) -> rusqlite::Resu
     // DELETE CASCADE), so Browse facets update automatically — no separate tag
     // delete needed.  The connection is opened via database::open(), which sets
     // PRAGMA foreign_keys = ON, so the cascade actually fires.
-    con.execute(
+    // Engine records are keyed by vector id, so collect them before the rows go.
+    let ids: Vec<i64> = con
+        .prepare("SELECT faiss_id FROM files WHERE path LIKE ?1")
+        .and_then(|mut st| st.query_map(rusqlite::params![format!("{prefix}%")], |r| r.get::<_, i64>(0))?.collect())
+        .unwrap_or_default();
+    let deleted = con.execute(
         "DELETE FROM files WHERE path LIKE ?1",
         rusqlite::params![format!("{prefix}%")],
-    )
+    )?;
+    crate::services::match_engine::remove_ids(&ids);
+    Ok(deleted)
 }
 
 // Normalise a folder path to a directory prefix with exactly one trailing

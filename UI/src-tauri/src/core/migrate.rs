@@ -20,7 +20,7 @@
 // (see `services::sync::reembed_folder`).
 
 use crate::{
-    config::{DATA_DIR, DB_PATH, VECTOR_STORE_PATH},
+    config::{DATA_DIR, DB_PATH, FEATURES_PATH, VECTOR_STORE_PATH, VOCAB_PATH, WORDS_PATH},
     core::database,
 };
 use std::{
@@ -120,6 +120,10 @@ pub fn run_library_reset() {
 
     let _ = std::fs::remove_file(DB_PATH.as_path());
     let _ = std::fs::remove_file(VECTOR_STORE_PATH.as_path());
+    // Engine files are keyed by vector id, which a fresh database starts reusing from 0.
+    for p in [&*FEATURES_PATH, &*WORDS_PATH, &*VOCAB_PATH] {
+        let _ = std::fs::remove_file(p.as_path());
+    }
     let _ = std::fs::remove_dir_all(DATA_DIR.join("thumbs"));
     // Stale re-embed marker would otherwise arm a re-index of a library that
     // no longer exists.

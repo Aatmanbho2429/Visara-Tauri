@@ -151,6 +151,15 @@ pub const MATCH_COPY_MIN_INLIERS: u32 = 25;
 // ...and at or above this inlier ratio.
 pub const MATCH_COPY_MIN_RATIO: f32 = 0.5;
 
+// k-means passes over the vocabulary sample (each pass is one sample's worth of minibatches).
+pub const MATCH_VOCAB_ITERS: usize = 5;
+
+// Files per sidecar call when backfilling stored features.
+pub const MATCH_BACKFILL_CHUNK: usize = 64;
+
+// Files whose descriptors are quantised per step when assigning visual words; small so a search can cut in between steps.
+pub const MATCH_WORD_ASSIGN_CHUNK: usize = 16;
+
 // Layout version of features.bin / words.bin / vocab.bin; bump when feature extraction parameters change.
 pub const MATCH_FEATURES_VERSION: u32 = 1;
 

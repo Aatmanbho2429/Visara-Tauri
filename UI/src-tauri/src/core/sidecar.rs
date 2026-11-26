@@ -26,6 +26,8 @@ use crate::{
     models::response::{ApiResponse, ResponseSidecarCrashed},
     services::auth,
 };
+use crate::core::feature_store::Features;
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -87,6 +89,16 @@ fn describe_timeout(n_paths: usize) -> std::time::Duration {
 // indexing file rather than steady-state compute.
 fn verify_timeout(n_candidates: usize) -> std::time::Duration {
     std::time::Duration::from_secs(30 + n_candidates as u64)
+}
+
+// `/extract_features` decodes and runs SIFT per image on the sidecar's pool; budgeted per file like `/describe`, but far cheaper.
+fn extract_timeout(n_paths: usize) -> std::time::Duration {
+    std::time::Duration::from_secs(30 + (n_paths as u64) * 5)
+}
+
+// `/train_vocab` is one k-means over the whole sample; scales with the descriptor count.
+fn train_timeout(n_desc: usize) -> std::time::Duration {
+    std::time::Duration::from_secs(300 + (n_desc as u64) / 500)
 }
 
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
@@ -731,26 +743,25 @@ pub fn verify(
         .json()
         .map_err(|e| PictoriaError::Fatal(format!("sidecar /verify bad response: {e}")))?;
 
-    Ok(resp
-        .results
-        .into_iter()
-        .map(|r| {
-            (
-                r.path,
-                VerifyResult {
-                    matched: r.matched,
-                    inliers: r.inliers,
-                    good_matches: r.good_matches,
-                    inlier_ratio: r.inlier_ratio,
-                    quad: r.quad,
-                    candidate_size: r.candidate_size,
-                    scale: r.scale,
-                    mirrored: r.mirrored,
-                    reason: r.reason,
-                },
-            )
-        })
-        .collect())
+    Ok(resp.results.into_iter().map(verify_item_to_result).collect())
+}
+
+// Maps one `/verify` or `/verify_features` result item to the path and its `VerifyResult`.
+fn verify_item_to_result(r: VerifyRespItem) -> (String, VerifyResult) {
+    (
+        r.path,
+        VerifyResult {
+            matched: r.matched,
+            inliers: r.inliers,
+            good_matches: r.good_matches,
+            inlier_ratio: r.inlier_ratio,
+            quad: r.quad,
+            candidate_size: r.candidate_size,
+            scale: r.scale,
+            mirrored: r.mirrored,
+            reason: r.reason,
+        },
+    )
 }
 
 #[derive(Serialize)]
@@ -801,6 +812,173 @@ pub fn fingerprint(
         .collect())
 }
 
+// Little-endian bytes of an f32 slice, the wire layout of every array payload.
+fn f32_le_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+// Decodes a base64 little-endian f32 array; `None` when it is not valid base64 or not a whole number of floats.
+fn decode_f32(b64: &str) -> Option<Vec<f32>> {
+    let bytes = B64.decode(b64).ok()?;
+    (bytes.len() % 4 == 0).then(|| bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect())
+}
+
+#[derive(Serialize)]
+struct ExtractReq<'a> {
+    paths: &'a [String],
+    mirror: bool,
+    priority: &'a str,
+}
+
+#[derive(Deserialize)]
+struct ExtractRespItem {
+    path: String,
+    #[serde(default)]
+    w: u32,
+    #[serde(default)]
+    h: u32,
+    #[serde(default)]
+    pts: String,
+    #[serde(default)]
+    desc: String,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ExtractResp {
+    results: Vec<ExtractRespItem>,
+}
+
+// SIFT features per path via `/extract_features` (decode + SIFT only, no DINO); `mirror` flips the image first (the query side).
+pub fn extract_features(
+    paths: &[String],
+    mirror: bool,
+    priority: Priority,
+) -> Result<Vec<(String, std::result::Result<Features, String>)>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let body = ExtractReq { paths, mirror, priority: priority.as_str() };
+    let resp: ExtractResp = HTTP
+        .post(format!("{}/extract_features", base_url()))
+        .timeout(extract_timeout(paths.len()))
+        .json(&body)
+        .send()
+        .map_err(|e| PictoriaError::Fatal(format!("sidecar /extract_features unreachable: {e}")))?
+        .json()
+        .map_err(|e| PictoriaError::Fatal(format!("sidecar /extract_features bad response: {e}")))?;
+
+    Ok(resp
+        .results
+        .into_iter()
+        .map(|r| {
+            if let Some(e) = r.error {
+                return (r.path, Err(e));
+            }
+            let parsed = (|| {
+                let pts = decode_f32(&r.pts)?;
+                let desc = B64.decode(&r.desc).ok()?;
+                let ok = pts.len() % 2 == 0 && desc.len() == pts.len() / 2 * crate::core::feature_store::DESC_DIM;
+                (ok && r.w <= u16::MAX as u32 && r.h <= u16::MAX as u32).then(|| Features { w: r.w as u16, h: r.h as u16, pts, desc })
+            })();
+            (r.path, parsed.ok_or_else(|| "bad feature payload".to_string()))
+        })
+        .collect())
+}
+
+#[derive(Serialize)]
+struct TrainVocabReq {
+    desc: String,
+    n: usize,
+    k: usize,
+    iters: usize,
+}
+
+#[derive(Deserialize)]
+struct TrainVocabResp {
+    centroids: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+// Trains `k` visual-word centroids over `desc` (flat u8 rows of 128) via `/train_vocab`; returns them flat (`k x 128` f32).
+pub fn train_vocab(desc: &[u8], k: usize, iters: usize) -> Result<Vec<f32>> {
+    let n = desc.len() / crate::core::feature_store::DESC_DIM;
+    let body = TrainVocabReq { desc: B64.encode(desc), n, k, iters };
+    let resp: TrainVocabResp = HTTP
+        .post(format!("{}/train_vocab", base_url()))
+        .timeout(train_timeout(n))
+        .json(&body)
+        .send()
+        .map_err(|e| PictoriaError::Fatal(format!("sidecar /train_vocab unreachable: {e}")))?
+        .json()
+        .map_err(|e| PictoriaError::Fatal(format!("sidecar /train_vocab bad response: {e}")))?;
+    let centroids = resp
+        .centroids
+        .and_then(|c| decode_f32(&c))
+        .ok_or_else(|| PictoriaError::Fatal(format!("sidecar /train_vocab failed: {}", resp.error.unwrap_or_default())))?;
+    if centroids.is_empty() || centroids.len() % crate::core::feature_store::DESC_DIM != 0 {
+        return Err(PictoriaError::Fatal("sidecar /train_vocab returned a malformed vocabulary".into()));
+    }
+    Ok(centroids)
+}
+
+#[derive(Serialize)]
+struct VerifyFeaturesCandidate {
+    path: String,
+    w: u16,
+    h: u16,
+    n: usize,
+    pts: String,
+    desc: String,
+}
+
+#[derive(Serialize)]
+struct VerifyFeaturesReq<'a> {
+    query_path: &'a str,
+    mirror: bool,
+    candidates: Vec<VerifyFeaturesCandidate>,
+    priority: &'a str,
+}
+
+// Geometrically verifies `query_path` against stored features (no candidate decode) via `/verify_features`; results match `verify`'s.
+pub fn verify_features(
+    query_path: &str,
+    candidates: &[(String, Features)],
+    mirror: bool,
+    priority: Priority,
+) -> Result<Vec<(String, VerifyResult)>> {
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let body = VerifyFeaturesReq {
+        query_path,
+        mirror,
+        candidates: candidates
+            .iter()
+            .map(|(path, f)| VerifyFeaturesCandidate {
+                path: path.clone(),
+                w: f.w,
+                h: f.h,
+                n: f.n(),
+                pts: B64.encode(f32_le_bytes(&f.pts)),
+                desc: B64.encode(&f.desc),
+            })
+            .collect(),
+        priority: priority.as_str(),
+    };
+    let resp: VerifyResp = HTTP
+        .post(format!("{}/verify_features", base_url()))
+        .timeout(verify_timeout(candidates.len()))
+        .json(&body)
+        .send()
+        .map_err(|e| PictoriaError::Fatal(format!("sidecar /verify_features unreachable: {e}")))?
+        .json()
+        .map_err(|e| PictoriaError::Fatal(format!("sidecar /verify_features bad response: {e}")))?;
+    Ok(resp.results.into_iter().map(verify_item_to_result).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,5 +996,30 @@ mod tests {
         let hex = vec!["zz".to_string(), "00000000000000ff".to_string(), String::new(), "+0000000000000ff".to_string(), "ff".to_string()];
         assert_eq!(parse_phashes(&hex), vec![0xff]);
         assert!(parse_phashes(&[]).is_empty());
+    }
+
+    // A VerifyResp item with and without its optional fields maps onto `VerifyResult` the way `/verify` always did.
+    #[test]
+    fn verify_items_parse_with_defaults() {
+        let resp: VerifyResp = serde_json::from_str(
+            r#"{"results":[{"path":"a","matched":true,"inliers":40,"good_matches":50,"inlier_ratio":0.8,
+                "box":[[0,0],[10,0],[10,10],[0,10]],"candidate_size":[100,80],"scale":1.0,"mirrored":true},
+               {"path":"b","matched":false,"reason":"too-few-keypoints"}]}"#,
+        )
+        .unwrap();
+        let out: Vec<_> = resp.results.into_iter().map(verify_item_to_result).collect();
+        assert!(out[0].1.matched && out[0].1.mirrored && out[0].1.candidate_size == Some((100, 80)));
+        assert_eq!(out[0].1.inliers, 40);
+        assert!(!out[1].1.matched);
+        assert_eq!(out[1].1.reason.as_deref(), Some("too-few-keypoints"));
+    }
+
+    // Float arrays survive the little-endian base64 round trip; a ragged length is rejected.
+    #[test]
+    fn f32_payloads_round_trip() {
+        let v = vec![0.0f32, 1.5, -2.25, 1e-3, 1024.0];
+        assert_eq!(decode_f32(&B64.encode(f32_le_bytes(&v))), Some(v));
+        assert_eq!(decode_f32(&B64.encode([1u8, 2, 3])), None);
+        assert_eq!(decode_f32("***"), None);
     }
 }

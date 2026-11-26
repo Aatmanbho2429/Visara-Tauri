@@ -1,5 +1,7 @@
 pub mod color;
 pub mod database;
+pub mod feature_store;
+pub mod match_index;
 pub mod migrate;
 pub mod progress;
 pub mod search_gate;

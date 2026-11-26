@@ -6,6 +6,7 @@ use crate::{
     core::{database, progress, search_gate, sidecar, vector_store::VectorStore},
     error::{PictoriaError, Result},
     models::response::FileError,
+    services::match_engine,
     utils::file_utils,
 };
 use rayon::prelude::*;
@@ -126,6 +127,7 @@ fn sync_folder_inner(
     let removed_ids = database::cleanup_missing_in_folder(&con, &folder_str)?;
     if !removed_ids.is_empty() {
         store.remove(&removed_ids);
+        match_engine::remove_ids(&removed_ids);
     }
 
     let t_scan = Instant::now();
@@ -213,6 +215,7 @@ fn sync_folder_inner(
         } else {
             if let Ok(Some((old_id, _, _))) = database::find_by_path(&con, &path_str) {
                 store.remove(&[old_id]);
+                match_engine::remove_ids(&[old_id]);
                 let _ = database::delete_file(&con, &path_str);
             }
             needs_describe.push((path, hash, mtime));
@@ -233,6 +236,7 @@ fn sync_folder_inner(
         let ids: Vec<i64> = to_remove.iter().map(|(_, id)| *id).collect();
         let paths: Vec<&String> = to_remove.iter().map(|(p, _)| p).collect();
         store.remove(&ids);
+        match_engine::remove_ids(&ids);
         for path in paths {
             database::delete_file(&con, path)?;
         }
@@ -281,6 +285,11 @@ fn index_chunks(
         let described = sidecar::describe(&paths, sidecar::Priority::Index)?;
         let describe_ms = t_describe.elapsed().as_secs_f64() * 1000.0;
         let by_path: HashMap<String, std::result::Result<sidecar::Descriptor, String>> = described.into_iter().collect();
+        // Local features for the exact-match engine; a failure here only leaves these files for the backfill.
+        let t_features = Instant::now();
+        let features = match_engine::extract_chunk(&paths);
+        let vocab = match_engine::current_vocab();
+        let features_ms = t_features.elapsed().as_secs_f64() * 1000.0;
 
         let t_persist = Instant::now();
         for (path, hash, mtime) in chunk.iter() {
@@ -332,6 +341,7 @@ fn index_chunks(
                 progress::increment_errors();
             } else {
                 store_fingerprint(con, &path_str, &desc.phash);
+                match_engine::index_file_features(vector_id, features.get(&path_str), vocab.as_deref().map(|v| v.as_slice()));
             }
         }
         // Flip this chunk's rows to loaded before the commit, so an open explorer sees ticks arrive.
@@ -341,7 +351,7 @@ fn index_chunks(
         let persist_ms = t_persist.elapsed().as_secs_f64() * 1000.0;
 
         log::info!(
-            "[timing] chunk files={} describe_ms={describe_ms:.2} persist_ms={persist_ms:.2} \
+            "[timing] chunk files={} describe_ms={describe_ms:.2} features_ms={features_ms:.2} persist_ms={persist_ms:.2} \
              avg_describe_ms_per_file={:.3}",
             chunk.len(),
             describe_ms / chunk.len().max(1) as f64,
@@ -353,6 +363,7 @@ fn index_chunks(
     }
 
     con.execute_batch("COMMIT;")?;
+    match_engine::flush_words();
     Ok(())
 }
 
@@ -462,6 +473,7 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
 
     let existing_ids: Vec<i64> = id_map.keys().copied().collect();
     store.remove(&existing_ids);
+    match_engine::remove_ids(&existing_ids);
 
     let items: Vec<(i64, PathBuf)> = id_map.into_iter().map(|(id, p)| (id, PathBuf::from(p))).collect();
     let total = items.len();
@@ -475,6 +487,8 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
         let paths: Vec<String> = chunk.iter().map(|(_, p)| p.to_string_lossy().to_string()).collect();
         let described = sidecar::describe(&paths, sidecar::Priority::Index)?;
         let by_path: HashMap<String, std::result::Result<sidecar::Descriptor, String>> = described.into_iter().collect();
+        let features = match_engine::extract_chunk(&paths);
+        let vocab = match_engine::current_vocab();
 
         for (id, path) in chunk.iter() {
             let path_str = path.to_string_lossy().to_string();
@@ -493,6 +507,7 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
                 progress::increment_errors();
             } else {
                 store_fingerprint(&con, &path_str, &desc.phash);
+                match_engine::index_file_features(*id, features.get(&path_str), vocab.as_deref().map(|v| v.as_slice()));
             }
         }
 
@@ -500,6 +515,7 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
         progress::set_progress(None, Some(done), None, None, None);
     }
 
+    match_engine::flush_words();
     log::info!(
         "[timing] reembed_folder TOTAL folder={folder_str} files={total} errors={} total_ms={:.2}",
         errors.len(),
