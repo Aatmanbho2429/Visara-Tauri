@@ -927,6 +927,10 @@ def _verify_matches(qg_shape, kp1_pts, des1, kp2_pts, des2, c_shape, mirror,
         if log_timing is not None:
             log_timing(reason, t_match)
 
+    if len(good) < 4:
+        log_done("too-few-matches")
+        return {"matched": False, "reason": "too-few-matches", "good_matches": len(good)}
+
     src = kp1_pts[[m.queryIdx for m in good]].reshape(-1, 1, 2)
     dst = kp2_pts[[m.trainIdx for m in good]].reshape(-1, 1, 2)
 

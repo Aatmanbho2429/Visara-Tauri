@@ -1,4 +1,9 @@
 {
+ "blurred_candidate": {
+  "good_matches": 2,
+  "matched": false,
+  "reason": "too-few-matches"
+ },
  "flat_candidate": {
   "matched": false,
   "reason": "too-few-keypoints"
@@ -171,6 +176,11 @@
   "matched": false,
   "mirrored": false,
   "reason": "implausible-rotation"
+ },
+ "tiny_query_too_few_matches": {
+  "good_matches": 0,
+  "matched": false,
+  "reason": "too-few-matches"
  },
  "unrelated": {
   "good_matches": 16,

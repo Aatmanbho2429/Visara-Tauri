@@ -28,8 +28,9 @@ use crate::{
         DEEP_VERIFY_MIN_SIM_FLOOR, DEEP_VERIFY_TIME_BUDGET_MS, EXACT_HASH_MAX_DIST, MatchEngineMode, NEAR_FAMILY_MIN_SIM,
         VECTOR_STORE_PATH, VERIFY_MAX_CANDIDATES, VERIFY_TIME_BUDGET_MS,
     },
-    core::{database, search_gate, sidecar, vector_store},
+    core::{database, feature_store, search_gate, sidecar, vector_store},
     error::{Result, PictoriaError},
+    services::match_engine,
     models::response::{FailedFile, MatchRegion, SearchResult},
     utils::image_loader,
 };
@@ -129,20 +130,74 @@ pub struct ShadowInput {
     _temp: TempQueryFile,
     store: Arc<vector_store::VectorStore>,
     scope_paths: Vec<String>,
+    query_path: String,
     variants: Vec<u64>,
     descs: QueryDescriptors,
     id_map: HashMap<i64, (String, String)>,
     query_abs: String,
     legacy_results: Vec<SearchResult>,
+    // The first `SHADOW_LEGACY_VERIFY` paths the legacy pass verified, re-checked here from stored features.
+    legacy_verify_paths: Vec<String>,
+    legacy_verify_ms: f64,
+}
+
+// How many of the legacy verify set the shadow run re-verifies from stored features.
+const SHADOW_LEGACY_VERIFY: usize = 100;
+
+// What a shadow run measured, logged as one `[match_engine] shadow` line.
+#[derive(Debug, Default)]
+struct ShadowReport {
+    exact_n: usize,
+    colourway_n: usize,
+    copy_n: usize,
+    engine_only: Vec<String>,
+    legacy_only: Vec<String>,
+    agree_n: usize,
+    feature_verify_ms: f64,
+    legacy_verify_ms: f64,
+    shortlist_n: usize,
+    fallback_n: usize,
+    vocab_ready: bool,
+    query_features_ms: f64,
+    retrieve_ms: f64,
+    stage0_ms: f64,
+    fingerprints_n: usize,
+    total_ms: f64,
 }
 
 // Shadow mode: runs the engine's stages against the same query after `search_complete` and only logs what it found.
 pub fn run_shadow(input: ShadowInput) {
+    if let Some(r) = shadow_report(&input) {
+        log::info!(
+            "[match_engine] shadow exact_n={} colourway_n={} copy_n={} engine_only={:?} legacy_only={:?} agree_n={} \
+             feature_verify_ms={:.2} legacy_verify_ms={:.2} shortlist_n={} fallback_n={} vocab_ready={} \
+             query_features_ms={:.2} retrieve_ms={:.2} stage0_ms={:.2} fingerprints_n={} total_ms={:.2}",
+            r.exact_n, r.colourway_n, r.copy_n, r.engine_only, r.legacy_only, r.agree_n, r.feature_verify_ms,
+            r.legacy_verify_ms, r.shortlist_n, r.fallback_n, r.vocab_ready, r.query_features_ms, r.retrieve_ms,
+            r.stage0_ms, r.fingerprints_n, r.total_ms,
+        );
+    }
+}
+
+// Runs the shadow stages and returns what they measured; `None` when a newer search cancelled it or stage 0 failed.
+fn shadow_report(input: &ShadowInput) -> Option<ShadowReport> {
+    if SEARCH_CANCEL.load(Ordering::Relaxed) {
+        return None;
+    }
+    // Holding the gate keeps background backfills out of the way while this runs.
+    let _gate = search_gate::begin();
     let t0 = Instant::now();
-    let s0 = match stage0_fingerprint(
+    let basename = |p: &str| Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or(p).to_string();
+
+    // Stage 0 and stage 0b, exactly as primary would run them.
+    let t_stage0 = Instant::now();
+    let shortlist = match_engine::retrieve_shortlist(&input.query_path, sidecar::Priority::Index);
+    let shortlist_ids: HashSet<i64> = shortlist.hits.iter().map(|(id, _)| *id).collect();
+    let s0 = match collect_hits(
         &input.store,
         &input.scope_paths,
         &input.variants,
+        &shortlist_ids,
         &input.descs,
         &HashMap::new(),
         &input.id_map,
@@ -151,20 +206,79 @@ pub fn run_shadow(input: ShadowInput) {
         Ok(s) => s,
         Err(e) => {
             log::warn!("[match_engine] shadow stage 0 failed: {e}");
-            return;
+            return None;
         }
     };
-    let basename = |p: &str| Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or(p).to_string();
-    let exact: Vec<String> = s0.hits.iter().filter(|c| matches!(c.kind, MatchKind::Exact | MatchKind::ExactTransformed)).map(|c| basename(&c.path)).collect();
-    let colourway: Vec<String> = s0.hits.iter().filter(|c| c.kind == MatchKind::Colourway).map(|c| basename(&c.path)).collect();
-    log::info!(
-        "[match_engine] shadow exact_n={} colourway_n={} exact={exact:?} colourway={colourway:?} fingerprints_n={} legacy_n={} shadow_ms={:.2}",
-        exact.len(),
-        colourway.len(),
-        s0.fingerprints_n,
-        input.legacy_results.len(),
-        t0.elapsed().as_secs_f64() * 1000.0,
-    );
+    let stage0_ms = t_stage0.elapsed().as_secs_f64() * 1000.0;
+    let exact_n = s0.hits.iter().filter(|c| matches!(c.kind, MatchKind::Exact | MatchKind::ExactTransformed)).count();
+    let colourway_n = s0.hits.iter().filter(|c| c.kind == MatchKind::Colourway).count();
+
+    // The set both sides are compared on: the engine shortlist plus the head of the legacy verify set.
+    let mut ids: HashMap<String, i64> = HashMap::new();
+    let mut paths: Vec<String> = Vec::new();
+    for c in &s0.hits {
+        if shortlist_ids.contains(&c.m.id) && ids.insert(c.path.clone(), c.m.id).is_none() {
+            paths.push(c.path.clone());
+        }
+    }
+    let legacy_by_path: HashMap<&str, &SearchResult> = input.legacy_results.iter().map(|r| (r.path.as_str(), r)).collect();
+    let path_to_id: HashMap<&str, i64> = input.id_map.iter().map(|(id, (p, _))| (p.as_str(), *id)).collect();
+    for p in input.legacy_verify_paths.iter().take(SHADOW_LEGACY_VERIFY) {
+        if let Some(&id) = path_to_id.get(p.as_str()) {
+            if ids.insert(p.clone(), id).is_none() {
+                paths.push(p.clone());
+            }
+        }
+    }
+    let has: Vec<bool> = feature_store::with_store(|s| paths.iter().map(|p| s.contains(ids[p])).collect()).unwrap_or_default();
+    let (feat_paths, fallback_paths) = split_by_flags(&paths, &has);
+
+    // Straight, then mirrored for whatever did not match; stored features make both cheap.
+    let t_verify = Instant::now();
+    let mut matched: HashMap<String, sidecar::VerifyResult> = HashMap::new();
+    for mirror in [false, true] {
+        let todo: Vec<String> = feat_paths.iter().filter(|p| !matched.contains_key(*p)).cloned().collect();
+        for chunk in todo.chunks(VERIFY_CHUNK) {
+            if SEARCH_CANCEL.load(Ordering::Relaxed) {
+                return None;
+            }
+            let stored = read_stored_features(chunk, &ids);
+            match sidecar::verify_features(&input.query_path, &stored, mirror, sidecar::Priority::Index) {
+                Ok(rows) => matched.extend(rows.into_iter().filter(|(_, r)| r.matched)),
+                Err(e) => log::warn!("[match_engine] shadow verify chunk failed: {e}"),
+            }
+        }
+    }
+    let feature_verify_ms = t_verify.elapsed().as_secs_f64() * 1000.0;
+
+    let copy: HashSet<&str> =
+        matched.iter().filter(|(_, r)| match_tier::is_copy(r.matched, r.inliers, r.inlier_ratio)).map(|(p, _)| p.as_str()).collect();
+    let in_set: HashSet<&str> = feat_paths.iter().map(|p| p.as_str()).collect();
+    let legacy_verified: HashSet<&str> =
+        in_set.iter().copied().filter(|p| legacy_by_path.get(p).is_some_and(|r| r.verified)).collect();
+    let engine_matched: HashSet<&str> = matched.keys().map(|p| p.as_str()).collect();
+    let mut engine_only: Vec<String> = engine_matched.difference(&legacy_verified).map(|p| basename(p)).collect();
+    let mut legacy_only: Vec<String> = legacy_verified.difference(&engine_matched).map(|p| basename(p)).collect();
+    engine_only.sort();
+    legacy_only.sort();
+    Some(ShadowReport {
+        exact_n,
+        colourway_n,
+        copy_n: copy.len(),
+        engine_only,
+        legacy_only,
+        agree_n: engine_matched.intersection(&legacy_verified).count(),
+        feature_verify_ms,
+        legacy_verify_ms: input.legacy_verify_ms,
+        shortlist_n: shortlist.hits.len(),
+        fallback_n: fallback_paths.len(),
+        vocab_ready: shortlist.vocab_ready,
+        query_features_ms: shortlist.query_features_ms,
+        retrieve_ms: shortlist.retrieve_ms,
+        stage0_ms,
+        fingerprints_n: s0.fingerprints_n,
+        total_ms: t0.elapsed().as_secs_f64() * 1000.0,
+    })
 }
 
 // What one `verify_pass` run learned, beyond the raw sidecar responses:
@@ -217,6 +331,62 @@ fn verify_limits(deep_min_sim: f32, full_db: bool) -> VerifyLimits {
     }
 }
 
+// How a verify pass checks each chunk: the sidecar decodes every candidate (`/verify`), or matches features stored at index time (`/verify_features`).
+#[derive(Clone, Copy)]
+enum VerifyMode<'a> {
+    Decode,
+    // `ids` maps a candidate path to the vector id its features are stored under.
+    Features { ids: &'a HashMap<String, i64> },
+}
+
+// Reads the stored features for a chunk of paths; a path whose record has gone missing is left out and reads as unverified.
+fn read_stored_features(chunk: &[String], ids: &HashMap<String, i64>) -> Vec<(String, crate::core::feature_store::Features)> {
+    crate::core::feature_store::with_store(|s| {
+        chunk.iter().filter_map(|p| ids.get(p).and_then(|id| s.read(*id)).map(|f| (p.clone(), f))).collect()
+    })
+    .unwrap_or_default()
+}
+
+// Folds a second pass's outcome into the first, as if it were one pass over both sets.
+fn merge_passes(mut a: VerifyPassResult, b: VerifyPassResult) -> VerifyPassResult {
+    a.by_path.extend(b.by_path);
+    a.attempted.extend(b.attempted);
+    a.any_chunk_failed |= b.any_chunk_failed;
+    a.budget_exhausted |= b.budget_exhausted;
+    a.cancelled |= b.cancelled;
+    a.done += b.done;
+    a.failed_n += b.failed_n;
+    a
+}
+
+// One orientation over both candidate groups: stored-feature candidates first, then the decode fallback with whatever budget is left.
+#[allow(clippy::too_many_arguments)]
+fn verify_sets(
+    query_path: &str,
+    feat_paths: &[String],
+    fallback_paths: &[String],
+    ids: &HashMap<String, i64>,
+    mirror: bool,
+    budget: Option<Duration>,
+    cancel: &AtomicBool,
+    mut on_chunk: impl FnMut(usize, usize, bool, &HashMap<String, sidecar::VerifyResult>),
+) -> VerifyPassResult {
+    let total = feat_paths.len() + fallback_paths.len();
+    let started = Instant::now();
+    let first = verify_pass(query_path, feat_paths, mirror, VerifyMode::Features { ids }, budget, cancel, |d, _, m, c| {
+        on_chunk(d, total, m, c)
+    });
+    if first.cancelled || first.budget_exhausted || fallback_paths.is_empty() {
+        return first;
+    }
+    let base = first.done;
+    let left = budget.map(|b| b.saturating_sub(started.elapsed()));
+    let second = verify_pass(query_path, fallback_paths, mirror, VerifyMode::Decode, left, cancel, |d, _, m, c| {
+        on_chunk(base + d, total, m, c)
+    });
+    merge_passes(first, second)
+}
+
 // Run `paths` through the sidecar in chunks, stopping once `budget` elapses
 // — whatever has been proven by then is what's returned, and the remainder
 // is left for the caller to mark `"unchecked"`. `on_chunk` fires once before
@@ -233,6 +403,7 @@ fn verify_pass(
     query_path: &str,
     paths: &[String],
     mirror: bool,
+    mode: VerifyMode,
     // `None` means no deadline (Full DB); `Instant + Duration::MAX` would panic, so it can't be a huge value.
     budget: Option<Duration>,
     cancel: &AtomicBool,
@@ -264,7 +435,14 @@ fn verify_pass(
             break;
         }
         let mut chunk_out: HashMap<String, sidecar::VerifyResult> = HashMap::with_capacity(chunk.len());
-        match sidecar::verify(query_path, chunk, mirror, sidecar::Priority::Search) {
+        let called = match mode {
+            VerifyMode::Decode => sidecar::verify(query_path, chunk, mirror, sidecar::Priority::Search),
+            VerifyMode::Features { ids } => {
+                let stored = read_stored_features(chunk, ids);
+                sidecar::verify_features(query_path, &stored, mirror, sidecar::Priority::Search)
+            }
+        };
+        match called {
             Ok(results) => {
                 for (path, result) in results {
                     attempted.insert(path.clone());
@@ -394,10 +572,12 @@ fn tier_a_count(sims: &[f32]) -> usize {
     sims.partition_point(|&s| s >= NEAR_FAMILY_MIN_SIM)
 }
 
-// Applies one deep-tier chunk: only rows that verified are built and appended to `results`; returns their indices.
-fn apply_deep_chunk(
+// Applies a chunk for "late" candidates (deep band and shortlist-only extras): only rows that verified are built, and each
+// joins `results` once (`pos` remembers where) so a later pass updates it in place; returns the indices that changed.
+fn apply_late_chunk(
     results: &mut Vec<SearchResult>,
-    path_index: &HashMap<String, usize>,
+    late_index: &HashMap<String, usize>,
+    pos: &mut HashMap<String, usize>,
     candidates: &[Candidate],
     chunk_out: &HashMap<String, sidecar::VerifyResult>,
 ) -> Vec<usize> {
@@ -406,9 +586,18 @@ fn apply_deep_chunk(
         if !v.matched {
             continue;
         }
-        if let Some(&i) = path_index.get(path) {
-            results.push(build_result(&candidates[i], Some(v), "verified"));
-            updated.push(results.len() - 1);
+        let Some(&i) = late_index.get(path) else { continue };
+        let row = build_result(&candidates[i], Some(v), "verified");
+        match pos.get(path) {
+            Some(&r) => {
+                results[r] = row;
+                updated.push(r);
+            }
+            None => {
+                results.push(row);
+                pos.insert(path.clone(), results.len() - 1);
+                updated.push(results.len() - 1);
+            }
         }
     }
     updated
@@ -449,55 +638,70 @@ struct QueryDescriptors {
     color: Vec<f32>,
 }
 
-// What stage 0 (pHash) found for one query.
+// What stages 0 and 0b found for one query.
 struct Stage0 {
     hits: Vec<Candidate>,
     fingerprints_n: usize,
 }
 
-// Stage 0: Hamming distance from each query variant to every stored fingerprint in scope; files within
-// `EXACT_HASH_MAX_DIST` are classified by colour and returned as candidates. `known` holds stage-1 scores to reuse.
-fn stage0_fingerprint(
+// Splits `paths` by a parallel flag list into (flagged, unflagged), keeping order.
+fn split_by_flags(paths: &[String], flags: &[bool]) -> (Vec<String>, Vec<String>) {
+    let mut yes = Vec::new();
+    let mut no = Vec::new();
+    for (i, p) in paths.iter().enumerate() {
+        if flags.get(i).copied().unwrap_or(false) { yes.push(p.clone()) } else { no.push(p.clone()) }
+    }
+    (yes, no)
+}
+
+// Stage 0 + 0b candidates: files within `EXACT_HASH_MAX_DIST` of any query variant (classified by colour) plus the
+// engine shortlist (verdict `None`), each scored against the query. `known` holds stage-1 scores to reuse.
+#[allow(clippy::too_many_arguments)]
+fn collect_hits(
     store: &vector_store::VectorStore,
     scope_paths: &[String],
     variants: &[u64],
+    shortlist: &HashSet<i64>,
     q: &QueryDescriptors,
     known: &HashMap<i64, vector_store::Match>,
     id_map: &HashMap<i64, (String, String)>,
     query_abs: &str,
 ) -> Result<Stage0> {
-    let con = database::open()?;
     let mut best: HashMap<i64, (u32, usize)> = HashMap::new();
     let mut fingerprints_n = 0usize;
-    for folder in scope_paths {
-        for (id, hash) in database::fingerprints_in_folder(&con, folder)? {
-            fingerprints_n += 1;
-            if let Some((d, v)) = match_tier::min_hamming(variants, hash) {
-                if d <= EXACT_HASH_MAX_DIST {
-                    best.insert(id, (d, v));
+    if !variants.is_empty() {
+        let con = database::open()?;
+        for folder in scope_paths {
+            for (id, hash) in database::fingerprints_in_folder(&con, folder)? {
+                fingerprints_n += 1;
+                if let Some((d, v)) = match_tier::min_hamming(variants, hash) {
+                    if d <= EXACT_HASH_MAX_DIST {
+                        best.insert(id, (d, v));
+                    }
                 }
             }
         }
     }
-    let missing: Vec<i64> = best.keys().copied().filter(|id| !known.contains_key(id)).collect();
+    let wanted: HashSet<i64> = best.keys().copied().chain(shortlist.iter().copied()).collect();
+    let missing: Vec<i64> = wanted.iter().copied().filter(|id| !known.contains_key(id)).collect();
     let mut scored: HashMap<i64, vector_store::Match> = store
         .score_ids(&missing, &q.embed, &q.rose, &q.gram, &q.color)
         .into_iter()
         .map(|m| (m.id, m))
         .collect();
-    scored.extend(known.iter().filter(|(id, _)| best.contains_key(id)).map(|(id, m)| (*id, *m)));
+    scored.extend(known.iter().filter(|(id, _)| wanted.contains(id)).map(|(id, m)| (*id, *m)));
 
     let mut hits = Vec::new();
-    for (id, (dist, variant)) in best {
+    for id in wanted {
         let (Some(m), Some((path, folder))) = (scored.get(&id), id_map.get(&id)) else { continue };
         if path == query_abs || !Path::new(path).exists() {
             continue;
         }
-        let kind = match_tier::classify_hash(dist, variant, m.color_sim);
-        if kind == MatchKind::None {
-            continue;
-        }
-        hits.push(Candidate { m: *m, path: path.clone(), folder: folder.clone(), kind, hash_distance: Some(dist) });
+        let (kind, hash_distance) = match best.get(&id) {
+            Some(&(dist, variant)) => (match_tier::classify_hash(dist, variant, m.color_sim), Some(dist)),
+            None => (MatchKind::None, None),
+        };
+        hits.push(Candidate { m: *m, path: path.clone(), folder: folder.clone(), kind, hash_distance });
     }
     Ok(Stage0 { hits, fingerprints_n })
 }
@@ -671,7 +875,7 @@ pub fn execute(
     let tier_a_n = tier_a_count(&sims);
     let mut deep_band = tier_a.split_off(tier_a_n);
 
-    // ── Stage 0: pHash fingerprint tier (primary computes it here; shadow after the results ship) ─────
+    // ── Stage 0 (pHash) and 0b (engine retrieval): primary computes them here; shadow after the results ship ─────
     let t_stage0 = Instant::now();
     let query_descs = QueryDescriptors {
         embed: query_embed.clone(),
@@ -681,9 +885,14 @@ pub fn execute(
     };
     let variants_ok = query_phash.len() == 8;
     let mut fingerprints_n = 0usize;
-    let extras: Vec<Candidate> = if primary && variants_ok {
+    let mut engine = match_engine::Shortlist { hits: Vec::new(), query_features_ms: 0.0, retrieve_ms: 0.0, vocab_ready: false };
+    let mut shortlist_ids: HashSet<i64> = HashSet::new();
+    let extras: Vec<Candidate> = if primary {
+        engine = match_engine::retrieve_shortlist(&query_sidecar_path, sidecar::Priority::Search);
+        shortlist_ids = engine.hits.iter().map(|(id, _)| *id).collect();
         let known: HashMap<i64, vector_store::Match> = tier_a.iter().chain(deep_band.iter()).map(|c| (c.m.id, c.m)).collect();
-        match stage0_fingerprint(&store, &scope_paths, &query_phash, &query_descs, &known, &id_map, &query_abs) {
+        let variants: &[u64] = if variants_ok { &query_phash } else { &[] };
+        match collect_hits(&store, &scope_paths, variants, &shortlist_ids, &query_descs, &known, &id_map, &query_abs) {
             Ok(s0) => {
                 fingerprints_n = s0.fingerprints_n;
                 merge_extras(&mut tier_a, &mut deep_band, s0.hits)
@@ -698,27 +907,55 @@ pub fn execute(
     };
     let stage0_ms = t_stage0.elapsed().as_secs_f64() * 1000.0;
 
-    // Final order: tier A, then the fingerprint extras (decided rows, never verified here), then the deep band.
-    let extras_n = extras.len();
-    let head_n = tier_a_n + extras_n;
+    // Final order: tier A, fingerprint extras (decided, shown at once), then the "late" rows — shortlist-only extras
+    // and the deep band — which join the results only once they verify.
+    let (hash_extras, sl_only): (Vec<Candidate>, Vec<Candidate>) = extras.into_iter().partition(|c| c.kind != MatchKind::None);
+    let head_n = tier_a_n + hash_extras.len();
+    let late_start = head_n + sl_only.len();
     let mut candidates = tier_a;
-    candidates.extend(extras);
+    candidates.extend(hash_extras);
+    candidates.extend(sl_only);
     candidates.extend(deep_band);
 
     let deep_on = limits.deep_on;
     let near_family_n = tier_a_n;
-    let verify_pool_n = near_family_n.min(limits.tier_a_max);
-    let verify_paths: Vec<String> = candidates[..verify_pool_n].iter().map(|c| c.path.clone()).collect();
+    // The verify set is the capped tier-A prefix plus every engine-shortlist hit that fell outside it.
+    let tier_a_verify_n = near_family_n.min(limits.tier_a_max);
+    let verify_paths: Vec<String> = candidates[..late_start]
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| *i < tier_a_verify_n || shortlist_ids.contains(&c.m.id))
+        .map(|(_, c)| c.path.clone())
+        .collect();
+    let verify_pool_n = verify_paths.len();
+    // Primary verifies from stored features where it has them; every other mode decodes as before.
+    let path_ids: HashMap<String, i64> = candidates.iter().map(|c| (c.path.clone(), c.m.id)).collect();
+    let split_by_store = |paths: &[String]| -> (Vec<String>, Vec<String>) {
+        if !primary {
+            return (Vec::new(), paths.to_vec());
+        }
+        let has = feature_store::with_store(|s| paths.iter().map(|p| path_ids.get(p).is_some_and(|id| s.contains(*id))).collect::<Vec<bool>>())
+            .unwrap_or_default();
+        split_by_flags(paths, &has)
+    };
+    let (feat_paths, fallback_paths) = split_by_store(&verify_paths);
 
-    let deep_available_n = candidates.len() - head_n;
+    let deep_available_n = candidates.len() - late_start;
     let deep_pool_n = if deep_on { deep_available_n.min(limits.deep_max) } else { 0 };
     let deep_paths: Vec<String> =
-        candidates[head_n..head_n + deep_pool_n].iter().map(|c| c.path.clone()).collect();
+        candidates[late_start..late_start + deep_pool_n].iter().map(|c| c.path.clone()).collect();
+    let (deep_feat_paths, deep_fallback_paths) = split_by_store(&deep_paths);
+    let feature_verify_n = feat_paths.len() + deep_feat_paths.len();
+    let fallback_verify_n = fallback_paths.len() + deep_fallback_paths.len();
 
     let path_index: HashMap<String, usize> =
         candidates[..head_n].iter().enumerate().map(|(i, c)| (c.path.clone(), i)).collect();
-    let deep_index: HashMap<String, usize> =
-        (head_n..head_n + deep_pool_n).map(|i| (candidates[i].path.clone(), i)).collect();
+    // Late rows (shortlist-only extras, then the verified part of the deep pool) and where each landed in `results`.
+    let late_index: HashMap<String, usize> = (head_n..late_start)
+        .chain(late_start..late_start + deep_pool_n)
+        .map(|i| (candidates[i].path.clone(), i))
+        .collect();
+    let mut late_pos: HashMap<String, usize> = HashMap::new();
 
     // The initial set: every Tier A member plus any fingerprint extras, unverified. This is what lets the
     // UI paint a ranked grid before SIFT/RANSAC has looked at a single candidate. Tier B rows join only once verified.
@@ -732,8 +969,9 @@ pub fn execute(
 
     let budget = limits.tier_a_budget;
     let t_verify = Instant::now();
-    let straight = verify_pass(&query_sidecar_path, &verify_paths, false, budget, &SEARCH_CANCEL, |done, _, _, chunk_out| {
-        let idx = apply_chunk(&mut results, &path_index, &candidates, chunk_out, false);
+    let straight = verify_sets(&query_sidecar_path, &feat_paths, &fallback_paths, &path_ids, false, budget, &SEARCH_CANCEL, |done, _, _, chunk_out| {
+        let mut idx = apply_chunk(&mut results, &path_index, &candidates, chunk_out, false);
+        idx.extend(apply_late_chunk(&mut results, &late_index, &mut late_pos, &candidates, chunk_out));
         let updated = ranked_updates(&mut results, &idx, rank_cmp);
         on_verify_progress(VerifyProgress { done, total, tier: "near", updated: &updated });
     });
@@ -769,8 +1007,9 @@ pub fn execute(
         );
         total += verify_pool_n;
         let base = done_so_far;
-        let mirrored = verify_pass(&query_sidecar_path, &verify_paths, true, budget, &SEARCH_CANCEL, |done, _, _, chunk_out| {
-            let idx = apply_chunk(&mut results, &path_index, &candidates, chunk_out, true);
+        let mirrored = verify_sets(&query_sidecar_path, &feat_paths, &fallback_paths, &path_ids, true, budget, &SEARCH_CANCEL, |done, _, _, chunk_out| {
+            let mut idx = apply_chunk(&mut results, &path_index, &candidates, chunk_out, true);
+            idx.extend(apply_late_chunk(&mut results, &late_index, &mut late_pos, &candidates, chunk_out));
             let updated = ranked_updates(&mut results, &idx, rank_cmp);
             mirror_hits += updated.len();
             on_verify_progress(VerifyProgress { done: base + done, total, tier: "mirrored", updated: &updated });
@@ -788,14 +1027,16 @@ pub fn execute(
     let mut deep_stopped = "none";
     if deep_on && deep_pool_n > 0 && !cancelled {
         let base = done_so_far;
-        let deep = verify_pass(
+        let deep = verify_sets(
             &query_sidecar_path,
-            &deep_paths,
+            &deep_feat_paths,
+            &deep_fallback_paths,
+            &path_ids,
             false,
             limits.deep_budget,
             &SEARCH_CANCEL,
             |done, _, _, chunk_out| {
-                let idx = apply_deep_chunk(&mut results, &deep_index, &candidates, chunk_out);
+                let idx = apply_late_chunk(&mut results, &late_index, &mut late_pos, &candidates, chunk_out);
                 let updated = ranked_updates(&mut results, &idx, rank_cmp);
                 on_verify_progress(VerifyProgress { done: base + done, total, tier: "deep", updated: &updated });
             },
@@ -849,6 +1090,7 @@ pub fn execute(
 
     let exact_n = results.iter().filter(|r| matches!(r.match_kind.as_str(), "exact" | "exactTransformed")).count();
     let colourway_n = results.iter().filter(|r| r.match_kind == "colourway").count();
+    let copy_n = results.iter().filter(|r| r.match_kind == "copy").count();
     log::info!(
         "[timing] search TOTAL query={:?} scope_folders={} candidates_indexed={} \
          near_family_n={near_family_n} verify_pool_n={verify_pool_n} verify_attempted_n={} \
@@ -860,7 +1102,9 @@ pub fn execute(
          deep_pool_n={deep_pool_n} deep_attempted_n={deep_attempted_n} deep_verified_n={deep_verified_n} \
          deep_ms={deep_ms:.2} deep_stopped={deep_stopped} search_cancelled={cancelled} \
          assemble_ms={assemble_ms:.2} total_ms={:.2} full_db={full_db} deep_failed_n={deep_failed_n} \
-         engine_mode={mode:?} exact_n={exact_n} colourway_n={colourway_n} fingerprints_n={fingerprints_n} stage0_ms={stage0_ms:.2}",
+         engine_mode={mode:?} exact_n={exact_n} colourway_n={colourway_n} copy_n={copy_n} fingerprints_n={fingerprints_n} \
+         stage0_ms={stage0_ms:.2} engine_shortlist_n={} engine_retrieve_ms={:.2} query_features_ms={:.2} \
+         feature_verify_n={feature_verify_n} fallback_verify_n={fallback_verify_n} vocab_ready={}",
         query_sidecar_path.rsplit(['/', '\\']).next().unwrap_or(&query_sidecar_path),
         scope_paths.len(),
         id_map.len(),
@@ -868,18 +1112,34 @@ pub fn execute(
         straight.budget_exhausted,
         results.len(),
         t_total.elapsed().as_secs_f64() * 1000.0,
+        engine.hits.len(),
+        engine.retrieve_ms,
+        engine.query_features_ms,
+        engine.vocab_ready,
+    );
+    log::info!(
+        "[rank] top5 {}",
+        results
+            .iter()
+            .take(5)
+            .map(|r| format!("({} {} inliers={} sim={:.1})", Path::new(&r.path).file_name().and_then(|n| n.to_str()).unwrap_or(&r.path), r.match_kind, r.match_points, r.similarity))
+            .collect::<Vec<_>>()
+            .join(" "),
     );
 
     // Shadow mode: hand back what the post-complete engine run needs; the temp query file stays alive with it.
-    let shadow = (mode == MatchEngineMode::Shadow && variants_ok).then(|| ShadowInput {
+    let shadow = (mode == MatchEngineMode::Shadow).then(|| ShadowInput {
         _temp: temp_guard,
         store,
         scope_paths: scope_paths.clone(),
-        variants: query_phash,
+        query_path: query_sidecar_path.clone(),
+        variants: if variants_ok { query_phash } else { Vec::new() },
         descs: query_descs,
         id_map,
         query_abs,
         legacy_results: results.clone(),
+        legacy_verify_paths: verify_paths.iter().take(SHADOW_LEGACY_VERIFY).cloned().collect(),
+        legacy_verify_ms: verify_ms,
     });
     Ok(SearchOutput { results, failed_files: Vec::new(), shadow })
 }
@@ -1010,7 +1270,7 @@ mod tests {
         // a real budget cutoff does, just via a different cause. Either way
         // `attempted` must stay empty for paths that were never resolved.
         let paths = vec!["a".to_string(), "b".to_string()];
-        let result = verify_pass("nonexistent-query.png", &paths, false, Some(Duration::from_millis(0)), &AtomicBool::new(false), |_, _, _, _| {});
+        let result = verify_pass("nonexistent-query.png", &paths, false, VerifyMode::Decode, Some(Duration::from_millis(0)), &AtomicBool::new(false), |_, _, _, _| {});
         assert!(result.budget_exhausted, "zero-duration budget must trip immediately");
         assert!(result.attempted.is_empty());
     }
@@ -1020,7 +1280,7 @@ mod tests {
     fn verify_pass_returns_early_when_cancelled() {
         let paths = vec!["a".to_string(), "b".to_string()];
         let cancel = AtomicBool::new(true);
-        let result = verify_pass("nonexistent-query.png", &paths, false, Some(Duration::from_secs(60)), &cancel, |_, _, _, _| {});
+        let result = verify_pass("nonexistent-query.png", &paths, false, VerifyMode::Decode, Some(Duration::from_secs(60)), &cancel, |_, _, _, _| {});
         assert!(result.cancelled);
         assert!(!result.budget_exhausted);
         assert!(result.attempted.is_empty());
@@ -1031,7 +1291,7 @@ mod tests {
     #[test]
     fn verify_pass_without_a_deadline_reaches_every_chunk() {
         let paths = vec!["a".to_string(), "b".to_string()];
-        let result = verify_pass("nonexistent-query.png", &paths, false, None, &AtomicBool::new(false), |_, _, _, _| {});
+        let result = verify_pass("nonexistent-query.png", &paths, false, VerifyMode::Decode, None, &AtomicBool::new(false), |_, _, _, _| {});
         assert!(!result.budget_exhausted);
         assert_eq!(result.done, paths.len());
         // A live dev sidecar on the port answers instead of failing, so only the bookkeeping is asserted.
@@ -1136,5 +1396,151 @@ mod tests {
         let v = build_result(&cand(8, 0.9, MatchKind::None, None), Some(&strong), "verified");
         let expected = if match_engine_mode() == MatchEngineMode::Primary { "copy" } else { "none" };
         assert_eq!(v.match_kind, expected);
+    }
+
+    // A late candidate joins the results only when it verifies, once, and is updated in place on a later pass.
+    #[test]
+    fn apply_late_chunk_adds_only_verified_rows_once() {
+        let candidates = vec![cand(1, 0.5, MatchKind::None, None), cand(2, 0.4, MatchKind::None, None)];
+        let late_index: HashMap<String, usize> = candidates.iter().enumerate().map(|(i, c)| (c.path.clone(), i)).collect();
+        let (mut results, mut pos) = (Vec::new(), HashMap::new());
+        let hit = |m: bool, inl: u32| sidecar::VerifyResult { matched: m, inliers: inl, inlier_ratio: 0.9, ..Default::default() };
+        let mut out = HashMap::new();
+        out.insert("/lib/1.png".to_string(), hit(true, 30));
+        out.insert("/lib/2.png".to_string(), hit(false, 0));
+        assert_eq!(apply_late_chunk(&mut results, &late_index, &mut pos, &candidates, &out).len(), 1);
+        assert_eq!(results.len(), 1);
+        out.insert("/lib/1.png".to_string(), hit(true, 80));
+        apply_late_chunk(&mut results, &late_index, &mut pos, &candidates, &out);
+        assert_eq!((results.len(), results[0].match_points), (1, 80));
+    }
+
+    // Paths split by their flag keep their order; a missing flag counts as "no features".
+    #[test]
+    fn split_by_flags_partitions_in_order() {
+        let paths: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        let (yes, no) = split_by_flags(&paths, &[true, false, true]);
+        assert_eq!(yes, vec!["a", "c"]);
+        assert_eq!(no, vec!["b", "d"]);
+        let (yes, no) = split_by_flags(&paths, &[]);
+        assert!(yes.is_empty() && no.len() == 4);
+    }
+
+    // Two passes over disjoint sets fold into one outcome: results unioned, counts summed, flags OR-ed.
+    #[test]
+    fn merge_passes_combines_outcomes() {
+        let mk = |p: &str, done: usize, failed: bool| {
+            let mut by_path = HashMap::new();
+            by_path.insert(p.to_string(), sidecar::VerifyResult::default());
+            VerifyPassResult {
+                by_path,
+                attempted: [p.to_string()].into_iter().collect(),
+                any_chunk_failed: failed,
+                budget_exhausted: false,
+                cancelled: false,
+                done,
+                failed_n: if failed { done } else { 0 },
+            }
+        };
+        let m = merge_passes(mk("a", 3, false), mk("b", 2, true));
+        assert_eq!((m.by_path.len(), m.attempted.len(), m.done, m.failed_n), (2, 2, 5, 2));
+        assert!(m.any_chunk_failed && !m.cancelled);
+    }
+
+    // With nothing to verify from features, `verify_sets` still reports every fallback path through one decode pass.
+    #[test]
+    fn verify_sets_runs_the_fallback_group() {
+        let paths = vec!["a".to_string(), "b".to_string()];
+        let r = verify_sets("nonexistent.png", &[], &paths, &HashMap::new(), false, None, &AtomicBool::new(false), |_, _, _, _| {});
+        assert_eq!(r.done, 2);
+        assert!(!r.cancelled && !r.budget_exhausted);
+    }
+
+    // End to end against a live sidecar (run alone with `-- --ignored`): the shadow stages on a rotated copy of img_007
+    // must find it by pHash and by engine retrieval, verify it from stored features, and report it as engine-only.
+    // Needs PICTORIA_E2E_LIB and PICTORIA_E2E_QUERIES (see the match_engine e2e test).
+    #[test]
+    #[ignore]
+    fn e2e_shadow_run_reports_engine_only_copy() {
+        use crate::config::{MATCH_VOCAB_ITERS, MATCH_VOCAB_SAMPLE};
+        let home = std::env::temp_dir().join(format!("pictoria_e2e_shadow_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+        let lib = std::env::var("PICTORIA_E2E_LIB").expect("PICTORIA_E2E_LIB");
+        let queries = std::env::var("PICTORIA_E2E_QUERIES").expect("PICTORIA_E2E_QUERIES");
+        let mut files: Vec<String> =
+            std::fs::read_dir(&lib).unwrap().map(|e| e.unwrap().path().to_string_lossy().to_string()).collect();
+        files.sort();
+        let target = files.iter().position(|p| p.ends_with("img_007.png")).unwrap();
+
+        // Library rows, fingerprints, features, vectors.
+        let con = database::open().unwrap();
+        let mut store = vector_store::VectorStore::new();
+        let mut id_map = HashMap::new();
+        let unit = |seed: f32, n: usize| -> Vec<f32> {
+            let v: Vec<f32> = (0..n).map(|i| ((i as f32 + 1.0) * seed).sin()).collect();
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            v.into_iter().map(|x| x / norm).collect()
+        };
+        let embed_total = crate::config::EMBED_DIM * crate::config::EMBED_ZOOM_LEVELS;
+        let gram_total = crate::config::GRAM_ZOOM_LEVELS * crate::config::GRAM_DIM_PER_ZOOM;
+        for (i, path) in files.iter().enumerate() {
+            database::insert_file(&con, path, &format!("h{i}"), i as i64, 0.0).unwrap();
+            let fp = sidecar::fingerprint(std::slice::from_ref(path), sidecar::Priority::Index).unwrap();
+            let file_id = database::file_id_by_path(&con, path).unwrap().unwrap();
+            database::upsert_fingerprint(&con, file_id, fp[0].1.as_ref().unwrap().first().copied()).unwrap();
+            let f = sidecar::extract_features(std::slice::from_ref(path), false, sidecar::Priority::Index).unwrap().remove(0).1.unwrap();
+            match_engine::index_file_features(i as i64, Some(&f), None);
+            store
+                .upsert(i as i64, &unit(0.1 + i as f32, embed_total), &unit(0.2, crate::config::ROSE_DIM), &unit(0.3, gram_total), &unit(0.4, crate::core::color::COLOR_DIM))
+                .unwrap();
+            id_map.insert(i as i64, (path.clone(), lib.clone()));
+        }
+        let sample = feature_store::with_store(|s| s.sample_descriptors(MATCH_VOCAB_SAMPLE)).unwrap();
+        let vocab = sidecar::train_vocab(&sample, crate::config::MATCH_VOCAB_K, MATCH_VOCAB_ITERS).unwrap();
+        feature_store::with_store(|s| s.save_vocab(&vocab)).unwrap().unwrap();
+        match_engine::assign_words();
+
+        let query = format!("{queries}/rot90.png");
+        let variants = sidecar::fingerprint(&[query.clone()], sidecar::Priority::Index).unwrap().remove(0).1.unwrap();
+        assert_eq!(variants.len(), 8);
+        let row = |p: &str, verified: bool| SearchResult {
+            rank: 1,
+            path: p.to_string(),
+            name: p.to_string(),
+            similarity: 50.0,
+            pattern_match: 50.0,
+            color_match: 0.0,
+            folder: lib.clone(),
+            verified,
+            verification: if verified { "verified" } else { "unchecked" }.into(),
+            partial: false,
+            match_region: MatchRegion { x: 0.0, y: 0.0, w: 1.0, h: 1.0 },
+            match_points: 0,
+            mirrored: false,
+            match_kind: "none".into(),
+            hash_distance: None,
+        };
+        let input = ShadowInput {
+            _temp: TempQueryFile(None),
+            store: Arc::new(store),
+            scope_paths: vec![lib.clone()],
+            query_path: query.clone(),
+            variants,
+            descs: QueryDescriptors { embed: unit(0.5, embed_total), rose: unit(0.2, crate::config::ROSE_DIM), gram: unit(0.3, gram_total), color: unit(0.4, crate::core::color::COLOR_DIM) },
+            id_map,
+            query_abs: query,
+            // Legacy missed the copy: only an unrelated file counts as verified.
+            legacy_results: vec![row(&files[3], true), row(&files[target], false)],
+            legacy_verify_paths: vec![files[3].clone()],
+            legacy_verify_ms: 1.0,
+        };
+        let r = shadow_report(&input).expect("shadow report");
+        println!("shadow report: {r:?}");
+        assert_eq!(r.exact_n, 1, "the rotated copy is one exact (transformed) hit by pHash");
+        assert!(r.vocab_ready && r.shortlist_n > 0);
+        assert!(r.engine_only.iter().any(|n| n == "img_007.png"), "engine_only should name img_007: {:?}", r.engine_only);
+        assert!(r.copy_n >= 1 && r.fallback_n == 0);
     }
 }

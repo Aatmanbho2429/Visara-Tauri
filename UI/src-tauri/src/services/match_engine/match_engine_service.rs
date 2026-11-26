@@ -2,7 +2,7 @@
 
 use crate::{
     config::{
-        BACKFILL_STARTUP_WAIT_SECS, MATCH_BACKFILL_CHUNK, MATCH_VOCAB_ITERS, MATCH_VOCAB_K, MATCH_VOCAB_MIN_IMAGES,
+        BACKFILL_STARTUP_WAIT_SECS, MATCH_BACKFILL_CHUNK, MATCH_SHORTLIST, MATCH_VOCAB_ITERS, MATCH_VOCAB_K, MATCH_VOCAB_MIN_IMAGES,
         MATCH_VOCAB_SAMPLE, MATCH_WORD_ASSIGN_CHUNK, SIDECAR_HEALTH_POLL_MS,
     },
     core::{
@@ -229,6 +229,61 @@ pub fn assign_words() {
     log::info!("[timing] word assign: files={assigned} total_ms={:.2}", t0.elapsed().as_secs_f64() * 1000.0);
 }
 
+// What stage 0b found for one query.
+pub struct Shortlist {
+    // (vector id, score), best first, at most `MATCH_SHORTLIST`.
+    pub hits: Vec<(i64, f32)>,
+    // Time spent extracting the query's features (straight and mirrored).
+    pub query_features_ms: f64,
+    // Time quantising the query and scanning the inverted index.
+    pub retrieve_ms: f64,
+    // False while no vocabulary exists yet, so the stage was skipped.
+    pub vocab_ready: bool,
+}
+
+// Stage 0b: extracts the query's features straight and mirrored, quantises both and returns the best `MATCH_SHORTLIST` files by visual-word score.
+pub fn retrieve_shortlist(query_path: &str, priority: sidecar::Priority) -> Shortlist {
+    let mut out = Shortlist { hits: Vec::new(), query_features_ms: 0.0, retrieve_ms: 0.0, vocab_ready: false };
+    let Some(vocab) = current_vocab() else { return out };
+    out.vocab_ready = true;
+
+    let t_feat = Instant::now();
+    let paths = [query_path.to_string()];
+    let mut variants: Vec<Features> = Vec::new();
+    for mirror in [false, true] {
+        match sidecar::extract_features(&paths, mirror, priority) {
+            Ok(rows) => variants.extend(rows.into_iter().filter_map(|(_, r)| r.ok())),
+            Err(e) => log::warn!("[match_engine] query feature extraction failed (mirror={mirror}): {e}"),
+        }
+    }
+    out.query_features_ms = t_feat.elapsed().as_secs_f64() * 1000.0;
+    if variants.is_empty() {
+        return out;
+    }
+
+    let t_ret = Instant::now();
+    let index = match_index::resident(|| {
+        let words = feature_store::with_store(|s| s.words_snapshot()).unwrap_or_default();
+        match_index::MatchIndex::build(&words)
+    });
+    let mut best: HashMap<i64, f32> = HashMap::new();
+    for f in &variants {
+        let words = match_index::quantize(&f.desc, &vocab);
+        for (id, score) in index.query(&words, MATCH_SHORTLIST) {
+            let e = best.entry(id).or_insert(score);
+            if score > *e {
+                *e = score;
+            }
+        }
+    }
+    let mut hits: Vec<(i64, f32)> = best.into_iter().collect();
+    hits.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    hits.truncate(MATCH_SHORTLIST);
+    out.hits = hits;
+    out.retrieve_ms = t_ret.elapsed().as_secs_f64() * 1000.0;
+    out
+}
+
 // Runs every backfill for one folder (blocking); call from a spawned thread.
 pub fn backfill_folder(folder: &str) {
     let _guard = BACKFILL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -265,4 +320,75 @@ pub fn spawn_startup_backfill() {
             backfill_folder(&folder);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{core::search_gate, services::search::match_tier};
+
+    // End to end against a live sidecar (run with `-- --ignored`): index a folder of images, train a vocabulary,
+    // then check that transformed copies of one image retrieve it first and verify as copies from stored features.
+    // Needs PICTORIA_E2E_LIB (library dir) and PICTORIA_E2E_QUERIES (dir with queries of img_007) and a sidecar on the configured port.
+    #[test]
+    #[ignore]
+    fn e2e_retrieves_and_verifies_transformed_copies() {
+        let home = std::env::temp_dir().join(format!("pictoria_e2e_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+        let lib = std::env::var("PICTORIA_E2E_LIB").expect("PICTORIA_E2E_LIB");
+        let queries = std::env::var("PICTORIA_E2E_QUERIES").expect("PICTORIA_E2E_QUERIES");
+
+        let mut files: Vec<String> =
+            std::fs::read_dir(&lib).unwrap().map(|e| e.unwrap().path().to_string_lossy().to_string()).collect();
+        files.sort();
+        let target = files.iter().position(|p| p.ends_with("img_007.png")).expect("img_007");
+        let mut ids = HashMap::new();
+        for chunk in files.chunks(MATCH_BACKFILL_CHUNK).collect::<Vec<_>>() {
+            let rows = sidecar::extract_features(chunk, false, sidecar::Priority::Index).expect("extract");
+            for (path, res) in rows {
+                let f = res.expect("features");
+                let id = files.iter().position(|p| *p == path).unwrap() as i64;
+                assert!(f.n() > 50, "{path} has only {} keypoints", f.n());
+                index_file_features(id, Some(&f), None);
+                ids.insert(path, id);
+            }
+        }
+        assert_eq!(feature_store::with_store(|s| s.len()).unwrap(), files.len());
+
+        // Vocabulary at the production k; a much smaller k would turn nearly every word into a stop word at this library size.
+        let sample = feature_store::with_store(|s| s.sample_descriptors(MATCH_VOCAB_SAMPLE)).unwrap();
+        let vocab = sidecar::train_vocab(&sample, MATCH_VOCAB_K, MATCH_VOCAB_ITERS).expect("train_vocab");
+        feature_store::with_store(|s| s.save_vocab(&vocab)).unwrap().unwrap();
+        assert_eq!(current_vocab().unwrap().len(), vocab.len());
+        assign_words();
+        assert!(feature_store::with_store(|s| s.ids_missing_words()).unwrap().is_empty());
+
+        let stored_target = files[target].clone();
+        for name in ["exact.png", "rot90.png", "mirror.png", "half_jpg.jpg", "crop50.png"] {
+            let q = format!("{queries}/{name}");
+            let sl = retrieve_shortlist(&q, sidecar::Priority::Search);
+            assert!(sl.vocab_ready && !sl.hits.is_empty(), "{name}: empty shortlist");
+            let rank = sl.hits.iter().position(|(id, _)| *id == target as i64);
+            assert_eq!(rank, Some(0), "{name}: target should be first, got {rank:?} in {:?}", &sl.hits[..3.min(sl.hits.len())]);
+
+            // Verify the top few from stored features, straight then mirrored; only the target may count as a copy.
+            let top: Vec<(String, crate::core::feature_store::Features)> = sl.hits.iter().take(5)
+                .map(|(id, _)| (files[*id as usize].clone(), feature_store::with_store(|s| s.read(*id)).unwrap().unwrap()))
+                .collect();
+            let mut copies = Vec::new();
+            for mirror in [false, true] {
+                for (p, r) in sidecar::verify_features(&q, &top, mirror, sidecar::Priority::Search).unwrap() {
+                    if match_tier::is_copy(r.matched, r.inliers, r.inlier_ratio) {
+                        copies.push((p, r.inliers, r.mirrored));
+                    }
+                }
+            }
+            assert!(copies.iter().any(|(p, _, _)| *p == stored_target), "{name}: target never verified as a copy: {copies:?}");
+            assert!(copies.iter().all(|(p, _, _)| *p == stored_target), "{name}: false copy: {copies:?}");
+            println!("e2e {name}: rank0 score={:.3} copies={copies:?}", sl.hits[0].1);
+        }
+        let _ = search_gate::is_active();
+    }
 }

@@ -42,19 +42,22 @@ def cases():
         ("unrelated", b, a, False),
         ("flat_candidate", a, flat, False),
         ("flat_query", flat, a, False),
+        ("tiny_query_too_few_matches", cv2.resize(texture(14), (60, 50)), a, False),
+        ("blurred_candidate", a, cv2.GaussianBlur(b, (0, 0), 6), False),
     ]
 
 
-# Runs every case through the live `verify_one` and returns {name: result dict}.
-def run_all():
+# Runs every case through `verify_one` of `module` (default: the live pipeline) and returns {name: result dict}.
+def run_all(module=None):
+    module = module or pipeline
     out = {}
     with tempfile.TemporaryDirectory() as d:
         for name, q, c, mirror in cases():
             qp, cp = os.path.join(d, f"{name}_q.png"), os.path.join(d, f"{name}_c.png")
             cv2.imwrite(qp, cv2.cvtColor(q, cv2.COLOR_RGB2BGR))
             cv2.imwrite(cp, cv2.cvtColor(c, cv2.COLOR_RGB2BGR))
-            state = pipeline.prepare_query(qp, mirror=mirror)
-            out[name] = json.loads(json.dumps(pipeline.verify_one(state, cp)))
+            state = module.prepare_query(qp, mirror=mirror)
+            out[name] = json.loads(json.dumps(module.verify_one(state, cp)))
     return out
 
 
@@ -77,9 +80,16 @@ class VerifyParityTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    # `--record <old pipeline.py>` regenerates the golden from a frozen pre-refactor copy of the pipeline.
     if "--record" in sys.argv:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("pipeline_old", sys.argv[sys.argv.index("--record") + 1])
+        old = importlib.util.module_from_spec(spec)
+        sys.modules["pipeline_old"] = old
+        spec.loader.exec_module(old)
         with open(GOLDEN, "w") as f:
-            json.dump(run_all(), f, indent=1, sort_keys=True)
+            json.dump(run_all(old), f, indent=1, sort_keys=True)
         print("recorded", GOLDEN)
     else:
         unittest.main()
