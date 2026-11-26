@@ -186,7 +186,13 @@
     "fullDbTag":       "(slowest)",
     "fullDbShort":     "Full DB",
     "stop":            "Stop",
-    "stopping":        "Stopping…"
+    "stopping":        "Stopping…",
+    "bestMatches":     "Best matches",
+    "badgeExact":      "Exact copy",
+    "badgeRotated":    "Rotated / mirrored copy",
+    "badgeColourway":  "Same design · other colour",
+    "badgeCopyInside": "Copy · found inside",
+    "badgeCopy":       "Copy"
   },
 
   "activity": {

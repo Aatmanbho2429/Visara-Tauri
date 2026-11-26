@@ -15,6 +15,7 @@ import { Subscription } from 'rxjs';
 import { SearchStateService, SearchResultVM, DEEP_MIN_SIM_OPTIONS } from '../../services/search/search-state.service';
 import { PlansDialog } from '../../shared/plans-dialog/plans-dialog';
 import { LoaderOrb } from '../../shared/loader-orb/loader-orb';
+import { bestMatchBadgeKey, isBestMatch, sortResults } from './result-order';
 import { WatchedFolder } from '../../models/response/responseLibrary';
 import { responseSidecarCrashed } from '../../models/response/responseMisc';
 
@@ -180,11 +181,20 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
     return `${n} folders`;
   }
 
+  // Rows the exact-match engine decided (exact, rotated/mirrored, colourway, copy); they lead the page
+  // and are left out of the two sections below. Empty unless the engine runs in primary mode.
+  get bestResults(): SearchResultVM[] {
+    return this.state.results.filter(isBestMatch);
+  }
+
+  // i18n key of the badge a Best matches card shows.
+  bestBadgeKey(item: SearchResultVM): string { return bestMatchBadgeKey(item); }
+
   // SIFT/RANSAC-proven results — same texture family as the query, not
   // just similar-looking. Always shown in full; see `search.rs`'s
   // `family_count` split, which the backend never truncates.
   get familyResults(): SearchResultVM[] {
-    return this.state.results.filter(r => r.verified);
+    return this.state.results.filter(r => !isBestMatch(r) && r.verified);
   }
 
   // Everything else: in the near family by texture similarity, but not
@@ -195,7 +205,7 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   // on the card. The *full* set — used for the section count and for
   // deciding whether "Show more" still has anything left to give.
   get similarResults(): SearchResultVM[] {
-    return this.state.results.filter(r => !r.verified);
+    return this.state.results.filter(r => !isBestMatch(r) && !r.verified);
   }
 
   // True while verification is still running behind an already-visible
@@ -495,12 +505,10 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
     }
   }
 
-  // Same ordering the backend applies at the very end of a search (verified
-  // first, then similarity descending) — reapplied after every merge so the
-  // grid looks sensibly ordered while verification is still streaming in,
-  // not just once `search_complete` assigns the authoritative `rank`.
+  // The backend's tier order (see `result-order.ts`), reapplied after every merge so the grid stays sensibly
+  // ordered while verification streams in; it also numbers the rows, which is the `#rank` badge on each card.
   private resortResults(): void {
-    this.state.results.sort((a, b) => (Number(b.verified) - Number(a.verified)) || (b.similarity - a.similarity));
+    sortResults(this.state.results);
   }
 
   newSearch(): void {
@@ -544,9 +552,9 @@ export class Search extends BaseComponent implements OnInit, OnDestroy {
   onWindowResize(): void {
     const root = this.masonryGridRef?.nativeElement;
     if (!root) return;
-    root.querySelectorAll<HTMLImageElement>('img.pin-card__img[data-rank]').forEach(img => {
-      const rank = Number(img.dataset['rank']);
-      const item = this.state.results.find((r: SearchResultVM) => r.rank === rank);
+    root.querySelectorAll<HTMLImageElement>('img.pin-card__img[data-path]').forEach(img => {
+      const path = img.dataset['path'];
+      const item = this.state.results.find((r: SearchResultVM) => r.path === path);
       if (item) item.matchBox = this.computeMatchBox(item, img);
     });
     this.cdr.detectChanges();

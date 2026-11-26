@@ -269,6 +269,24 @@
       @if (state.results.length > 0) {
         <div class="results-scroll" #masonryGrid (scroll)="onGridScroll($event)">
 
+          <!-- Best matches — rows the exact-match engine decided (exact, rotated/mirrored,
+               other colourway, strong copy). Always empty unless the engine runs in
+               primary mode; those rows are left out of the two sections below. -->
+          @if (bestResults.length > 0) {
+            <div class="result-section">
+              <div class="result-section__header">
+                <i class="pi pi-star"></i>
+                <span>{{ 'search.bestMatches' | translate }}</span>
+                <span class="result-section__count">{{ bestResults.length }}</span>
+              </div>
+              <div class="best-grid">
+                @for (item of bestResults; track item.path) {
+                  <ng-container *ngTemplateOutlet="resultCard; context: { item, big: true }" />
+                }
+              </div>
+            </div>
+          }
+
           <!-- Verified — SIFT/RANSAC-proven this design is actually present.
                Never truncated by the backend, so always shown in full.
                Collapsible like the tier below it, but open by default. -->
@@ -286,7 +304,7 @@
                 <div class="masonry-grid">
                   @for (col of familyColumns; track $index) {
                     <div class="masonry-col">
-                      @for (item of col; track item.rank) {
+                      @for (item of col; track item.path) {
                         <ng-container *ngTemplateOutlet="resultCard; context: { item }" />
                       }
                     </div>
@@ -312,7 +330,7 @@
                 <div class="masonry-grid">
                   @for (col of similarColumns; track $index) {
                     <div class="masonry-col">
-                      @for (item of col; track item.rank) {
+                      @for (item of col; track item.path) {
                         <ng-container *ngTemplateOutlet="resultCard; context: { item }" />
                       }
                     </div>
@@ -337,13 +355,13 @@
         </div>
       }
 
-      <ng-template #resultCard let-item="item">
-        <div class="pin-card" (click)="openFile(item.path)">
+      <ng-template #resultCard let-item="item" let-big="big">
+        <div class="pin-card" [class.pin-card--large]="big" (click)="openFile(item.path)">
           <div class="pin-card__img-wrap">
             @if (item.thumbnailUrl && !item.imgError) {
               <img [src]="item.thumbnailUrl" [alt]="item.name"
                    class="pin-card__img" loading="lazy"
-                   [attr.data-rank]="item.rank"
+                   [attr.data-path]="item.path"
                    (load)="onImgLoad(item, $event)"
                    (error)="onImgError(item)" />
             } @else if (item.imgError) {
@@ -378,7 +396,13 @@
                 Mirrored
               </span>
             }
-            @if (item.verification === 'unchecked') {
+            @if (item.matchKind !== 'none') {
+              <!-- The engine's verdict for this row; only Best matches cards carry it. -->
+              <span class="pin-card__best-badge pin-card__best-badge--{{ item.matchKind }}">
+                <i class="pi pi-verified"></i>
+                {{ bestBadgeKey(item) | translate }}
+              </span>
+            } @else if (item.verification === 'unchecked') {
               <!-- Distinguishes "hasn't been checked yet" from "checked and
                    rejected" — both land in the Similar section (see
                    `similarResults`), and without this a candidate the verify
@@ -397,7 +421,7 @@
           </div>
           <div class="pin-card__foot">
             <div class="pin-card__foot-text">
-              <span class="pin-card__name" [title]="item.path">{{ item.name }}</span>
+              <span class="pin-card__name" [title]="item.path"><span class="pin-card__rank">#{{ item.rank }}</span> {{ item.name }}</span>
               <span class="pin-card__folder" [title]="item.path">{{ item.path }}</span>
             </div>
             <div class="pin-card__scores">

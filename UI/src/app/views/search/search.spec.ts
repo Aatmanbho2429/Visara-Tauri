@@ -71,6 +71,19 @@ describe('Search', () => {
     expect(component.state.results[0].path).toBe('b.png');
   });
 
+  // Engine-decided rows lead in Best matches and are left out of the family and similar sections.
+  it('keeps best matches out of the family and similar sections', () => {
+    const mk = (path: string, matchKind: string, verified: boolean): any => ({
+      path, name: path, similarity: 80, patternMatch: 80, colorMatch: 50, folder: 'f', verified,
+      verification: verified ? 'verified' : 'unchecked', partial: false, matchRegion: { x: 0, y: 0, w: 1, h: 1 },
+      matchPoints: 0, mirrored: false, matchKind, hashDistance: null, rank: 0,
+    });
+    component.state.results = [mk('a', 'exact', false), mk('b', 'copy', true), mk('c', 'none', true), mk('d', 'none', false)];
+    expect(component.bestResults.map(r => r.path)).toEqual(['a', 'b']);
+    expect(component.familyResults.map(r => r.path)).toEqual(['c']);
+    expect(component.similarResults.map(r => r.path)).toEqual(['d']);
+  });
+
   // Stopping on "New search": a search still running behind the grid must be cancelled in Rust too.
   it('newSearch() cancels a running search', () => {
     const cancel = vi.spyOn(TestBed.inject(SearchService), 'cancel').mockImplementation(() => {});
