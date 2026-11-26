@@ -1,7 +1,7 @@
 """HTTP sidecar for Pictoria's design-match pipeline.
 
 Endpoints: GET /health, POST /model, POST /model/reset, POST /describe,
-POST /verify.
+POST /verify, POST /fingerprint.
 
 Two models are involved and they load at different times. The bundled
 mobilenet (gram) loads on the worker thread at startup and gates `ready`. The
@@ -209,7 +209,7 @@ def _run(job: Job) -> dict:
             group = paths[start:start + step]
             for p, d in zip(group, pipeline.describe_batch(group, pad=pad)):
                 results.append({"path": p, "embed": d.embed, "rose": d.rose, "gram": d.gram,
-                                "color": d.color, "dominant": d.dominant} if d
+                                "color": d.color, "dominant": d.dominant, "phash": d.phash} if d
                                 else {"path": p, "error": "decode-failed"})
             if pad:
                 _drain_search()  # let a just-arrived search cut in, batch by batch
@@ -239,6 +239,23 @@ def _run(job: Job) -> dict:
             "[timing] job kind=verify priority=%s n=%d mirror=%s queue_wait_ms=%.2f compute_ms=%.2f total_ms=%.2f",
             job.priority, len(job.payload["candidate_paths"]), mirror,
             queue_wait_ms, compute_ms, queue_wait_ms + compute_ms,
+        )
+        return {"results": results}
+
+    if job.kind == "fingerprint":
+        # Decode + pHash only — no DINO, so this does not need embed_model_ready().
+        def _fingerprint(p: str) -> dict:
+            img = pipeline.load_image_rgb(p, max_dim=512)
+            if img is None:
+                return {"path": p, "error": "decode-failed"}
+            return {"path": p, "phash": pipeline.fingerprint(img)}
+
+        with ThreadPoolExecutor(max_workers=_VERIFY_WORKERS) as pool:
+            results = list(pool.map(_fingerprint, job.payload["paths"]))
+        compute_ms = (time.perf_counter() - t_start) * 1000
+        log.info(
+            "[timing] job kind=fingerprint priority=%s n=%d queue_wait_ms=%.2f compute_ms=%.2f total_ms=%.2f",
+            job.priority, len(job.payload["paths"]), queue_wait_ms, compute_ms, queue_wait_ms + compute_ms,
         )
         return {"results": results}
 
@@ -322,6 +339,16 @@ def verify_route():
     payload = {"query_path": query_path, "candidate_paths": candidates,
                "mirror": bool(body.get("mirror", False))}
     return jsonify(_submit("verify", payload, body.get("priority", "search")))
+
+
+@app.post("/fingerprint")
+def fingerprint_route():
+    """Body: {paths: [str], priority?: 'search'|'index'}. pHash variants per path; no embed model needed."""
+    body = request.get_json(force=True) or {}
+    paths = body.get("paths")
+    if not paths:
+        return jsonify({"error": "paths is required"}), 400
+    return jsonify(_submit("fingerprint", {"paths": paths}, body.get("priority", "index")))
 
 
 def main() -> None:

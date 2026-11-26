@@ -677,6 +677,35 @@ def _implausible_placement(geo):
     return None
 
 
+# Images whose 32x32 grayscale std (0-255) is below this are too plain to fingerprint without collisions.
+_FLAT_STD = 3.0
+_PHASH_SIDE = 32
+_PHASH_BLOCK = 8
+
+
+# 64-bit DCT pHash of one 32x32 float image, as a 16-char hex string (bit 63 first, row-major).
+def _phash_hex(g32):
+    coef = cv2.dct(np.ascontiguousarray(g32, dtype=np.float32))[:_PHASH_BLOCK, :_PHASH_BLOCK].reshape(-1)
+    med = float(np.median(coef[1:]))
+    bits = 0
+    for c in coef:
+        bits = (bits << 1) | int(float(c) > med)
+    return format(bits, "016x")
+
+
+# pHash hex strings for the 8 dihedral variants (rot0/90/180/270, then the same on the mirror); [] for a flat image.
+def fingerprint(img_rgb):
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    g32 = cv2.resize(gray, (_PHASH_SIDE, _PHASH_SIDE), interpolation=cv2.INTER_AREA).astype(np.float32)
+    if float(g32.std()) < _FLAT_STD:
+        return []
+    out = []
+    for base in (g32, np.fliplr(g32)):
+        for k in range(4):
+            out.append(_phash_hex(np.rot90(base, k)))
+    return out
+
+
 @dataclass
 class Descriptor:
     embed: list  # DINO embedding, one EMBED_DIM vector per zoom level
@@ -684,6 +713,7 @@ class Descriptor:
     gram: list  # list of gram vectors, one per zoom level
     color: list  # COLOR_DIM-length, see color_histogram()
     dominant: list  # 1-2 bucket names for the Browse colour tag, see dominant_colors()
+    phash: list  # 8 dihedral-variant pHash hex strings, or [] for a flat image — see fingerprint()
 
 
 # Images per index-time DINO call — fixed so CoreML only ever sees one batch shape (8 × 3 crops).
@@ -712,6 +742,7 @@ def _prepare(path, max_dim):
     t_gram = time.perf_counter()
     color = color_histogram(img)
     dominant = dominant_colors(img)
+    phash = fingerprint(img)
     t_color = time.perf_counter()
 
     log.debug(
@@ -721,7 +752,7 @@ def _prepare(path, max_dim):
         (t_decode - t0) * 1000, (t_crops - t_decode) * 1000, (t_gabor - t_crops) * 1000,
         (t_gram - t_gabor) * 1000, (t_color - t_gram) * 1000, (t_color - t0) * 1000,
     )
-    return crops, rose, gram, color, dominant
+    return crops, rose, gram, color, dominant, phash
 
 
 # Logs how far batched embeddings drift from the one-image-per-call path they replace.
@@ -759,11 +790,11 @@ def describe_batch(paths, max_dim=512, pad=True):
         if p is None:
             out.append(None)
             continue
-        _crops, rose, gram, color, dominant = p
+        _crops, rose, gram, color, dominant, phash = p
         embed = embeds[i * n_levels:(i + 1) * n_levels]
         i += 1
         out.append(Descriptor(embed=[e.tolist() for e in embed], rose=rose.tolist(),
-                              gram=[g.tolist() for g in gram], color=color, dominant=dominant))
+                              gram=[g.tolist() for g in gram], color=color, dominant=dominant, phash=phash))
     return out
 
 
