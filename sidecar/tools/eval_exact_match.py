@@ -1,10 +1,5 @@
-"""Evaluation harness for the exact-match engine's feature verification (SIFT today).
-
-Standalone: imports `pipeline` with cv2/numpy only. For random library images it synthesises transformed queries,
-verifies each against the source image and a few random negatives from stored-style features (`_verify_matches`),
-and reports per transform: true-positive rate, false-copy rate, verify latency and feature size, plus pHash distances.
-Run `python tools/eval_exact_match.py --library <folder> --n 200 --negatives 20 --seed 0 --out report.json`.
-"""
+# Evaluation harness for the exact-match engine's feature verification (SIFT today); standalone, needs only cv2/numpy.
+# Run: python tools/eval_exact_match.py --library <folder> --n 200 --negatives 20 --seed 0 --out report.json
 from __future__ import annotations
 
 import argparse
@@ -168,7 +163,7 @@ def evaluate(library, n=200, negatives=20, seed=0, detector="sift"):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description="Evaluate exact-match feature verification on synthesised queries")
     ap.add_argument("--library", required=True, help="folder of library images (searched recursively)")
     ap.add_argument("--n", type=int, default=200, help="random source images to synthesise queries from")
     ap.add_argument("--negatives", type=int, default=20, help="random other images each query is also verified against")

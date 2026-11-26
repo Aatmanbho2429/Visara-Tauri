@@ -2,6 +2,8 @@
 
 Status: plan. Branch: `search-ranking-v2` (off `Iris_Creation_Dev`).
 
+> Status note: only §3.1 (fingerprint) was implemented, finished by Part A of `exact-match-engine.md`; §3.2 (fused score) and §3.3 (visible-window verify) are deferred, and §3.6 is reduced to Part F of that plan (see its §10).
+
 ## 1. The problem
 
 In libraries of about 10k images, the exact or near-exact copy of the query image (and its

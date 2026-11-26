@@ -327,9 +327,8 @@ mod tests {
     use super::*;
     use crate::{core::search_gate, services::search::match_tier};
 
-    // End to end against a live sidecar (run with `-- --ignored`): index a folder of images, train a vocabulary,
-    // then check that transformed copies of one image retrieve it first and verify as copies from stored features.
-    // Needs PICTORIA_E2E_LIB (library dir) and PICTORIA_E2E_QUERIES (dir with queries of img_007) and a sidecar on the configured port.
+    // End to end against a live sidecar (`-- --ignored`): transformed copies of img_007 must retrieve it first and verify as copies.
+    // Needs PICTORIA_E2E_LIB, PICTORIA_E2E_QUERIES and a sidecar on the configured port.
     #[test]
     #[ignore]
     fn e2e_retrieves_and_verifies_transformed_copies() {

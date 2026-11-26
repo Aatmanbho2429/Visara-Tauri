@@ -905,16 +905,9 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
     )
 
 
+# Ratio-test match, RANSAC fit and geometry gate for one pair; `kp*_pts` f32 [n,2], `*_shape` (h, w), `log_timing(reason, t_match)` an optional hook.
 def _verify_matches(qg_shape, kp1_pts, des1, kp2_pts, des2, c_shape, mirror,
                     ratio=0.75, ransac_thresh=5.0, min_inliers=10, log_timing=None, name=""):
-    """Ratio-test match, RANSAC fit and geometry gate for one query/candidate pair.
-
-    The shared core of `verify_one` (descriptors computed on the spot) and the
-    stored-feature path (`/verify_features`): `kp*_pts` are float32 `[n, 2]`
-    arrays, `des*` SIFT descriptor rows, `*_shape` the (h, w) of the decoded
-    grayscale images the keypoints came from. `log_timing(reason, t_match)` is
-    an optional hook for the caller's debug line; `name` labels the geometry log.
-    """
     if des2 is None or len(kp2_pts) < 8:
         return {"matched": False, "reason": "too-few-keypoints"}
 

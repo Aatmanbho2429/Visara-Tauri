@@ -1,17 +1,5 @@
 // Local SIFT features per file for the exact-match engine, plus the visual-word ids derived from them.
-//
-// ## Files (all owned and written by Rust, like `vectors.bin`)
-// ```text
-// features.bin  [ magic "PICTFEAT" 8 | version u32 | desc_dim u32 ]            header, 16 bytes
-//               [ id i64 | w u16 | h u16 | n u16 | pts f32 x 2n | desc u8 x 128n ]*   append-only records
-// words.bin     [ magic "PICTWORD" 8 | version u32 | reserved u32 ]
-//               [ id i64 | n u16 | words u32 x n ]*                            fully loaded, rewritten on save
-// vocab.bin     [ magic "PICTVOCB" 8 | version u32 | k u32 ] [ f32 x k*128 ]   centroids
-// ```
-// Descriptors are never held in memory: `load` scans record headers only and seeks past the payloads, and
-// `read` does a positioned read. A replaced or removed record is tombstoned in place (`id = i64::MIN`) and
-// the file is rewritten once more than 30% of it is dead. A version mismatch deletes all three files and
-// leaves the backfill to rebuild them. `vectors.bin` is never touched.
+// File layouts, tombstones and the version rule: `.claude/rules/search-pipeline.md` ("Engine files").
 
 use crate::{
     config::{FEATURES_PATH, MATCH_FEATURES_VERSION, VOCAB_PATH, WORDS_PATH},

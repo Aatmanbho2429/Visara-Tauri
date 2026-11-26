@@ -522,12 +522,8 @@ fn build_result(c: &Candidate, v: Option<&sidecar::VerifyResult>, verification: 
     }
 }
 
-// Apply one verify chunk's results onto `results` in place, returning the
-// indices of the rows that changed so the caller can stream just those on
-// without re-sending everything. `mirror_hits_only`, set for the mirrored pass,
-// keeps a straight-pass miss's data intact — a mirrored miss carries no more
-// information than the straight miss already recorded, and overwriting
-// would discard the first pass's inlier counts for no reason.
+// Applies one verify chunk onto `results` in place and returns the changed row indices; `mirror_hits_only` (mirrored pass)
+// ignores misses so the straight pass's inlier counts are not overwritten.
 fn apply_chunk(
     results: &mut [SearchResult],
     path_index: &HashMap<String, usize>,
@@ -654,8 +650,8 @@ fn split_by_flags(paths: &[String], flags: &[bool]) -> (Vec<String>, Vec<String>
     (yes, no)
 }
 
-// Stage 0 + 0b candidates: files within `EXACT_HASH_MAX_DIST` of any query variant (classified by colour) plus the
-// engine shortlist (verdict `None`), each scored against the query. `known` holds stage-1 scores to reuse.
+// Stage 0 + 0b candidates: files within `EXACT_HASH_MAX_DIST` of a query variant (classified by colour) plus the shortlist,
+// scored against the query; `known` holds stage-1 scores to reuse.
 #[allow(clippy::too_many_arguments)]
 fn collect_hits(
     store: &vector_store::VectorStore,
@@ -868,9 +864,8 @@ pub fn execute(
         })
         .collect();
 
-    // `tier_a` is sorted by embed_sim descending (stage1's own order, preserved through the filter above), so a
-    // prefix keeps exactly the highest-cosine members — see `VERIFY_MAX_CANDIDATES`. Tier A is the fast tier
-    // (cosine at or above the fast floor); the rest is the deep band `[deep_min_sim, NEAR_FAMILY_MIN_SIM)`.
+    // `tier_a` stays in stage 1's embed_sim order, so a prefix is the highest-cosine members (`VERIFY_MAX_CANDIDATES`);
+    // the rest is the deep band `[deep_min_sim, NEAR_FAMILY_MIN_SIM)`.
     let sims: Vec<f32> = tier_a.iter().map(|c| c.m.embed_sim).collect();
     let tier_a_n = tier_a_count(&sims);
     let mut deep_band = tier_a.split_off(tier_a_n);
@@ -1456,9 +1451,8 @@ mod tests {
         assert!(!r.cancelled && !r.budget_exhausted);
     }
 
-    // End to end against a live sidecar (run alone with `-- --ignored`): the shadow stages on a rotated copy of img_007
-    // must find it by pHash and by engine retrieval, verify it from stored features, and report it as engine-only.
-    // Needs PICTORIA_E2E_LIB and PICTORIA_E2E_QUERIES (see the match_engine e2e test).
+    // End to end against a live sidecar (alone, `-- --ignored`): a rotated copy of img_007 must be found by pHash and retrieval,
+    // verified from stored features and reported engine-only. Needs PICTORIA_E2E_LIB and PICTORIA_E2E_QUERIES.
     #[test]
     #[ignore]
     fn e2e_shadow_run_reports_engine_only_copy() {

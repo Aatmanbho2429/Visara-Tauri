@@ -94,6 +94,14 @@ machine, not at build time.
 - **`NEAR_FAMILY_MIN_SIM` (0.70) is the only bound on how much work a search does** and is not
   calibrated against the current model. Watch `near_family_n` in the search timing log — if it's a
   large fraction of the library on an ordinary query, the floor is too low.
+- **Constants mirrored between `config.rs` and `sidecar/pipeline.py`:** `MATCH_FEATURES_PER_IMAGE` and
+  `MATCH_FEATURE_MAX_DIM` (Rust `config.rs`, Python `pipeline.MATCH_*`). Change both together.
+- **`MATCH_FEATURES_VERSION` (`config.rs`) must be bumped on any change to feature-extraction parameters** (SIFT
+  settings, feature count, decode size, descriptor rounding). A mismatch deletes `features.bin`, `words.bin` and
+  `vocab.bin` and the backfill rebuilds them; it is independent of `EMBED_SCHEMA_VERSION`, which stays untouched.
+- **The exact-match engine files are Rust-written, like `vectors.bin`:** `features.bin`, `words.bin`, `vocab.bin` and the
+  `file_fingerprints` table are keyed by vector id. The sidecar only computes. The `MATCH_*` / `EXACT_*` constants are
+  uncalibrated, like `NEAR_FAMILY_MIN_SIM` — see `.claude/rules/search-pipeline.md`.
 - **`config.rs` holds every path, port, and tuning constant.** Nothing is hard-coded elsewhere.
 
 ## Diagnosing behaviour at runtime

@@ -18,7 +18,7 @@ Work with the grain of these layers — most new work belongs in `services/`.
   `UI/src/app/models/` field-for-field with `#[serde(rename_all = "camelCase")]` on every struct.
 - **`core/`** — low-level primitives with no Tauri dependency: `database` (SQLite), `vector_store`
   (custom flat-vector index, replaces FAISS), `sidecar`, `watcher`, `thumbs`, `color`,
-  `search_gate`, `migrate`, `progress`.
+  `search_gate`, `migrate`, `progress`, `feature_store` and `match_index` (exact-match engine).
 - **`config.rs`** — ALL paths, ports, tuning constants, and path resolution. Nothing is hard-coded
   elsewhere; `use crate::config::*`.
 - **`error.rs`** — `PictoriaError` + `Result` alias. `.to_response::<T>()` builds the error-range
@@ -28,11 +28,12 @@ Work with the grain of these layers — most new work belongs in `services/`.
   list, app lifecycle. No business logic. `main.rs` is three lines calling `pictoria_lib::run()`.
 - **`utils/`** — `file_utils`, `image_loader`, `hotkey`.
 
-Two folders under `services/` are not UI entities:
+Three folders under `services/` are not UI entities:
 
 - **`sync`** — the folder-indexing pipeline: scan → hash/dedupe against SQLite → sidecar
   `/describe` in `INDEX_FILE_CHUNK`-sized (64) chunks → vector store.
 - **`license`** — device fingerprinting (see `auth-licensing.md`).
+- **`match_engine`** — exact-match engine upkeep: fingerprint/feature backfills, vocabulary training, word assignment, query retrieval (see `search-pipeline.md`).
 
 ## Invariant
 

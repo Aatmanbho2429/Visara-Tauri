@@ -398,7 +398,7 @@ def verify_route():
 
 @app.post("/fingerprint")
 def fingerprint_route():
-    """Body: {paths: [str], priority?: 'search'|'index'}. pHash variants per path; no embed model needed."""
+    # Body: {paths: [str], priority?: 'search'|'index'}. pHash variants per path; no embed model needed.
     body = request.get_json(force=True) or {}
     paths = body.get("paths")
     if not paths:
@@ -408,7 +408,7 @@ def fingerprint_route():
 
 @app.post("/extract_features")
 def extract_features_route():
-    """Body: {paths: [str], mirror?: bool, priority?: 'search'|'index'}. SIFT features per path; no embed model needed."""
+    # Body: {paths: [str], mirror?: bool, priority?: 'search'|'index'}. SIFT features per path; no embed model needed.
     body = request.get_json(force=True) or {}
     paths = body.get("paths")
     if not paths:
@@ -419,7 +419,7 @@ def extract_features_route():
 
 @app.post("/train_vocab")
 def train_vocab_route():
-    """Body: {desc: b64 u8[n,128], n: int, k: int, iters: int}. Returns {centroids: b64 f32[k,128]}; index priority."""
+    # Body: {desc: b64 u8[n,128], n: int, k: int, iters: int}. Returns {centroids: b64 f32[k,128]}; index priority.
     body = request.get_json(force=True) or {}
     try:
         payload = {"desc": body["desc"], "n": int(body["n"]), "k": int(body["k"]), "iters": int(body["iters"])}
@@ -432,7 +432,7 @@ def train_vocab_route():
 
 @app.post("/verify_features")
 def verify_features_route():
-    """Body: {query_path, mirror?, candidates: [{path, w, h, n, pts, desc}], priority?}. `/verify` result dicts, no decoding."""
+    # Body: {query_path, mirror?, candidates: [{path, w, h, n, pts, desc}], priority?}. `/verify` result dicts, no decoding.
     body = request.get_json(force=True) or {}
     query_path = body.get("query_path")
     candidates = body.get("candidates")
