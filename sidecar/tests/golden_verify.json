@@ -1,0 +1,182 @@
+{
+ "flat_candidate": {
+  "matched": false,
+  "reason": "too-few-keypoints"
+ },
+ "flat_query": {
+  "matched": false,
+  "reason": "decode-failed"
+ },
+ "identical": {
+  "box": [
+   [
+    0.0,
+    0.0
+   ],
+   [
+    480.0,
+    0.0
+   ],
+   [
+    480.0,
+    360.0
+   ],
+   [
+    0.0,
+    360.0
+   ]
+  ],
+  "candidate_size": [
+   480,
+   360
+  ],
+  "good_matches": 815,
+  "inlier_ratio": 1.0,
+  "inliers": 815,
+  "matched": true,
+  "mirrored": false,
+  "scale": 1.0
+ },
+ "mirrored_query_flag": {
+  "box": [
+   [
+    0.0,
+    0.0
+   ],
+   [
+    480.0,
+    0.0
+   ],
+   [
+    480.0,
+    360.0
+   ],
+   [
+    0.0,
+    360.0
+   ]
+  ],
+  "candidate_size": [
+   480,
+   360
+  ],
+  "good_matches": 815,
+  "inlier_ratio": 1.0,
+  "inliers": 815,
+  "matched": true,
+  "mirrored": true,
+  "scale": 1.0
+ },
+ "mirrored_query_no_flag": {
+  "good_matches": 24,
+  "inlier_ratio": 0.167,
+  "inliers": 4,
+  "matched": false,
+  "mirrored": false
+ },
+ "query_is_crop_of_candidate": {
+  "box": [
+   [
+    79.9869613647461,
+    60.01091003417969
+   ],
+   [
+    399.9997863769531,
+    59.99134063720703
+   ],
+   [
+    400.01446533203125,
+    300.0009460449219
+   ],
+   [
+    80.00164031982422,
+    300.0205383300781
+   ]
+  ],
+  "candidate_size": [
+   480,
+   360
+  ],
+  "good_matches": 330,
+  "inlier_ratio": 1.0,
+  "inliers": 330,
+  "matched": true,
+  "mirrored": false,
+  "scale": 1.0
+ },
+ "resized_half": {
+  "box": [
+   [
+    0.27006933093070984,
+    0.26169776916503906
+   ],
+   [
+    480.25885009765625,
+    0.25418782234191895
+   ],
+   [
+    480.2644958496094,
+    360.24578857421875
+   ],
+   [
+    0.2757017910480499,
+    360.2532958984375
+   ]
+  ],
+  "candidate_size": [
+   480,
+   360
+  ],
+  "good_matches": 412,
+  "inlier_ratio": 0.998,
+  "inliers": 411,
+  "matched": true,
+  "mirrored": false,
+  "scale": 2.0
+ },
+ "rot90": {
+  "box": [
+   [
+    479.4963684082031,
+    0.0017958999378606677
+   ],
+   [
+    479.4964599609375,
+    359.9993896484375
+   ],
+   [
+    -0.5003562569618225,
+    359.99951171875
+   ],
+   [
+    -0.5004463195800781,
+    0.0019159644143655896
+   ]
+  ],
+  "candidate_size": [
+   480,
+   360
+  ],
+  "good_matches": 744,
+  "inlier_ratio": 0.999,
+  "inliers": 743,
+  "matched": true,
+  "mirrored": false,
+  "scale": 1.0
+ },
+ "rotated_crop_candidate_is_big": {
+  "good_matches": 155,
+  "inlier_ratio": 0.968,
+  "inliers": 150,
+  "matched": false,
+  "mirrored": false,
+  "reason": "implausible-rotation"
+ },
+ "unrelated": {
+  "good_matches": 16,
+  "inlier_ratio": 0.25,
+  "inliers": 4,
+  "matched": false,
+  "mirrored": false
+ }
+}

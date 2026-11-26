@@ -1,7 +1,8 @@
 """HTTP sidecar for Pictoria's design-match pipeline.
 
 Endpoints: GET /health, POST /model, POST /model/reset, POST /describe,
-POST /verify, POST /fingerprint.
+POST /verify, POST /fingerprint, POST /extract_features, POST /train_vocab,
+POST /verify_features.
 
 Two models are involved and they load at different times. The bundled
 mobilenet (gram) loads on the worker thread at startup and gates `ready`. The
@@ -259,6 +260,60 @@ def _run(job: Job) -> dict:
         )
         return {"results": results}
 
+    if job.kind == "extract_features":
+        # Decode + SIFT only (no DINO). Wire arrays: pts f32[n,2], sizes f32[n], angles f32[n], desc u8[n,128], base64 little-endian.
+        mirror = bool(job.payload.get("mirror", False))
+
+        def _extract(p: str) -> dict:
+            try:
+                r = pipeline.features_payload(p, mirror=mirror)
+            except Exception:  # noqa: BLE001 - one bad file must not fail the batch
+                log.exception("extract_features failed: %s", p)
+                return {"path": p, "error": "extract-failed"}
+            if r is None:
+                return {"path": p, "error": "decode-failed"}
+            r["path"] = p
+            return r
+
+        with ThreadPoolExecutor(max_workers=_VERIFY_WORKERS) as pool:
+            results = list(pool.map(_extract, job.payload["paths"]))
+        compute_ms = (time.perf_counter() - t_start) * 1000
+        log.info(
+            "[timing] job kind=extract_features priority=%s n=%d mirror=%s queue_wait_ms=%.2f compute_ms=%.2f total_ms=%.2f",
+            job.priority, len(job.payload["paths"]), mirror, queue_wait_ms, compute_ms, queue_wait_ms + compute_ms,
+        )
+        return {"results": results}
+
+    if job.kind == "train_vocab":
+        # desc is u8[n,128] base64; the reply is centroids f32[k,128] base64.
+        p = job.payload
+        centroids = pipeline.train_vocab(pipeline.unb64_array(p["desc"], "u1"), p["n"], p["k"], p["iters"])
+        compute_ms = (time.perf_counter() - t_start) * 1000
+        log.info(
+            "[timing] job kind=train_vocab priority=%s n=%d k=%d iters=%d queue_wait_ms=%.2f compute_ms=%.2f",
+            job.priority, p["n"], p["k"], p["iters"], queue_wait_ms, compute_ms,
+        )
+        return {"centroids": pipeline.b64_array(centroids, "<f4")}
+
+    if job.kind == "verify_features":
+        # Same result dicts as `verify`, but candidates arrive as stored features (path, w, h, n, pts, desc) and nothing is decoded.
+        mirror = bool(job.payload.get("mirror", False))
+        query_state = pipeline.prepare_query(job.payload["query_path"], mirror=mirror)
+
+        def _verify_features(c: dict) -> dict:
+            r = pipeline.verify_features_one(query_state, c)
+            r["path"] = c["path"]
+            return r
+
+        with ThreadPoolExecutor(max_workers=_VERIFY_WORKERS) as pool:
+            results = list(pool.map(_verify_features, job.payload["candidates"]))
+        compute_ms = (time.perf_counter() - t_start) * 1000
+        log.info(
+            "[timing] job kind=verify_features priority=%s n=%d mirror=%s queue_wait_ms=%.2f compute_ms=%.2f total_ms=%.2f",
+            job.priority, len(job.payload["candidates"]), mirror, queue_wait_ms, compute_ms, queue_wait_ms + compute_ms,
+        )
+        return {"results": results}
+
     return {"error": f"unknown job kind: {job.kind}"}
 
 
@@ -349,6 +404,42 @@ def fingerprint_route():
     if not paths:
         return jsonify({"error": "paths is required"}), 400
     return jsonify(_submit("fingerprint", {"paths": paths}, body.get("priority", "index")))
+
+
+@app.post("/extract_features")
+def extract_features_route():
+    """Body: {paths: [str], mirror?: bool, priority?: 'search'|'index'}. SIFT features per path; no embed model needed."""
+    body = request.get_json(force=True) or {}
+    paths = body.get("paths")
+    if not paths:
+        return jsonify({"error": "paths is required"}), 400
+    payload = {"paths": paths, "mirror": bool(body.get("mirror", False))}
+    return jsonify(_submit("extract_features", payload, body.get("priority", "index")))
+
+
+@app.post("/train_vocab")
+def train_vocab_route():
+    """Body: {desc: b64 u8[n,128], n: int, k: int, iters: int}. Returns {centroids: b64 f32[k,128]}; index priority."""
+    body = request.get_json(force=True) or {}
+    try:
+        payload = {"desc": body["desc"], "n": int(body["n"]), "k": int(body["k"]), "iters": int(body["iters"])}
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "desc, n, k and iters are required"}), 400
+    if payload["n"] < 1 or payload["k"] < 1 or payload["iters"] < 1:
+        return jsonify({"error": "n, k and iters must be positive"}), 400
+    return jsonify(_submit("train_vocab", payload, "index"))
+
+
+@app.post("/verify_features")
+def verify_features_route():
+    """Body: {query_path, mirror?, candidates: [{path, w, h, n, pts, desc}], priority?}. `/verify` result dicts, no decoding."""
+    body = request.get_json(force=True) or {}
+    query_path = body.get("query_path")
+    candidates = body.get("candidates")
+    if not query_path or not candidates:
+        return jsonify({"error": "query_path and candidates are required"}), 400
+    payload = {"query_path": query_path, "candidates": candidates, "mirror": bool(body.get("mirror", False))}
+    return jsonify(_submit("verify_features", payload, body.get("priority", "search")))
 
 
 def main() -> None:

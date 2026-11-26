@@ -12,6 +12,7 @@ then pushes to `POST /model` — so it loads after login, not at startup.
 """
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import sys
@@ -657,7 +658,8 @@ def _placement_geometry(H, q_shape, c_shape):
     # it has to be caught here, before the result is reported as verified.
     if abs(area) > 1.0:
         frame = np.float32([[0, 0], [cw, 0], [cw, ch], [0, ch]])
-        inter, _ = cv2.intersectConvexConvex(quad.astype(np.float32), frame)
+        # Rounded to 1e-3 px: a near-identity fit (an exact copy) leaves ~1e-15 noise that makes OpenCV mis-measure the coincident edges.
+        inter, _ = cv2.intersectConvexConvex(np.round(quad, 3).astype(np.float32), frame)
         contained = inter / abs(area)
     else:
         contained = 0.0
@@ -846,7 +848,9 @@ def prepare_query(query_path, max_dim=800, mirror=False):
     if mirror:
         qg = cv2.flip(qg, 1)
     kp1, des1 = _get_sift().detectAndCompute(qg, None)
-    return {"path": query_path, "qg": qg, "kp": kp1, "des": des1, "mirror": mirror}
+    # `pts` is the keypoint coordinates as float32 [n, 2], converted once instead of per candidate.
+    pts = np.float32([k.pt for k in kp1]).reshape(-1, 2)
+    return {"path": query_path, "qg": qg, "kp": kp1, "des": des1, "mirror": mirror, "pts": pts}
 
 
 def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_inliers=10):
@@ -882,15 +886,8 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
     cg = cv2.cvtColor(c, cv2.COLOR_RGB2GRAY)
     kp2, des2 = _new_sift().detectAndCompute(cg, None)
     t_cand_sift = time.perf_counter()
-    if des2 is None or len(kp2) < 8:
-        return {"matched": False, "reason": "too-few-keypoints"}
 
-    bf = cv2.BFMatcher(cv2.NORM_L2)
-    matches = bf.knnMatch(des1, des2, k=2)
-    good = [m for m, n in matches if len(matches) and m.distance < ratio * n.distance]
-    t_match = time.perf_counter()
-
-    def log_timing(reason, **extra):
+    def log_timing(reason, t_match):
         log.debug(
             "[timing] verify query=%s candidate=%s decode_ms=%.2f "
             "cand_sift_ms=%.2f match_ms=%.2f ransac_ms=%.2f total_ms=%.2f reason=%s",
@@ -900,12 +897,38 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
             (time.perf_counter() - t0) * 1000, reason,
         )
 
-    if len(good) < 4:
-        log_timing("too-few-matches")
-        return {"matched": False, "reason": "too-few-matches", "good_matches": len(good)}
+    kp1_pts = query_state["pts"]
+    kp2_pts = np.float32([k.pt for k in kp2]).reshape(-1, 2) if kp2 else np.zeros((0, 2), np.float32)
+    return _verify_matches(
+        qg.shape, kp1_pts, des1, kp2_pts, des2, cg.shape, bool(query_state.get("mirror", False)),
+        ratio, ransac_thresh, min_inliers, log_timing=log_timing, name=os.path.basename(candidate_path),
+    )
 
-    src = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-    dst = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+
+def _verify_matches(qg_shape, kp1_pts, des1, kp2_pts, des2, c_shape, mirror,
+                    ratio=0.75, ransac_thresh=5.0, min_inliers=10, log_timing=None, name=""):
+    """Ratio-test match, RANSAC fit and geometry gate for one query/candidate pair.
+
+    The shared core of `verify_one` (descriptors computed on the spot) and the
+    stored-feature path (`/verify_features`): `kp*_pts` are float32 `[n, 2]`
+    arrays, `des*` SIFT descriptor rows, `*_shape` the (h, w) of the decoded
+    grayscale images the keypoints came from. `log_timing(reason, t_match)` is
+    an optional hook for the caller's debug line; `name` labels the geometry log.
+    """
+    if des2 is None or len(kp2_pts) < 8:
+        return {"matched": False, "reason": "too-few-keypoints"}
+
+    bf = cv2.BFMatcher(cv2.NORM_L2)
+    matches = bf.knnMatch(des1, des2, k=2)
+    good = [m for m, n in matches if len(matches) and m.distance < ratio * n.distance]
+    t_match = time.perf_counter()
+
+    def log_done(reason):
+        if log_timing is not None:
+            log_timing(reason, t_match)
+
+    src = kp1_pts[[m.queryIdx for m in good]].reshape(-1, 1, 2)
+    dst = kp2_pts[[m.trainIdx for m in good]].reshape(-1, 1, 2)
 
     # A crop of flat art is a SIMILARITY transform — rotate, uniform scale,
     # translate (4 DOF). It is never a projective warp, so fitting the 8-DOF
@@ -934,7 +957,7 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
         )
         if M is None or mask is None:
             if first is None:
-                log_timing("no-transform")
+                log_done("no-transform")
                 return {"matched": False, "reason": "no-transform", "good_matches": len(good)}
             break
         H = np.vstack([M, [0.0, 0.0, 1.0]]).astype(np.float64)
@@ -958,7 +981,7 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
                   # when `matched`; the caller reports it so the UI can say the
                   # match is a mirror rather than silently presenting it as a
                   # straight hit (book-matched tile pairs are a real case).
-                  "mirrored": bool(query_state.get("mirror", False))}
+                  "mirrored": bool(mirror)}
         if not matched:
             if first is None:
                 first = (result, "low-confidence")
@@ -967,20 +990,20 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
         # Counting votes is not enough — check the transform those votes
         # elected is one a real embedded crop could produce. See the
         # `_MIN_CONTAINED` block above for why and for the measured margins.
-        geo, quad = _placement_geometry(H, qg.shape, cg.shape)
+        geo, quad = _placement_geometry(H, qg_shape, c_shape)
         rejected = _implausible_placement(geo)
         if not rejected:
             result["box"] = quad.tolist()
-            result["candidate_size"] = [c.shape[1], c.shape[0]]
+            result["candidate_size"] = [c_shape[1], c_shape[0]]
             sx, sy = float(np.hypot(H[0, 0], H[1, 0])), float(np.hypot(H[0, 1], H[1, 1]))
             result["scale"] = round((sx + sy) / 2, 3)
-            log_timing("matched" if placement == 0 else f"matched-placement-{placement + 1}")
+            log_done("matched" if placement == 0 else f"matched-placement-{placement + 1}")
             return result
 
         log.debug(
             "[verify] rejected candidate=%s placement=%d on geometry (%s): inliers=%d ratio=%.2f "
             "contained=%.3f keystone=%.3f rot_off=%.1f",
-            os.path.basename(candidate_path), placement + 1, rejected, inliers, inlier_ratio,
+            name, placement + 1, rejected, inliers, inlier_ratio,
             geo["contained"], geo["keystone"], geo["rot_off"],
         )
         result["matched"] = False
@@ -993,5 +1016,103 @@ def verify_one(query_state, candidate_path, ratio=0.75, ransac_thresh=5.0, min_i
             break
 
     result, reason = first
-    log_timing(reason)
+    log_done(reason)
     return result
+
+
+# ── Local features for the exact-match engine (stored by Rust, verified without re-decoding) ──
+
+# Keypoints kept per image — mirrors Rust `config::MATCH_FEATURES_PER_IMAGE`; changing it means bumping `MATCH_FEATURES_VERSION`.
+MATCH_FEATURES_PER_IMAGE = 400
+# Longest image side features are extracted at (same as `verify_one`'s candidate decode) — mirrors Rust `config::MATCH_FEATURE_MAX_DIM`.
+MATCH_FEATURE_MAX_DIM = 1024
+# SIFT descriptor width.
+SIFT_DIM = 128
+
+
+# SIFT keypoints of an RGB image: (pts f32[n,2], sizes f32[n], angles f32[n], desc u8[n,128], (w, h)), strongest `n` by response.
+def extract_features(img_rgb, n=MATCH_FEATURES_PER_IMAGE):
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    size = (int(gray.shape[1]), int(gray.shape[0]))
+    sift = cv2.SIFT_create(nfeatures=n, contrastThreshold=0.01, edgeThreshold=20)
+    kps, desc = sift.detectAndCompute(gray, None)
+    if desc is None or len(kps) == 0:
+        return (np.zeros((0, 2), np.float32), np.zeros(0, np.float32), np.zeros(0, np.float32),
+                np.zeros((0, SIFT_DIM), np.uint8), size)
+    order = np.argsort(-np.array([k.response for k in kps], dtype=np.float32), kind="stable")[:n]
+    pts = np.array([kps[i].pt for i in order], dtype=np.float32).reshape(-1, 2)
+    sizes = np.array([kps[i].size for i in order], dtype=np.float32)
+    angles = np.array([kps[i].angle for i in order], dtype=np.float32)
+    return pts, sizes, angles, np.clip(np.rint(desc[order]), 0, 255).astype(np.uint8), size
+
+
+# Little-endian raw bytes of `a` as base64 text (the wire format of every array payload).
+def b64_array(a, dtype):
+    return base64.b64encode(np.ascontiguousarray(a, dtype=np.dtype(dtype).newbyteorder("<")).tobytes()).decode("ascii")
+
+
+# Inverse of `b64_array`: decode base64 little-endian raw bytes into an array of `dtype`.
+def unb64_array(text, dtype):
+    return np.frombuffer(base64.b64decode(text), dtype=np.dtype(dtype).newbyteorder("<"))
+
+
+# Wire dict for one path's features: w, h, n plus base64 pts (f32 [n,2]), sizes (f32 [n]), angles (f32 [n]), desc (u8 [n,128]); None if undecodable.
+def features_payload(path, mirror=False):
+    img = load_image_rgb(path, max_dim=MATCH_FEATURE_MAX_DIM)
+    if img is None:
+        return None
+    if mirror:
+        img = cv2.flip(img, 1)
+    pts, sizes, angles, desc, (w, h) = extract_features(img)
+    return {"w": w, "h": h, "n": int(len(pts)), "pts": b64_array(pts, "<f4"), "sizes": b64_array(sizes, "<f4"),
+            "angles": b64_array(angles, "<f4"), "desc": b64_array(desc, "u1")}
+
+
+# Verifies a prepared query against one candidate's stored features (`pts` f32 [n,2], `desc` u8 [n,128], decoded size w x h); same result dict as `verify_one`.
+def verify_features_one(query_state, cand):
+    if query_state is None:
+        return {"matched": False, "reason": "decode-failed"}
+    qg, des1 = query_state["qg"], query_state["des"]
+    if des1 is None or len(query_state["kp"]) < 8:
+        return {"matched": False, "reason": "decode-failed"}
+    n = int(cand["n"])
+    pts = unb64_array(cand["pts"], "<f4").reshape(-1, 2)[:n].astype(np.float32)
+    des2 = unb64_array(cand["desc"], "u1").reshape(-1, SIFT_DIM)[:n].astype(np.float32)
+    return _verify_matches(
+        qg.shape, query_state["pts"], des1, pts, des2, (int(cand["h"]), int(cand["w"])),
+        bool(query_state.get("mirror", False)), name=os.path.basename(cand.get("path", "")),
+    )
+
+
+# ── Visual vocabulary (k-means over SIFT descriptors) ──
+
+# Minibatch k-means over float32 rows `x`: `iters` passes' worth of batches, returns centroids f32 [k,128].
+def kmeans_minibatch(x, k, iters, seed=0, batch=8192):
+    rng = np.random.default_rng(seed)
+    n = len(x)
+    k = min(k, n)
+    centroids = x[rng.choice(n, k, replace=False)].astype(np.float32).copy()
+    counts = np.zeros(k, np.float64)
+    steps = max(1, iters * -(-n // batch))
+    for _ in range(steps):
+        b = x[rng.integers(0, n, min(batch, n))]
+        # argmin ||c - x||^2 = argmin(||c||^2 - 2 c.x); ||x||^2 is constant per row.
+        assign = (np.einsum("ij,ij->i", centroids, centroids)[None, :] - 2.0 * (b @ centroids.T)).argmin(axis=1)
+        order = np.argsort(assign, kind="stable")
+        a_sorted = assign[order]
+        starts = np.flatnonzero(np.r_[True, a_sorted[1:] != a_sorted[:-1]])
+        sums = np.add.reduceat(b[order], starts, axis=0)
+        ids = a_sorted[starts]
+        sizes = np.diff(np.r_[starts, len(a_sorted)]).astype(np.float64)
+        counts[ids] += sizes
+        eta = (sizes / counts[ids]).astype(np.float32)[:, None]
+        centroids[ids] = (1.0 - eta) * centroids[ids] + eta * (sums / sizes[:, None].astype(np.float32))
+    return centroids
+
+
+# Centroids f32 [k,128] from `n` uint8 descriptor rows; minibatch k-means because cv2.kmeans measured ~8x slower at 200k x 4096 (see README).
+def train_vocab(desc_u8, n, k, iters):
+    x = np.asarray(desc_u8, dtype=np.uint8).reshape(-1, SIFT_DIM)[:n].astype(np.float32)
+    if len(x) == 0:
+        raise ValueError("no descriptors to train on")
+    return kmeans_minibatch(x, min(k, len(x)), iters)

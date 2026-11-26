@@ -27,12 +27,19 @@ read and write to `meta.db` and `vectors.bin`.
 | `POST /describe` | Batch → embed/rose/gram/color descriptors |
 | `POST /verify` | SIFT/RANSAC verification, parallelized server-side across an 8-way pool |
 | `POST /fingerprint` | Decode + 64-bit DCT pHash (8 dihedral variants as hex); needs no DINO model |
+| `POST /extract_features` | `{paths, mirror?, priority}` -> per path `{w,h,n,pts,sizes,angles,desc}` (SIFT, strongest 400; base64 little-endian: pts f32 [n,2], sizes/angles f32 [n], desc u8 [n,128]). `mirror` flips first (query side). No DINO model |
+| `POST /train_vocab` | `{desc (u8 [n,128] b64), n, k, iters}` -> `{centroids}` (f32 [k,128] b64); minibatch k-means, index priority |
+| `POST /verify_features` | `{query_path, mirror, candidates:[{path,w,h,n,pts,desc}], priority}` -> the same per-candidate dicts as `/verify`, matched from stored features with no candidate decode |
 
 The DINO model ships encrypted (`clip_vitb32.onnx.enc`, Git LFS) and only loads once Rust posts a
 licence-derived key after a successful login. Without it `/describe` returns
 `{"error": "embed-model-not-loaded"}` and indexing/search never start.
 
 ## Invariant
+
+`pipeline.MATCH_FEATURES_PER_IMAGE` / `MATCH_FEATURE_MAX_DIM` mirror the Rust `config` constants of the same name;
+changing the extraction parameters means bumping `config::MATCH_FEATURES_VERSION` (not `EMBED_SCHEMA_VERSION`).
+`verify_one` and `/verify_features` share `pipeline._verify_matches`, so the RANSAC and geometry gate cannot drift apart.
 
 `config::EMBED_DIM` must match the model's real output width. `pipeline.py::load_embed_model`
 measures it and reports it through `/health`; `core::sidecar` refuses a mismatch rather than let a
