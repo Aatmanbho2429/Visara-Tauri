@@ -77,6 +77,11 @@ pub fn open() -> Result<Connection> {
         );
         CREATE INDEX IF NOT EXISTS idx_client_files_folder_dir ON client_files(folder_id, rel_dir);
         CREATE INDEX IF NOT EXISTS idx_client_files_file_id    ON client_files(file_id);
+
+        CREATE TABLE IF NOT EXISTS file_fingerprints (
+            file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+            phash   INTEGER             -- u64 bit-cast to i64; NULL = flat image, deliberately unfingerprinted
+        );
     ")?;
 
     // Idempotent column additions for databases created before these columns existed.
@@ -1070,6 +1075,58 @@ pub fn paths_missing_category_in_folder(con: &Connection, folder: &str, category
     Ok(rows)
 }
 
+// ── Fingerprints (pHash) ───────────────────────────────────────────────────
+
+// `files.id` for a path, or None when it isn't indexed.
+pub fn file_id_by_path(con: &Connection, path: &str) -> Result<Option<i64>> {
+    match con.query_row("SELECT id FROM files WHERE path = ?1", params![path], |r| r.get::<_, i64>(0)) {
+        Ok(id) => Ok(Some(id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+// Stores a file's pHash (`None` = flat image, no fingerprint) as the u64 bit-cast to i64.
+pub fn upsert_fingerprint(con: &Connection, file_id: i64, phash: Option<u64>) -> Result<()> {
+    con.execute(
+        "INSERT OR REPLACE INTO file_fingerprints (file_id, phash) VALUES (?1, ?2)",
+        params![file_id, phash.map(|h| h as i64)],
+    )?;
+    Ok(())
+}
+
+// Non-null fingerprints of the files under `folder` as (faiss_id, phash), using the same prefix range as `folder_id_map`.
+pub fn fingerprints_in_folder(con: &Connection, folder: &str) -> Result<Vec<(i64, u64)>> {
+    let prefix = normalise_folder_prefix(folder);
+    let upper = prefix_upper_bound(&prefix);
+    let mut stmt = con.prepare_cached(
+        "SELECT f.faiss_id, p.phash FROM files f \
+         JOIN file_fingerprints p ON p.file_id = f.id \
+         WHERE f.path >= ?1 AND f.path < ?2 AND p.phash IS NOT NULL",
+    )?;
+    let rows = stmt
+        .query_map(params![prefix, upper], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as u64)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+// Files under `folder` with no fingerprint row at all (NULL rows are skipped so flat images aren't retried forever).
+pub fn files_missing_fingerprint(con: &Connection, folder: &str) -> Result<Vec<(i64, String)>> {
+    let prefix = normalise_folder_prefix(folder);
+    let upper = prefix_upper_bound(&prefix);
+    let mut stmt = con.prepare_cached(
+        "SELECT f.id, f.path FROM files f \
+         WHERE f.path >= ?1 AND f.path < ?2 \
+           AND NOT EXISTS (SELECT 1 FROM file_fingerprints p WHERE p.file_id = f.id)",
+    )?;
+    let rows = stmt
+        .query_map(params![prefix, upper], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 fn normalise_folder_prefix(folder: &str) -> String {
@@ -1095,7 +1152,8 @@ mod tests {
             "CREATE TABLE files (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, faiss_id INTEGER UNIQUE NOT NULL, mtime REAL NOT NULL DEFAULT 0);
              CREATE TABLE watched_folders (id INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT UNIQUE NOT NULL, status TEXT NOT NULL DEFAULT 'watching', added_at REAL NOT NULL, last_event_at REAL NOT NULL DEFAULT 0);
              CREATE TABLE file_tags (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE, category TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'manual', created_at REAL NOT NULL DEFAULT 0, UNIQUE(file_id,category,value));
-             CREATE TABLE client_files (id INTEGER PRIMARY KEY AUTOINCREMENT, folder_id INTEGER NOT NULL REFERENCES watched_folders(id) ON DELETE CASCADE, path TEXT UNIQUE NOT NULL, rel_dir TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, mtime REAL NOT NULL DEFAULT 0, file_id INTEGER REFERENCES files(id) ON DELETE SET NULL, error_code TEXT, error_reason TEXT, last_attempt_at REAL NOT NULL DEFAULT 0, first_seen_at REAL NOT NULL DEFAULT 0);",
+             CREATE TABLE client_files (id INTEGER PRIMARY KEY AUTOINCREMENT, folder_id INTEGER NOT NULL REFERENCES watched_folders(id) ON DELETE CASCADE, path TEXT UNIQUE NOT NULL, rel_dir TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, mtime REAL NOT NULL DEFAULT 0, file_id INTEGER REFERENCES files(id) ON DELETE SET NULL, error_code TEXT, error_reason TEXT, last_attempt_at REAL NOT NULL DEFAULT 0, first_seen_at REAL NOT NULL DEFAULT 0);
+             CREATE TABLE file_fingerprints (file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE, phash INTEGER);",
         ).unwrap();
         con
     }
@@ -1274,6 +1332,50 @@ mod tests {
         assert!(paths.contains("/lib/folder/sub/b.jpg"));
         assert!(!paths.contains("/lib/folder2/c.jpg"));
         assert!(!paths.contains("/lib/other/d.jpg"));
+    }
+
+    // Hashes with the top bit set are stored as negative i64s and must read back as the same u64.
+    #[test]
+    fn fingerprint_round_trips_high_bit_values() {
+        let con = mem();
+        seed_files(&con, &["/lib/a.jpg", "/lib/b.jpg", "/lib/c.jpg"]);
+        let id = |p: &str| file_id_by_path(&con, p).unwrap().unwrap();
+        upsert_fingerprint(&con, id("/lib/a.jpg"), Some(0xFFFF_FFFF_FFFF_FFFF)).unwrap();
+        upsert_fingerprint(&con, id("/lib/b.jpg"), Some(1u64 << 63)).unwrap();
+        upsert_fingerprint(&con, id("/lib/c.jpg"), None).unwrap();
+
+        let mut got = fingerprints_in_folder(&con, "/lib").unwrap();
+        got.sort();
+        // seed_files assigns faiss_id by index, so a=0, b=1; c is NULL and excluded.
+        assert_eq!(got, vec![(0, u64::MAX), (1, 1u64 << 63)]);
+    }
+
+    // Only files with no row at all are backfill work; NULL (flat) rows and other folders are left out.
+    #[test]
+    fn files_missing_fingerprint_skips_null_rows_and_other_folders() {
+        let con = mem();
+        seed_files(&con, &["/lib/a.jpg", "/lib/b.jpg", "/lib/c.jpg", "/other/d.jpg"]);
+        let id = |p: &str| file_id_by_path(&con, p).unwrap().unwrap();
+        upsert_fingerprint(&con, id("/lib/a.jpg"), Some(7)).unwrap();
+        upsert_fingerprint(&con, id("/lib/b.jpg"), None).unwrap();
+
+        let missing = files_missing_fingerprint(&con, "/lib").unwrap();
+        assert_eq!(missing, vec![(id("/lib/c.jpg"), "/lib/c.jpg".to_string())]);
+        assert!(fingerprints_in_folder(&con, "/other").unwrap().is_empty());
+    }
+
+    // Deleting a file cascades its fingerprint away, and re-upserting replaces rather than duplicates.
+    #[test]
+    fn fingerprint_cascades_and_replaces() {
+        let con = mem();
+        seed_files(&con, &["/lib/a.jpg"]);
+        let id = file_id_by_path(&con, "/lib/a.jpg").unwrap().unwrap();
+        upsert_fingerprint(&con, id, Some(1)).unwrap();
+        upsert_fingerprint(&con, id, Some(2)).unwrap();
+        assert_eq!(fingerprints_in_folder(&con, "/lib").unwrap(), vec![(0, 2)]);
+        delete_file(&con, "/lib/a.jpg").unwrap();
+        let n: i64 = con.query_row("SELECT COUNT(*) FROM file_fingerprints", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
     }
 
     #[test]

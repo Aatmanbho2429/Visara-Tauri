@@ -565,6 +565,8 @@ pub struct Descriptor {
     // same decode (`pipeline.dominant_colors`). Empty when the sidecar
     // predates this field — callers treat that as "no tag", never an error.
     pub dominant: Vec<String>,
+    // pHash of the 8 dihedral variants (rot0..rot270, then mirrored); empty for a flat image or an older sidecar.
+    pub phash: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -581,6 +583,8 @@ pub struct VerifyResult {
     // query (see `sidecar/pipeline.py::prepare_query`). Only meaningful
     // alongside `matched`.
     pub mirrored: bool,
+    // Sidecar's rejection code when `matched` is false (e.g. "low-confidence", "too-few-keypoints").
+    pub reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -600,6 +604,9 @@ struct DescribeRespItem {
     // a version skew costs the colour *tag* only, not the whole descriptor.
     #[serde(default)]
     dominant: Vec<String>,
+    // Hex pHash strings; absent from an older sidecar, which gives an empty vec.
+    #[serde(default)]
+    phash: Vec<String>,
     // Per-file failure code from the sidecar (e.g. "decode-failed"); absent on success.
     #[serde(default)]
     error: Option<String>,
@@ -608,6 +615,11 @@ struct DescribeRespItem {
 #[derive(Deserialize)]
 struct DescribeResp {
     results: Vec<DescribeRespItem>,
+}
+
+// Parses 16-char hex pHash strings into u64s, skipping any that are malformed (hex because JSON numbers lose precision above 2^53).
+pub fn parse_phashes(hex: &[String]) -> Vec<u64> {
+    hex.iter().filter_map(|s| u64::from_str_radix(s.trim(), 16).ok()).collect()
 }
 
 // `describe` error text for a result that carried neither a descriptor nor a sidecar error.
@@ -638,7 +650,7 @@ pub fn describe(paths: &[String], priority: Priority) -> Result<Vec<(String, std
             // unusable rows into the store instead of surfacing a failure.
             let desc = match (r.embed, r.rose, r.gram, r.color) {
                 (Some(embed), Some(rose), Some(gram), Some(color)) => {
-                    Ok(Descriptor { embed, rose, gram, color, dominant: r.dominant })
+                    Ok(Descriptor { embed, rose, gram, color, dominant: r.dominant, phash: parse_phashes(&r.phash) })
                 }
                 _ => Err(r.error.unwrap_or_else(|| INCOMPLETE_DESCRIPTOR.to_string())),
             };
@@ -678,6 +690,9 @@ struct VerifyRespItem {
     // same convention as `dominant` on the describe response.
     #[serde(default)]
     mirrored: bool,
+    // Rejection code on a non-match; absent on a match or from an older sidecar.
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -727,8 +742,77 @@ pub fn verify(
                     candidate_size: r.candidate_size,
                     scale: r.scale,
                     mirrored: r.mirrored,
+                    reason: r.reason,
                 },
             )
         })
         .collect())
+}
+
+#[derive(Serialize)]
+struct FingerprintReq<'a> {
+    paths: &'a [String],
+    priority: &'a str,
+}
+
+#[derive(Deserialize)]
+struct FingerprintRespItem {
+    path: String,
+    #[serde(default)]
+    phash: Vec<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FingerprintResp {
+    results: Vec<FingerprintRespItem>,
+}
+
+// pHash variants per path via `/fingerprint` (decode only, no embed model needed); an empty vec means a flat image.
+pub fn fingerprint(
+    paths: &[String],
+    priority: Priority,
+) -> Result<Vec<(String, std::result::Result<Vec<u64>, String>)>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let body = FingerprintReq { paths, priority: priority.as_str() };
+    let resp: FingerprintResp = HTTP
+        .post(format!("{}/fingerprint", base_url()))
+        .timeout(describe_timeout(paths.len()))
+        .json(&body)
+        .send()
+        .map_err(|e| PictoriaError::Fatal(format!("sidecar /fingerprint unreachable: {e}")))?
+        .json()
+        .map_err(|e| PictoriaError::Fatal(format!("sidecar /fingerprint bad response: {e}")))?;
+
+    Ok(resp
+        .results
+        .into_iter()
+        .map(|r| match r.error {
+            Some(e) => (r.path, Err(e)),
+            None => (r.path, Ok(parse_phashes(&r.phash))),
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Hashes with the top bit set exceed 2^53 and must survive the hex round trip exactly.
+    #[test]
+    fn parse_phashes_keeps_values_above_2_pow_53() {
+        let hex = vec!["ffffffffffffffff".to_string(), "8000000000000000".to_string(), "0000000000000001".to_string()];
+        assert_eq!(parse_phashes(&hex), vec![u64::MAX, 1u64 << 63, 1]);
+    }
+
+    // Malformed entries are skipped rather than failing the whole descriptor.
+    #[test]
+    fn parse_phashes_skips_bad_strings() {
+        let hex = vec!["zz".to_string(), "00000000000000ff".to_string(), String::new()];
+        assert_eq!(parse_phashes(&hex), vec![0xff]);
+        assert!(parse_phashes(&[]).is_empty());
+    }
 }

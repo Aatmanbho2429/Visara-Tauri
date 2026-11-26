@@ -3,7 +3,7 @@
 // file now (no more region slicing — see `core::vector_store`).
 
 use crate::{
-    core::{database, progress, sidecar, vector_store::VectorStore},
+    core::{database, progress, search_gate, sidecar, vector_store::VectorStore},
     error::{PictoriaError, Result},
     models::response::FileError,
     utils::file_utils,
@@ -327,6 +327,8 @@ fn index_chunks(
                 crate::services::tags::apply_color_tags(con, &path_str, &desc.dominant);
             }
 
+            store_fingerprint(con, &path_str, &desc.phash);
+
             if let Err(e) = store.upsert(vector_id, &embed_flat, &desc.rose, &gram_flat, &desc.color) {
                 errors.push(SyncFileError::new(path_str, ERR_INDEX_FAILED, format!("Index upsert failed: {e}")));
                 progress::increment_errors();
@@ -352,6 +354,70 @@ fn index_chunks(
 
     con.execute_batch("COMMIT;")?;
     Ok(())
+}
+
+// Writes a file's pHash from its descriptor; an empty set is stored as NULL (flat image or old sidecar) so the backfill skips it.
+fn store_fingerprint(con: &rusqlite::Connection, path: &str, phash: &[u64]) {
+    let id = match database::file_id_by_path(con, path) {
+        Ok(Some(id)) => id,
+        _ => return,
+    };
+    if let Err(e) = database::upsert_fingerprint(con, id, phash.first().copied()) {
+        log::warn!("[sync] fingerprint write failed for {path}: {e}");
+    }
+}
+
+// Fingerprints every file under `folder` that has no fingerprint row yet; blocking, call from a spawned thread. Returns how many rows were written.
+pub fn backfill_fingerprints(folder: &str) -> usize {
+    let todo = match database::open().and_then(|c| database::files_missing_fingerprint(&c, folder)) {
+        Ok(t) => t,
+        Err(e) => { log::warn!("[sync] fingerprint backfill: cannot list files: {e}"); return 0; }
+    };
+    if todo.is_empty() {
+        return 0;
+    }
+    // `/fingerprint` needs no DINO model, so the sidecar being up is enough (not `is_ready`).
+    if !sidecar::is_healthy() {
+        log::info!("[sync] fingerprint backfill: sidecar not ready, skipping {} files under {folder}", todo.len());
+        return 0;
+    }
+    log::info!("[sync] fingerprint backfill: {} files under {folder}", todo.len());
+    let t_total = Instant::now();
+    let con = match database::open() {
+        Ok(c) => c,
+        Err(e) => { log::warn!("[sync] fingerprint backfill: cannot open db: {e}"); return 0; }
+    };
+
+    let mut done = 0usize;
+    let mut paused_for_search = 0usize;
+    for chunk in todo.chunks(INDEX_FILE_CHUNK) {
+        // Stand aside for an interactive search, then pick up where we left off.
+        if search_gate::is_active() {
+            paused_for_search += 1;
+            search_gate::wait_while_active();
+        }
+        let paths: Vec<String> = chunk.iter().map(|(_, p)| p.clone()).collect();
+        let hashed = match sidecar::fingerprint(&paths, sidecar::Priority::Index) {
+            Ok(h) => h,
+            Err(e) => { log::warn!("[sync] fingerprint backfill: sidecar call failed: {e}"); break; }
+        };
+        let ids: HashMap<&str, i64> = chunk.iter().map(|(id, p)| (p.as_str(), *id)).collect();
+        for (path, res) in hashed {
+            // A decode failure writes nothing, so a later pass retries it.
+            let (Some(&id), Ok(hashes)) = (ids.get(path.as_str()), res) else { continue };
+            if database::upsert_fingerprint(&con, id, hashes.first().copied()).is_ok() {
+                done += 1;
+            }
+        }
+    }
+
+    log::info!(
+        "[timing] fingerprint backfill done: {done} of {} files under {folder} \
+         paused_for_search={paused_for_search} total_ms={:.2}",
+        todo.len(),
+        t_total.elapsed().as_secs_f64() * 1000.0,
+    );
+    done
 }
 
 fn file_mtime(path: &Path) -> f64 {
@@ -409,6 +475,7 @@ pub fn reembed_folder(store: &mut VectorStore, folder_path: &Path) -> Result<Vec
             };
             let embed_flat: Vec<f32> = desc.embed.into_iter().flatten().collect();
             let gram_flat: Vec<f32> = desc.gram.into_iter().flatten().collect();
+            store_fingerprint(&con, &path_str, &desc.phash);
             if let Err(e) = store.upsert(*id, &embed_flat, &desc.rose, &gram_flat, &desc.color) {
                 errors.push(FileError { file: path_str, reason: format!("Index upsert failed: {e}") });
                 progress::increment_errors();
