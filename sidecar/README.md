@@ -141,3 +141,25 @@ That directory is gitignored (~200MB). At *runtime* in a debug build,
 `core::sidecar::spawn()` still falls back to `python server.py` if no frozen
 binary is found, so `cargo tauri dev` works without freezing first — the
 staged file is only needed to get past the build script.
+
+### Exact-match engine: tests and evaluation
+
+The cv2/numpy-only paths (`fingerprint`, `extract_features`, `_verify_matches`, the eval harness) import without
+torch, so they run without the full requirements:
+
+```bash
+python -m unittest discover -s tests          # fingerprint, verify parity, features/endpoints, eval smoke
+python tools/eval_exact_match.py --library <folder> --n 200 --negatives 20 --seed 0 --out report.json
+```
+
+The harness synthesises queries from random library images (resize 0.5x, JPEG q60, rot90/rot180, mirror, 50% and 25%
+area crops, brightness/contrast +-20%, hue shift), verifies each against its source and random negatives from
+stored-style features, and prints per transform: true-positive rate, false-copy rate (a negative clearing the copy
+thresholds), median/p95 ms per candidate verify, mean feature bytes per image, and pHash Hamming distances to source
+and negatives. `--detector sift` is the only implemented choice. Run it on a real library before trusting any
+`MATCH_*` constant — they are uncalibrated starting points. `tests/golden_verify.json` is the output of the
+pre-refactor `verify_one`; regenerate it only from a frozen old copy (`test_verify_parity.py --record <old pipeline.py>`).
+
+`/train_vocab` uses minibatch k-means in numpy. Measured on a 4-core container with 200,000 x 128 synthetic descriptors
+at k=4096: `cv2.kmeans` (PP init, 10 iterations, single thread) took 297 s; the numpy minibatch took 18.5 s at 5 passes
+(35.8 s at 10), with total inertia 1.3689e10 against cv2's 1.3346e10 (2.6% higher).
